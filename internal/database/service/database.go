@@ -1,4 +1,4 @@
-package database
+package service
 
 import (
 	"context"
@@ -9,12 +9,15 @@ import (
 	"strconv"
 	"time"
 
-	_ "github.com/go-sql-driver/mysql"
+	_ "github.com/jackc/pgx/v5/stdlib"
 	_ "github.com/joho/godotenv/autoload"
+	"gorm.io/driver/postgres"
+	"gorm.io/gorm"
+	"gorm.io/gorm/schema"
 )
 
 // Service represents a service that interacts with a database.
-type Service interface {
+type DatabaseService interface {
 	// Health returns a map of health status information.
 	// The keys and values in the map are service-specific.
 	Health() map[string]string
@@ -22,42 +25,74 @@ type Service interface {
 	// Close terminates the database connection.
 	// It returns an error if the connection cannot be closed.
 	Close() error
+
+	// GetDB returns the raw SQL database connection
+	GetDB() *sql.DB
+
+	// GetGorm returns the GORM database instance
+	GetGorm() *gorm.DB
 }
 
 type service struct {
-	db *sql.DB
+	db   *sql.DB
+	gorm *gorm.DB
 }
 
 var (
-	dbname     = os.Getenv("BLUEPRINT_DB_DATABASE")
-	password   = os.Getenv("BLUEPRINT_DB_PASSWORD")
-	username   = os.Getenv("BLUEPRINT_DB_USERNAME")
-	port       = os.Getenv("BLUEPRINT_DB_PORT")
-	host       = os.Getenv("BLUEPRINT_DB_HOST")
+	database   = os.Getenv("APP_DB_DATABASE")
+	password   = os.Getenv("APP_DB_PASSWORD")
+	username   = os.Getenv("APP_DB_USERNAME")
+	port       = os.Getenv("APP_DB_PORT")
+	host       = os.Getenv("APP_DB_HOST")
 	dbInstance *service
 )
 
-func New() Service {
+func New() DatabaseService {
 	// Reuse Connection
 	if dbInstance != nil {
 		return dbInstance
 	}
 
-	// Opening a driver typically will not attempt to connect to the database.
-	db, err := sql.Open("mysql", fmt.Sprintf("%s:%s@tcp(%s:%s)/%s", username, password, host, port, dbname))
+	connStr := fmt.Sprintf(
+		"postgres://%s:%s@%s:%s/%s?sslmode=disable&search_path=public",
+		username, password, host, port, database,
+	)
+
+	// Initialize SQL database
+	db, err := sql.Open("pgx", connStr)
 	if err != nil {
-		// This will not be a connection error, but a DSN parse error or
-		// another initialization error.
 		log.Fatal(err)
 	}
+
 	db.SetConnMaxLifetime(0)
 	db.SetMaxIdleConns(50)
 	db.SetMaxOpenConns(50)
 
+	// Initialize GORM with the same connection string
+	gormDB, err := gorm.Open(postgres.Open(connStr), &gorm.Config{
+		NamingStrategy: schema.NamingStrategy{
+			TablePrefix: "public.",
+		},
+	})
+	if err != nil {
+		log.Fatal("Failed to connect to database with GORM:", err)
+	}
+
 	dbInstance = &service{
-		db: db,
+		db:   db,
+		gorm: gormDB,
 	}
 	return dbInstance
+}
+
+// GetDB returns the raw SQL database connection
+func (s *service) GetDB() *sql.DB {
+	return s.db
+}
+
+// GetGorm returns the GORM database instance
+func (s *service) GetGorm() *gorm.DB {
+	return s.gorm
 }
 
 // Health checks the health of the database connection by pinging the database.
@@ -73,7 +108,7 @@ func (s *service) Health() map[string]string {
 	if err != nil {
 		stats["status"] = "down"
 		stats["error"] = fmt.Sprintf("db down: %v", err)
-		log.Fatalf("db down: %v", err) // Log the error and terminate the program
+		log.Fatalf("db down: %v", err)
 		return stats
 	}
 
@@ -92,7 +127,7 @@ func (s *service) Health() map[string]string {
 	stats["max_lifetime_closed"] = strconv.FormatInt(dbStats.MaxLifetimeClosed, 10)
 
 	// Evaluate stats to provide a health message
-	if dbStats.OpenConnections > 40 { // Assuming 50 is the max for this example
+	if dbStats.OpenConnections > 40 {
 		stats["message"] = "The database is experiencing heavy load."
 	}
 	if dbStats.WaitCount > 1000 {
@@ -102,7 +137,6 @@ func (s *service) Health() map[string]string {
 	if dbStats.MaxIdleClosed > int64(dbStats.OpenConnections)/2 {
 		stats["message"] = "Many idle connections are being closed, consider revising the connection pool settings."
 	}
-
 	if dbStats.MaxLifetimeClosed > int64(dbStats.OpenConnections)/2 {
 		stats["message"] = "Many connections are being closed due to max lifetime, consider increasing max lifetime or revising the connection usage pattern."
 	}
@@ -115,6 +149,6 @@ func (s *service) Health() map[string]string {
 // If the connection is successfully closed, it returns nil.
 // If an error occurs while closing the connection, it returns the error.
 func (s *service) Close() error {
-	log.Printf("Disconnected from database: %s", dbname)
+	log.Printf("Disconnected from database: %s", database)
 	return s.db.Close()
 }

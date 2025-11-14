@@ -5,9 +5,9 @@ all: build test
 
 build:
 	@echo "Building..."
-	
-	
-	@go build -o main cmd/api/main.go
+	@go build -o ./dist/upwork-buddy ./cmd/api/main.go
+	@chmod +x ./dist/upwork-buddy
+	@echo "Build completed: ./dist/upwork-buddy"
 
 # Run the application
 run:
@@ -42,7 +42,7 @@ itest:
 # Clean the binary
 clean:
 	@echo "Cleaning..."
-	@rm -f main
+	@rm -rf ./dist
 
 # Live Reload
 watch:
@@ -61,4 +61,13 @@ watch:
             fi; \
         fi
 
-.PHONY: all build run test clean watch docker-run docker-down itest
+# Atlas migrations
+apply:
+	@echo "Applying migrations..."
+	@atlas migrate apply --env app
+
+diff:
+	@echo "Diffing schema..."
+	@atlas migrate diff --env app
+
+.PHONY: all build run test clean watch docker-run docker-down itest apply diff

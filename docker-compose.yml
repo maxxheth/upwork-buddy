@@ -1,16 +1,32 @@
 services:
-  mysql_bp:
-    image: mysql:latest
+  app_db:
+    image: postgres:15-alpine
     restart: unless-stopped
     environment:
-      MYSQL_DATABASE: ${BLUEPRINT_DB_DATABASE}
-      MYSQL_USER: ${BLUEPRINT_DB_USERNAME}
-      MYSQL_PASSWORD: ${BLUEPRINT_DB_PASSWORD}
-      MYSQL_ROOT_PASSWORD: ${BLUEPRINT_DB_ROOT_PASSWORD}
+      POSTGRES_DB: ${APP_DB_DATABASE}
+      POSTGRES_USER: ${APP_DB_USERNAME}
+      POSTGRES_PASSWORD: ${APP_DB_PASSWORD}
     ports:
-      - "${BLUEPRINT_DB_PORT}:3306"
+      - "5443:5432"
     volumes:
-      - mysql_volume_bp:/var/lib/mysql
+      - app_db_volume:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${APP_DB_USERNAME} -d ${APP_DB_DATABASE}"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+
+  migrate_app_db:
+    image: arigaio/atlas:latest
+    command: >
+      migrate apply
+      --url "postgres://${APP_DB_USERNAME}:${APP_DB_PASSWORD}@app_db:5432/${APP_DB_DATABASE}?sslmode=disable"
+      --dir "file:///migrations/app"
+    depends_on:
+      app_db:
+        condition: service_healthy
+    volumes:
+      - ./internal/database/migrations/:/migrations
 
 volumes:
-  mysql_volume_bp:
+  app_db_volume:
