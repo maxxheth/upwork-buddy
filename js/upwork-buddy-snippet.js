@@ -14,9 +14,253 @@
     'use strict';
     
     const API_BASE_URL = 'http://localhost:9090';
+    const PROFILE_API_ENDPOINT = `${API_BASE_URL}/api/profile`;
+    const PROFILE_STORAGE_KEY = 'upworkBuddyProfileData';
     const USER_PROFILE = 'Experienced full-stack developer with 10+ years in web development, specializing in Go, React, and PostgreSQL. Strong background in building scalable APIs and database-driven applications.';
     const USER_SKILLS = 'Go, JavaScript, TypeScript, React, Node.js, PostgreSQL, MySQL, Docker, Git, RESTful APIs, GraphQL, AWS, CI/CD';
     
+    let currentProfileState = {
+        description: USER_PROFILE,
+        skills: USER_SKILLS,
+        portfolioItems: []
+    };
+    
+
+    function renderConfigurationPanel() {
+        const modalBody = document.getElementById('upwork-buddy-modal-body');
+        if (!modalBody) return;
+        modalBody.innerHTML = `
+            <div class="upwork-buddy-section">
+                <div class="upwork-buddy-section-header">
+                    <h4>Profile Settings</h4>
+                </div>
+                <div class="upwork-buddy-section-content open">
+                    <div class="upwork-buddy-section-body">
+                        <label for="upwork-buddy-profile-description">Profile Description</label>
+                        <textarea id="upwork-buddy-profile-description" class="upwork-buddy-portfolio-input" rows="4" placeholder="Summarize your experience"></textarea>
+                        <label for="upwork-buddy-profile-skills">Skills (comma-separated)</label>
+                        <input id="upwork-buddy-profile-skills" class="upwork-buddy-portfolio-input" type="text" placeholder="Go, React, Node.js, ...">
+                    </div>
+                </div>
+            </div>
+            <div class="upwork-buddy-section">
+                <div class="upwork-buddy-section-header" style="display:flex; justify-content:space-between; align-items:center;">
+                    <h4>Portfolio Items</h4>
+                    <button type="button" id="upwork-buddy-add-portfolio-item" class="upwork-buddy-add-portfolio-item-btn">Add item</button>
+                </div>
+                <div class="upwork-buddy-section-content open">
+                    <div class="upwork-buddy-section-body" id="upwork-buddy-portfolio-items-list"></div>
+                </div>
+            </div>
+            <div id="upwork-buddy-profile-status" class="upwork-buddy-profile-status" aria-live="polite"></div>
+            <div class="upwork-buddy-config-actions">
+                <button type="button" class="upwork-buddy-save-profile-btn">Save profile</button>
+                <button type="button" class="upwork-buddy-analyze-btn">Analyze This Job</button>
+            </div>
+        `;
+        const addBtn = document.getElementById('upwork-buddy-add-portfolio-item');
+        if (addBtn) {
+            addBtn.addEventListener('click', () => {
+                addPortfolioItemToList();
+                setProfileStatus('');
+            });
+        }
+
+        const saveBtn = modalBody.querySelector('.upwork-buddy-save-profile-btn');
+        if (saveBtn) {
+            saveBtn.addEventListener('click', handleSaveProfile);
+        }
+
+        const analyzeBtn = modalBody.querySelector('.upwork-buddy-analyze-btn');
+        if (analyzeBtn) {
+            analyzeBtn.addEventListener('click', handleAnalyze);
+        }
+
+        populateProfileFormFields();
+        renderPortfolioItemsList();
+        ensurePortfolioListHandlers();
+        setProfileStatus('');
+    }
+
+    function populateProfileFormFields() {
+        const descriptionField = document.getElementById('upwork-buddy-profile-description');
+        const skillsField = document.getElementById('upwork-buddy-profile-skills');
+        if (descriptionField) {
+            descriptionField.value = currentProfileState.description || '';
+        }
+        if (skillsField) {
+            skillsField.value = currentProfileState.skills || '';
+        }
+    }
+
+    function renderPortfolioItemsList() {
+        const container = document.getElementById('upwork-buddy-portfolio-items-list');
+        if (!container) return;
+        container.innerHTML = '';
+        const items = Array.isArray(currentProfileState.portfolioItems) ? currentProfileState.portfolioItems : [];
+        if (items.length === 0) {
+            const hint = document.createElement('p');
+            hint.className = 'upwork-buddy-portfolio-hint';
+            hint.textContent = 'Add portfolio highlights that showcase your best work.';
+            container.appendChild(hint);
+            return;
+        }
+        items.forEach(item => addPortfolioItemToList(item));
+    }
+
+    function addPortfolioItemToList(item = { title: '', link: '', description: '' }) {
+        const container = document.getElementById('upwork-buddy-portfolio-items-list');
+        if (!container) return;
+        const hint = container.querySelector('.upwork-buddy-portfolio-hint');
+        if (hint) hint.remove();
+        container.appendChild(createPortfolioItemElement(item));
+    }
+
+    function createPortfolioItemElement(item = { title: '', link: '', description: '' }) {
+        const wrapper = document.createElement('div');
+        wrapper.className = 'upwork-buddy-portfolio-item';
+        wrapper.innerHTML = `
+            <label>Title</label>
+            <input type="text" class="upwork-buddy-portfolio-title upwork-buddy-portfolio-input" value="${escapeHtml(item.title || '')}">
+            <label>Link</label>
+            <input type="text" class="upwork-buddy-portfolio-link upwork-buddy-portfolio-input" value="${escapeHtml(item.link || '')}">
+            <label>Description</label>
+            <textarea class="upwork-buddy-portfolio-description upwork-buddy-portfolio-input">${escapeHtml(item.description || '')}</textarea>
+            <button type="button" class="upwork-buddy-remove-portfolio-item">Remove</button>
+        `;
+        return wrapper;
+    }
+
+    function ensurePortfolioListHandlers() {
+        const container = document.getElementById('upwork-buddy-portfolio-items-list');
+        if (!container) return;
+        container.addEventListener('click', (event) => {
+            if (event.target.matches('.upwork-buddy-remove-portfolio-item')) {
+                const parent = event.target.closest('.upwork-buddy-portfolio-item');
+                if (parent) parent.remove();
+            }
+        });
+    }
+
+    function gatherProfileFromForm() {
+        const descriptionField = document.getElementById('upwork-buddy-profile-description');
+        const skillsField = document.getElementById('upwork-buddy-profile-skills');
+        const portfolioNodes = document.querySelectorAll('.upwork-buddy-portfolio-item');
+        const items = [];
+        portfolioNodes.forEach((node) => {
+            const title = node.querySelector('.upwork-buddy-portfolio-title')?.value.trim() || '';
+            const link = node.querySelector('.upwork-buddy-portfolio-link')?.value.trim() || '';
+            const description = node.querySelector('.upwork-buddy-portfolio-description')?.value.trim() || '';
+            if (title || link || description) {
+                items.push({ title, link, description });
+            }
+        });
+        return {
+            description: descriptionField?.value || '',
+            skills: skillsField?.value || '',
+            portfolioItems: items
+        };
+    }
+
+    function setProfileStatus(message, isError = false) {
+        const status = document.getElementById('upwork-buddy-profile-status');
+        if (!status) return;
+        status.textContent = message;
+        status.style.color = isError ? '#c82333' : '#14a800';
+    }
+
+    async function handleSaveProfile() {
+        const profilePayload = gatherProfileFromForm();
+        setProfileStatus('Saving profile...');
+        try {
+            const response = await fetch(PROFILE_API_ENDPOINT, {
+                method: 'POST',
+                headers: {
+                    'Content-Type': 'application/json'
+                },
+                body: JSON.stringify({
+                    description: profilePayload.description,
+                    skills: profilePayload.skills,
+                    portfolio_items: profilePayload.portfolioItems
+                })
+            });
+            if (!response.ok) {
+                throw new Error(`Profile save failed: ${response.status} ${response.statusText}`);
+            }
+            const saved = await response.json();
+            currentProfileState = mapProfileResponse(saved);
+            persistProfileLocally(currentProfileState);
+            renderPortfolioItemsList();
+            setProfileStatus('Profile saved locally.', false);
+        } catch (error) {
+            console.error('Failed to save profile:', error);
+            setProfileStatus(`Failed to save profile: ${error.message}`, true);
+        }
+    }
+
+    async function loadProfileConfig() {
+        try {
+            const response = await fetch(PROFILE_API_ENDPOINT, { method: 'GET' });
+            if (response.ok) {
+                const payload = await response.json();
+                currentProfileState = mapProfileResponse(payload);
+                persistProfileLocally(currentProfileState);
+                return;
+            }
+            console.warn('Profile load returned status', response.status);
+        } catch (error) {
+            console.warn('Profile load error', error);
+        }
+        const stored = loadProfileFromStorage();
+        if (stored) {
+            currentProfileState = stored;
+        }
+    }
+
+    function mapProfileResponse(payload) {
+        if (!payload || typeof payload !== 'object') {
+            return { description: '', skills: '', portfolioItems: [] };
+        }
+        const items = Array.isArray(payload.portfolio_items)
+            ? payload.portfolio_items
+            : Array.isArray(payload.portfolioItems)
+                ? payload.portfolioItems
+                : [];
+        return {
+            description: payload.description || '',
+            skills: payload.skills || '',
+            portfolioItems: items.map(item => ({
+                title: item.title || '',
+                link: item.link || '',
+                description: item.description || ''
+            }))
+        };
+    }
+
+    function persistProfileLocally(profile) {
+        try {
+            localStorage.setItem(PROFILE_STORAGE_KEY, JSON.stringify(profile));
+        } catch (error) {
+            console.warn('Failed to persist profile locally', error);
+        }
+    }
+
+    function loadProfileFromStorage() {
+        try {
+            const stored = localStorage.getItem(PROFILE_STORAGE_KEY);
+            if (!stored) return null;
+            const parsed = JSON.parse(stored);
+            if (!parsed || typeof parsed !== 'object') return null;
+            return {
+                description: parsed.description || '',
+                skills: parsed.skills || '',
+                portfolioItems: Array.isArray(parsed.portfolioItems) ? parsed.portfolioItems : []
+            };
+        } catch (error) {
+            console.warn('Failed to read profile from storage', error);
+            return null;
+        }
+    }
     // Cache for analyzed jobs (memoization)
     const analyzedJobs = new Map(); // key: job title, value: { jobInfo, analysis, timestamp }
     
@@ -331,6 +575,93 @@
             background: #ccc;
             cursor: not-allowed;
         }
+
+        .upwork-buddy-config-actions {
+            display: flex;
+            gap: 12px;
+            margin-top: 16px;
+            flex-wrap: wrap;
+        }
+
+        .upwork-buddy-save-profile-btn {
+            background: #108ee9;
+            color: white;
+            border: none;
+            padding: 10px 18px;
+            border-radius: 8px;
+            cursor: pointer;
+            font-weight: 600;
+        }
+
+        .upwork-buddy-save-profile-btn:hover {
+            background: #0c6cb3;
+        }
+
+        .upwork-buddy-profile-status {
+            font-size: 13px;
+            margin-top: 12px;
+            min-height: 18px;
+        }
+
+        .upwork-buddy-portfolio-item {
+            margin-bottom: 12px;
+            padding: 14px;
+            border: 1px dashed #d1d1d1;
+            border-radius: 8px;
+            background: #fafafa;
+        }
+
+        .upwork-buddy-portfolio-item label {
+            font-size: 12px;
+            font-weight: 600;
+            display: block;
+            margin-bottom: 4px;
+            color: #444;
+        }
+
+        .upwork-buddy-portfolio-input {
+            width: 100%;
+            border: 1px solid #e0e0e0;
+            border-radius: 6px;
+            padding: 8px 10px;
+            margin-bottom: 10px;
+            font-size: 13px;
+            box-sizing: border-box;
+        }
+
+        .upwork-buddy-portfolio-description {
+            min-height: 60px;
+        }
+
+        .upwork-buddy-remove-portfolio-item {
+            background: transparent;
+            color: #c82333;
+            border: none;
+            padding: 6px 12px;
+            cursor: pointer;
+            font-weight: 600;
+        }
+
+        .upwork-buddy-add-portfolio-item-btn {
+            background: #108ee9;
+            color: white;
+            border: none;
+            padding: 6px 12px;
+            border-radius: 6px;
+            cursor: pointer;
+            font-size: 12px;
+        }
+
+        .upwork-buddy-add-portfolio-item-btn:hover {
+            background: #0c6cb3;
+        }
+
+        .upwork-buddy-portfolio-hint {
+            color: #666;
+            font-size: 13px;
+            margin: 0;
+            padding: 12px 0;
+        }
         
         .upwork-buddy-projects-list {
             list-style: none;
@@ -500,6 +831,13 @@
         console.log('🌐 Fetching fresh analysis for:', jobInfo.title);
         console.log('🔑 Cache key:', cacheKey.substring(0, 80) + '...');
         console.log('📊 Current cache size:', analyzedJobs.size);
+
+        const profileDescription = currentProfileState.description && currentProfileState.description.trim()
+            ? currentProfileState.description
+            : USER_PROFILE;
+        const profileSkills = currentProfileState.skills && currentProfileState.skills.trim()
+            ? currentProfileState.skills
+            : USER_SKILLS;
         
         const response = await fetch(`${API_BASE_URL}/api/analyze-job`, {
             method: 'POST',
@@ -511,8 +849,8 @@
                 job_description: jobInfo.description,
                 budget: jobInfo.budget,
                 skills: jobInfo.skills,
-                user_profile: USER_PROFILE,
-                user_skills: USER_SKILLS
+                user_profile: profileDescription,
+                user_skills: profileSkills
             })
         });
         
@@ -948,12 +1286,7 @@
     
     // Reset modal to initial state
     function resetModal() {
-        const modalBody = document.getElementById('upwork-buddy-modal-body');
-        modalBody.innerHTML = '<button class="upwork-buddy-analyze-btn">Analyze This Job</button>';
-        
-        // Re-attach the click handler
-        const analyzeBtn = modalBody.querySelector('.upwork-buddy-analyze-btn');
-        analyzeBtn.addEventListener('click', handleAnalyze);
+        renderConfigurationPanel();
     }
     
     // Handle the analyze button click
@@ -966,6 +1299,11 @@
             return;
         }
         
+        const profilePayload = gatherProfileFromForm();
+        currentProfileState = profilePayload;
+        persistProfileLocally(currentProfileState);
+        setProfileStatus('');
+
         const analyzeBtn = document.querySelector('.upwork-buddy-analyze-btn');
         analyzeBtn.disabled = true;
         analyzeBtn.textContent = 'Analyzing...';
@@ -1014,6 +1352,10 @@
     // Create and append modal
     const modal = createModal();
     document.body.insertBefore(modal, document.body.firstChild);
+    resetModal();
+    loadProfileConfig().then(() => {
+        resetModal();
+    });
     
     // Create and append trigger button
     const trigger = createTriggerButton();
