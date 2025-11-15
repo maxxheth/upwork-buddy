@@ -29,3 +29,24 @@ type Job struct {
 	UpdatedAt   time.Time  `gorm:"type:timestamp(3);not null"`
 	AppliedAt   *time.Time `gorm:"type:timestamp(3)"`
 }
+
+// Profile stores customizable freelancer metadata used during analysis
+type Profile struct {
+	ID             uint            `gorm:"primaryKey;autoIncrement"`
+	Description    string          `gorm:"type:text"`
+	Skills         string          `gorm:"type:text"`
+	PortfolioItems []PortfolioItem `gorm:"foreignKey:ProfileID"`
+	CreatedAt      time.Time       `gorm:"type:timestamp(3);default:CURRENT_TIMESTAMP;not null"`
+	UpdatedAt      time.Time       `gorm:"type:timestamp(3);not null"`
+}
+
+// PortfolioItem represents a single portfolio entry
+type PortfolioItem struct {
+	ID          uint      `gorm:"primaryKey;autoIncrement"`
+	ProfileID   uint      `gorm:"index"`
+	Title       string    `gorm:"type:text"`
+	Link        string    `gorm:"type:text"`
+	Description string    `gorm:"type:text"`
+	CreatedAt   time.Time `gorm:"type:timestamp(3);default:CURRENT_TIMESTAMP;not null"`
+	UpdatedAt   time.Time `gorm:"type:timestamp(3);not null"`
+}

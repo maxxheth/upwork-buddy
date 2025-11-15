@@ -17,6 +17,9 @@ func (s *Server) RegisterRoutes() http.Handler {
 	// AI Analysis endpoint
 	mux.HandleFunc("/api/analyze-job", s.analyzeJobHandler)
 
+	// Profile configuration endpoint for the bookmarklet UI
+	mux.HandleFunc("/api/profile", s.profileHandler)
+
 	// Wrap the mux with CORS middleware
 	return s.corsMiddleware(mux)
 }
