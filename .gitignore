@@ -27,8 +27,13 @@ tmp/
 
 # Project build
 main
+dist/
 *templ.go
+
+# Air build logs
+build-errors.log
 
 # OS X generated file
 .DS_Store
+
 
