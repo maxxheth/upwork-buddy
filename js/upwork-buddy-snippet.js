@@ -55,7 +55,6 @@
             <div id="upwork-buddy-profile-status" class="upwork-buddy-profile-status" aria-live="polite"></div>
             <div class="upwork-buddy-config-actions">
                 <button type="button" class="upwork-buddy-save-profile-btn">Save profile</button>
-                <button type="button" class="upwork-buddy-analyze-btn">Analyze This Job</button>
             </div>
         `;
         const addBtn = document.getElementById('upwork-buddy-add-portfolio-item');
@@ -69,11 +68,6 @@
         const saveBtn = modalBody.querySelector('.upwork-buddy-save-profile-btn');
         if (saveBtn) {
             saveBtn.addEventListener('click', handleSaveProfile);
-        }
-
-        const analyzeBtn = modalBody.querySelector('.upwork-buddy-analyze-btn');
-        if (analyzeBtn) {
-            analyzeBtn.addEventListener('click', handleAnalyze);
         }
 
         populateProfileFormFields();
@@ -311,6 +305,30 @@
         
         .upwork-buddy-view-projects-btn:hover {
             background: #0c6cb3;
+            box-shadow: 0 6px 16px rgba(0, 0, 0, 0.2);
+        }
+
+        .upwork-buddy-profile-btn {
+            position: fixed;
+            bottom: 20px;
+            right: 320px;
+            background: #f0ad4e;
+            color: white;
+            border: none;
+            padding: 12px 20px;
+            border-radius: 8px;
+            cursor: pointer;
+            font-weight: 600;
+            font-size: 14px;
+            box-shadow: 0 4px 12px rgba(0, 0, 0, 0.15);
+            z-index: 999999;
+            display: flex;
+            align-items: center;
+            gap: 8px;
+        }
+        
+        .upwork-buddy-profile-btn:hover {
+            background: #ec971f;
             box-shadow: 0 6px 16px rgba(0, 0, 0, 0.2);
         }
         
@@ -555,27 +573,6 @@
             font-size: 14px;
         }
         
-        .upwork-buddy-analyze-btn {
-            background: #14a800;
-            color: white;
-            border: none;
-            padding: 12px 24px;
-            border-radius: 8px;
-            cursor: pointer;
-            font-weight: 600;
-            font-size: 14px;
-            width: 100%;
-        }
-        
-        .upwork-buddy-analyze-btn:hover {
-            background: #0e7a00;
-        }
-        
-        .upwork-buddy-analyze-btn:disabled {
-            background: #ccc;
-            cursor: not-allowed;
-        }
-
         .upwork-buddy-config-actions {
             display: flex;
             gap: 12px;
@@ -1037,7 +1034,7 @@
         const body = document.createElement('div');
         body.className = 'upwork-buddy-modal-body';
         body.id = 'upwork-buddy-modal-body';
-        body.innerHTML = '<button class="upwork-buddy-analyze-btn">Analyze This Job</button>';
+    body.innerHTML = '<div class="upwork-buddy-loading" style="text-align:center;">Choose "Profile Settings" or hit the job-specific Analyze button to begin.</div>';
         
         modal.appendChild(header);
         modal.appendChild(body);
@@ -1105,22 +1102,21 @@
         
         button.addEventListener('click', () => {
             const overlay = document.getElementById('upwork-buddy-modal-overlay');
-            if (overlay) {
-                // Reset modal state before opening
-                resetModal();
-                
+            const modal = document.getElementById('upwork-buddy-modal');
+            if (overlay && modal) {
                 overlay.classList.add('active');
-                const modal = document.getElementById('upwork-buddy-modal');
-                // Reset position when opening
+                // Reset modal position when opening
                 modal.style.position = 'relative';
                 modal.style.left = '';
                 modal.style.top = '';
                 modal.style.transform = '';
                 modal.classList.remove('minimized');
-                
+
                 // Reset minimize button
                 const minimizeBtn = document.getElementById('upwork-buddy-minimize');
                 if (minimizeBtn) minimizeBtn.textContent = '−';
+
+                handleAnalyze();
             }
         });
         
@@ -1138,6 +1134,28 @@
             showProjectsList();
         });
         
+        return button;
+    }
+
+    function openProfileConfigModal() {
+        const overlay = document.getElementById('upwork-buddy-modal-overlay');
+        const modal = document.getElementById('upwork-buddy-modal');
+        if (!overlay || !modal) return;
+        renderConfigurationPanel();
+        overlay.classList.add('active');
+        modal.classList.remove('minimized');
+        const minimizeBtn = document.getElementById('upwork-buddy-minimize');
+        if (minimizeBtn) minimizeBtn.textContent = '−';
+    }
+
+    function createProfileButton() {
+        const button = document.createElement('button');
+        button.className = 'upwork-buddy-profile-btn';
+        button.id = 'upwork-buddy-profile-btn';
+        button.innerHTML = '<span>⚙️</span><span>Profile Settings</span>';
+        button.addEventListener('click', () => {
+            openProfileConfigModal();
+        });
         return button;
     }
     
@@ -1284,49 +1302,36 @@
         }
     }
     
-    // Reset modal to initial state
-    function resetModal() {
-        renderConfigurationPanel();
-    }
-    
     // Handle the analyze button click
     async function handleAnalyze() {
-        // Use the entire drawer as the context for extraction
+        const modalBody = document.getElementById('upwork-buddy-modal-body');
+        if (!modalBody) return;
+
         const drawer = document.querySelector('.job-details-content');
-        
         if (!drawer) {
-            alert('Could not find job details drawer');
+            modalBody.innerHTML = `
+                <div class="upwork-buddy-error">
+                    ❌ Could not find the open job details drawer. Open a job posting and try again.
+                </div>
+            `;
             return;
         }
-        
-        const profilePayload = gatherProfileFromForm();
-        currentProfileState = profilePayload;
-        persistProfileLocally(currentProfileState);
-        setProfileStatus('');
 
-        const analyzeBtn = document.querySelector('.upwork-buddy-analyze-btn');
-        analyzeBtn.disabled = true;
-        analyzeBtn.textContent = 'Analyzing...';
-        
-        const modalBody = document.getElementById('upwork-buddy-modal-body');
         modalBody.innerHTML = '<div class="upwork-buddy-loading">🤖 Analyzing job posting with AI...</div>';
-        
+
         try {
-            // Extract directly from drawer (it contains the currently open job)
             const jobInfo = extractJobInfo(drawer);
             console.log('📊 Extracting job info from current drawer:', jobInfo);
             console.log('📝 Title:', jobInfo.title);
             console.log('📄 Description length:', jobInfo.description.length);
             console.log('💰 Budget:', jobInfo.budget);
             console.log('🔧 Skills:', jobInfo.skills);
-            
-            // Always make fresh API call (useCache = false for stateless behavior)
+
             const analysis = await analyzeJob(jobInfo, false);
             console.log('✅ Got analysis response:', analysis);
             console.log('📋 Analysis keys:', Object.keys(analysis));
             console.log('📏 Analysis structure:', JSON.stringify(analysis, null, 2).substring(0, 500) + '...');
-            
-            // Don't show cached indicator for fresh analyses
+
             modalBody.innerHTML = renderAnalysis(analysis, false);
         } catch (error) {
             console.error('❌ Analysis error:', error);
@@ -1352,14 +1357,15 @@
     // Create and append modal
     const modal = createModal();
     document.body.insertBefore(modal, document.body.firstChild);
-    resetModal();
-    loadProfileConfig().then(() => {
-        resetModal();
-    });
+    loadProfileConfig();
     
     // Create and append trigger button
     const trigger = createTriggerButton();
     document.body.appendChild(trigger);
+    
+    // Create and append Profile Settings button
+    const profileBtn = createProfileButton();
+    document.body.appendChild(profileBtn);
     
     // Create and append View Projects button
     const viewProjectsBtn = createViewProjectsButton();

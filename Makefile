@@ -4,10 +4,19 @@
 all: build test
 
 build:
-	@echo "Building..."
+	@echo "Building Go backend..."
 	@go build -o ./dist/upwork-buddy ./cmd/api/main.go
 	@chmod +x ./dist/upwork-buddy
 	@echo "Build completed: ./dist/upwork-buddy"
+
+# Build the TypeScript bookmarklet
+build-js:
+	@echo "Building TypeScript bookmarklet..."
+	@cd js && npm install && npm run build
+	@echo "Bookmarklet build completed: js/dist/upwork-buddy-snippet.js"
+
+# Build both backend and bookmarklet
+build-all: build build-js
 
 # Run the application
 run:
