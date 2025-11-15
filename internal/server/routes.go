@@ -14,6 +14,9 @@ func (s *Server) RegisterRoutes() http.Handler {
 
 	mux.HandleFunc("/health", s.healthHandler)
 
+	// AI Analysis endpoint
+	mux.HandleFunc("/api/analyze-job", s.analyzeJobHandler)
+
 	// Wrap the mux with CORS middleware
 	return s.corsMiddleware(mux)
 }
