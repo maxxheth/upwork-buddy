@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"log"
 	"os"
 	"regexp"
 	"strings"
@@ -69,6 +70,8 @@ func (s *Service) Close() error {
 // AnalyzeJob analyzes a job posting and generates a comprehensive response
 func (s *Service) AnalyzeJob(ctx context.Context, req JobAnalysisRequest) (*JobAnalysisResponse, error) {
 	prompt := s.buildAnalysisPrompt(req)
+	log.Printf("Gemini analyze job request: title=%q budget=%q skills=%q", req.JobTitle, req.Budget, req.Skills)
+	log.Printf("Prompt length: %d characters", len(prompt))
 
 	resp, err := s.client.Models.GenerateContent(ctx, s.model, []*genai.Content{
 		{
@@ -79,11 +82,14 @@ func (s *Service) AnalyzeJob(ctx context.Context, req JobAnalysisRequest) (*JobA
 		},
 	}, nil)
 	if err != nil {
+		log.Printf("GenerateContent failed: %v", err)
 		return nil, fmt.Errorf("failed to generate content: %w", err)
 	}
 
 	// Parse the response
+	log.Printf("GenerateContent succeeded: %d candidates", len(resp.Candidates))
 	result := s.parseResponse(resp)
+	log.Printf("Parsed analysis result: proposal length=%d spec_sheet length=%d", len(result.Proposal), len(result.SpecSheetPrompt))
 	return result, nil
 }
 
@@ -171,7 +177,9 @@ Format your response as JSON with these exact keys:
 func (s *Service) parseResponse(resp *genai.GenerateContentResponse) *JobAnalysisResponse {
 	// Extract text from response
 	var fullText string
+	var candidateCount int
 	for _, candidate := range resp.Candidates {
+		candidateCount++
 		if candidate.Content != nil {
 			for _, part := range candidate.Content.Parts {
 				if part.Text != "" {
@@ -180,31 +188,43 @@ func (s *Service) parseResponse(resp *genai.GenerateContentResponse) *JobAnalysi
 			}
 		}
 	}
+	log.Printf("parseResponse: collected text length=%d from %d candidates", len(fullText), candidateCount)
 
 	// Strip markdown code block if present
 	fullText = strings.TrimSpace(fullText)
-	
+
 	// Remove ```json and ``` wrappers
 	jsonBlockRegex := regexp.MustCompile("(?s)^```(?:json)?\\s*\\n?(.*?)\\n?```$")
 	if matches := jsonBlockRegex.FindStringSubmatch(fullText); len(matches) > 1 {
 		fullText = strings.TrimSpace(matches[1])
+		preview := fullText
+		if len(preview) > 200 {
+			preview = preview[:200]
+		}
+		log.Printf("parseResponse: stripped markdown, snippet=%q", preview)
 	}
 
 	// Try to parse as JSON directly
 	var result JobAnalysisResponse
 	if err := json.Unmarshal([]byte(fullText), &result); err == nil {
+		log.Printf("parseResponse: json.Unmarshal succeeded")
 		// If the proposal field contains JSON-like content, it might be double-encoded
 		// Check if proposal starts with { and try to re-parse
 		if strings.HasPrefix(strings.TrimSpace(result.Proposal), "{") {
 			var innerResult JobAnalysisResponse
 			if err2 := json.Unmarshal([]byte(result.Proposal), &innerResult); err2 == nil {
+				log.Printf("parseResponse: proposal contained nested JSON, reused inner result")
 				return &innerResult
 			}
 		}
 		return &result
 	}
-	
-	// If that fails, return the raw text
+
+	preview := fullText
+	if len(preview) > 200 {
+		preview = preview[:200]
+	}
+	log.Printf("parseResponse: json.Unmarshal failed, returning raw text snippet=%q", preview)
 	return &JobAnalysisResponse{
 		Proposal:           fullText,
 		SpecSheetPrompt:    "Failed to parse response. Please check the API server logs.",
