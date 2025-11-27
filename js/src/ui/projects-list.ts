@@ -14,15 +14,25 @@ export class ProjectsListUI {
     (window as any).upworkBuddyShowProject = this.showProject.bind(this);
     (window as any).upworkBuddyBackToList = this.render.bind(this);
     (window as any).upworkBuddyClearCache = this.clearCache.bind(this);
+    this.log('Initialized ProjectsListUI and registered window handlers');
+  }
+
+  private log(message: string, payload?: unknown): void {
+    if (payload) {
+      console.log('[UpworkBuddy][ProjectsListUI]', message, payload);
+      return;
+    }
+    console.log('[UpworkBuddy][ProjectsListUI]', message);
   }
 
   /**
    * Render the projects list
    */
   render(): void {
-    let html = '<h3 style="margin-top: 0; color: #14a800;">📋 Analyzed Projects</h3>';
-
     const projects = this.stateManager.getAllCachedJobs();
+    this.log('Rendering projects list', { total: projects.length, keys: projects.map(p => p.cacheKey) });
+
+    let html = '<h3 style="margin-top: 0; color: #14a800;">📋 Analyzed Projects</h3>';
 
     if (projects.length === 0) {
       html += '<p style="text-align: center; color: #999; padding: 40px;">No projects analyzed yet. Click "Analyze Job" on a job posting to get started.</p>';
@@ -60,11 +70,11 @@ export class ProjectsListUI {
    * Show a specific project's analysis
    */
   private showProject(cacheKey: string): void {
-    console.log('🔍 Looking up project with cache key:', cacheKey.substring(0, 50) + '...');
+    this.log('Request to show project', { cacheKey });
     const data = this.stateManager.getCachedJobByKey(cacheKey);
 
     if (!data) {
-      console.error('❌ Project not found in cache');
+      console.error('[UpworkBuddy][ProjectsListUI] ❌ Project not found in cache');
       return;
     }
 
@@ -84,7 +94,9 @@ export class ProjectsListUI {
    */
   private async clearCache(): Promise<void> {
     if (confirm('Are you sure you want to clear all cached project analyses?')) {
+      this.log('User confirmed cache clear');
       await this.stateManager.clearCache();
+      this.log('Cache cleared; re-rendering list');
       this.render();
       this.updateBadge();
     }
@@ -98,6 +110,7 @@ export class ProjectsListUI {
     if (btn) {
       const badge = btn.querySelector('.badge');
       const size = this.stateManager.getCacheSize();
+      this.log('Updating badge', { size });
       if (badge) {
         badge.textContent = size.toString();
       }
