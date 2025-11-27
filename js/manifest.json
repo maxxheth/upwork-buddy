@@ -1,0 +1,37 @@
+{
+  "manifest_version": 3,
+  "name": "Upwork Buddy",
+  "description": "Analyze Upwork job posts with AI-generated proposals and project breakdowns directly inside the job drawer.",
+  "version": "1.0.0",
+  "icons": {
+    "32": "icons/icon-32.png",
+    "48": "icons/icon-48.png",
+    "128": "icons/icon-128.png"
+  },
+  "action": {
+    "default_title": "Upwork Buddy",
+    "default_icon": {
+      "32": "icons/icon-32.png",
+      "48": "icons/icon-48.png",
+      "128": "icons/icon-128.png"
+    }
+  },
+  "permissions": ["storage"],
+  "host_permissions": [
+    "https://www.upwork.com/*",
+    "http://localhost:9090/*"
+  ],
+  "content_scripts": [
+    {
+      "matches": ["https://www.upwork.com/*"],
+      "js": ["content.js"],
+      "run_at": "document_idle"
+    }
+  ],
+  "browser_specific_settings": {
+    "gecko": {
+      "id": "upwork-buddy@example.com",
+      "strict_min_version": "109.0"
+    }
+  }
+}

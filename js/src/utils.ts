@@ -33,12 +33,17 @@ export function renderValue(value: unknown, depth = 0): string {
     // Check if it's a JSON string
     try {
       const parsed = JSON.parse(value);
-      return renderValue(parsed, depth);
+      // Only treat as JSON if it's an object or array, not just a string
+      if (typeof parsed === 'object' && parsed !== null) {
+        return renderValue(parsed, depth);
+      }
     } catch (e) {
-      // Escape HTML and preserve line breaks
-      const escaped = escapeHtml(value);
-      return `<p>${escaped.replace(/\n/g, '<br>')}</p>`;
+      // Not valid JSON, continue to render as string
     }
+    
+    // Escape HTML and preserve line breaks
+    const escaped = escapeHtml(value);
+    return `<p>${escaped.replace(/\n/g, '<br>')}</p>`;
   }
 
   if (Array.isArray(value)) {
@@ -74,7 +79,16 @@ export function renderValue(value: unknown, depth = 0): string {
  * Render analysis results
  */
 export function renderAnalysis(analysis: AnalysisResponse, showCachedIndicator = false): string {
-  console.log('🎨 Rendering analysis with keys:', Object.keys(analysis));
+  console.log('🎨 renderAnalysis: Starting render with keys:', Object.keys(analysis));
+  console.log('🎨 renderAnalysis: Field lengths:', {
+    proposal: analysis.proposal?.length || 0,
+    spec_sheet_prompt: analysis.spec_sheet_prompt?.length || 0,
+    time_estimate: analysis.time_estimate?.length || 0,
+    workload_division: analysis.workload_division?.length || 0,
+    questions_for_client: analysis.questions_for_client?.length || 0,
+    tips_and_advice: analysis.tips_and_advice?.length || 0,
+    tone_analysis: analysis.tone_analysis?.length || 0
+  });
 
   let html = '';
 

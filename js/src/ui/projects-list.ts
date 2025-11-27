@@ -82,9 +82,9 @@ export class ProjectsListUI {
   /**
    * Clear cache
    */
-  private clearCache(): void {
+  private async clearCache(): Promise<void> {
     if (confirm('Are you sure you want to clear all cached project analyses?')) {
-      this.stateManager.clearCache();
+      await this.stateManager.clearCache();
       this.render();
       this.updateBadge();
     }
@@ -104,7 +104,9 @@ export class ProjectsListUI {
 
       // Show button if we have analyzed jobs
       if (size > 0) {
-        (btn as HTMLElement).style.display = 'flex';
+        btn.classList.add('visible');
+      } else {
+        btn.classList.remove('visible');
       }
     }
   }

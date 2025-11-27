@@ -46,7 +46,6 @@ export class Modal {
         <span>AI Proposal Assistant</span>
       </div>
       <div class="upwork-buddy-modal-controls">
-        <button class="upwork-buddy-modal-btn" id="upwork-buddy-minimize" title="Minimize">−</button>
         <button class="upwork-buddy-modal-btn" id="upwork-buddy-close" title="Close">×</button>
       </div>
     `;
@@ -62,16 +61,20 @@ export class Modal {
   }
 
   private setupEventListeners(): void {
-    document.getElementById('upwork-buddy-close')?.addEventListener('click', () => {
-      this.close();
-    });
+    // Close button handler
+    const closeBtn = document.getElementById('upwork-buddy-close');
+    if (closeBtn) {
+      closeBtn.addEventListener('click', (e) => {
+        e.stopPropagation();
+        console.log('🚪 Modal close button clicked');
+        this.close();
+      });
+    }
 
-    document.getElementById('upwork-buddy-minimize')?.addEventListener('click', () => {
-      this.toggleMinimize();
-    });
-
+    // Click outside to close
     this.overlay.addEventListener('click', (e) => {
       if (e.target === this.overlay) {
+        console.log('🚪 Clicked outside modal, closing');
         this.close();
       }
     });
@@ -106,23 +109,14 @@ export class Modal {
   }
 
   open(): void {
+    console.log('📂 Opening modal');
     this.overlay.classList.add('active');
     this.resetPosition();
-    this.modal.classList.remove('minimized');
-    const minimizeBtn = document.getElementById('upwork-buddy-minimize');
-    if (minimizeBtn) minimizeBtn.textContent = '−';
   }
 
   close(): void {
+    console.log('🚪 Closing modal');
     this.overlay.classList.remove('active');
-  }
-
-  toggleMinimize(): void {
-    this.modal.classList.toggle('minimized');
-    const btn = document.getElementById('upwork-buddy-minimize');
-    if (btn) {
-      btn.textContent = this.modal.classList.contains('minimized') ? '+' : '−';
-    }
   }
 
   resetPosition(): void {

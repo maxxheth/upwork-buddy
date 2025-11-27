@@ -15,6 +15,7 @@ import (
 
 // analyzeJobHandler handles POST /api/analyze-job requests
 func (s *Server) analyzeJobHandler(w http.ResponseWriter, r *http.Request) {
+	log.Printf("=== ANALYZE JOB REQUEST START ===")
 	if r.Method != http.MethodPost {
 		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
 		return
@@ -22,14 +23,18 @@ func (s *Server) analyzeJobHandler(w http.ResponseWriter, r *http.Request) {
 
 	var req gemini.JobAnalysisRequest
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		log.Printf("❌ Invalid request body: %v", err)
 		http.Error(w, "Invalid request body", http.StatusBadRequest)
 		return
 	}
 
+	log.Printf("📥 Received request: title=%q, budget=%q, skills=%q, profile_length=%d, user_skills_length=%d",
+		req.JobTitle, req.Budget, req.Skills, len(req.UserProfile), len(req.UserSkills))
+
 	// Create Gemini service
 	geminiService, err := gemini.New()
 	if err != nil {
-		log.Printf("Failed to create Gemini service: %v", err)
+		log.Printf("❌ Failed to create Gemini service: %v", err)
 		http.Error(w, "Service unavailable", http.StatusServiceUnavailable)
 		return
 	}
@@ -38,16 +43,23 @@ func (s *Server) analyzeJobHandler(w http.ResponseWriter, r *http.Request) {
 	// Analyze the job
 	result, err := geminiService.AnalyzeJob(r.Context(), req)
 	if err != nil {
-		log.Printf("Failed to analyze job: %v", err)
+		log.Printf("❌ Failed to analyze job: %v", err)
 		http.Error(w, "Failed to analyze job", http.StatusInternalServerError)
 		return
 	}
 
+	log.Printf("✅ Analysis complete: proposal_length=%d, spec_sheet_length=%d, questions=%d, tips=%d",
+		len(result.Proposal), len(result.SpecSheetPrompt),
+		len(result.QuestionsForClient), len(result.TipsAndAdvice))
+
 	// Return the response
 	w.Header().Set("Content-Type", "application/json")
 	if err := json.NewEncoder(w).Encode(result); err != nil {
-		log.Printf("Failed to encode response: %v", err)
+		log.Printf("❌ Failed to encode response: %v", err)
+	} else {
+		log.Printf("📤 Response sent successfully")
 	}
+	log.Printf("=== ANALYZE JOB REQUEST END ===")
 }
 
 type profileRequest struct {

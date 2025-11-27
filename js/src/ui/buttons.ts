@@ -3,6 +3,7 @@
  */
 
 export class ButtonManager {
+  private container: HTMLDivElement;
   private analyzeButton: HTMLButtonElement;
   private profileButton: HTMLButtonElement;
   private projectsButton: HTMLButtonElement;
@@ -12,13 +13,27 @@ export class ButtonManager {
     private onProfileConfig: () => void,
     private onViewProjects: () => void
   ) {
+    this.container = this.createContainer();
     this.analyzeButton = this.createAnalyzeButton();
     this.profileButton = this.createProfileButton();
     this.projectsButton = this.createProjectsButton();
 
-    document.body.appendChild(this.analyzeButton);
-    document.body.appendChild(this.profileButton);
-    document.body.appendChild(this.projectsButton);
+    // Add buttons to container
+    this.container.appendChild(this.profileButton);
+    this.container.appendChild(this.projectsButton);
+    this.container.appendChild(this.analyzeButton);
+
+    document.body.appendChild(this.container);
+  }
+
+  /**
+   * Create the button container
+   */
+  private createContainer(): HTMLDivElement {
+    const container = document.createElement('div');
+    container.className = 'upwork-buddy-button-container';
+    container.id = 'upwork-buddy-button-container';
+    return container;
   }
 
   /**
@@ -29,7 +44,6 @@ export class ButtonManager {
     button.className = 'upwork-buddy-trigger';
     button.id = 'upwork-buddy-trigger';
     button.innerHTML = '<span>🤖</span><span>Analyze Job</span>';
-    button.style.display = 'none'; // Hidden by default
 
     button.addEventListener('click', () => {
       this.onAnalyze();
@@ -71,10 +85,24 @@ export class ButtonManager {
   }
 
   /**
-   * Show the analyze button
+   * Show the button container (when job drawer opens)
+   */
+  showContainer(): void {
+    this.container.classList.add('visible');
+  }
+
+  /**
+   * Hide the button container (when job drawer closes)
+   */
+  hideContainer(): void {
+    this.container.classList.remove('visible');
+  }
+
+  /**
+   * Show the analyze button (deprecated - container manages visibility now)
    */
   showAnalyzeButton(): void {
-    this.analyzeButton.style.display = 'flex';
+    this.showContainer();
   }
 
   /**
