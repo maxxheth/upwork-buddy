@@ -30,13 +30,13 @@ type JobAnalysisRequest struct {
 
 // JobAnalysisResponse contains the AI-generated analysis
 type JobAnalysisResponse struct {
-	Proposal           string   `json:"proposal"`
-	SpecSheetPrompt    string   `json:"spec_sheet_prompt"`
-	TimeEstimate       string   `json:"time_estimate"`
-	WorkloadDivision   string   `json:"workload_division"`
-	QuestionsForClient []string `json:"questions_for_client"`
-	TipsAndAdvice      []string `json:"tips_and_advice"`
-	ToneAnalysis       string   `json:"tone_analysis"`
+	Proposal           string          `json:"proposal"`
+	SpecSheetPrompt    string          `json:"spec_sheet_prompt"`
+	TimeEstimate       json.RawMessage `json:"time_estimate"`     // Can be string or object
+	WorkloadDivision   json.RawMessage `json:"workload_division"` // Can be string or object
+	QuestionsForClient []string        `json:"questions_for_client"`
+	TipsAndAdvice      []string        `json:"tips_and_advice"`
+	ToneAnalysis       string          `json:"tone_analysis"`
 }
 
 // New creates a new Gemini service instance
@@ -190,48 +190,84 @@ func (s *Service) parseResponse(resp *genai.GenerateContentResponse) *JobAnalysi
 	}
 	log.Printf("parseResponse: collected text length=%d from %d candidates", len(fullText), candidateCount)
 
+	// Log the raw response for debugging
+	if len(fullText) > 0 {
+		preview := fullText
+		if len(preview) > 500 {
+			preview = preview[:500] + "..."
+		}
+		log.Printf("parseResponse: RAW RESPONSE START\n%s\nparseResponse: RAW RESPONSE END", preview)
+	}
+
 	// Strip markdown code block if present
 	fullText = strings.TrimSpace(fullText)
+	originalLength := len(fullText)
 
 	// Remove ```json and ``` wrappers
 	jsonBlockRegex := regexp.MustCompile("(?s)^```(?:json)?\\s*\\n?(.*?)\\n?```$")
 	if matches := jsonBlockRegex.FindStringSubmatch(fullText); len(matches) > 1 {
 		fullText = strings.TrimSpace(matches[1])
+		log.Printf("parseResponse: stripped markdown wrapper (before=%d, after=%d)", originalLength, len(fullText))
 		preview := fullText
-		if len(preview) > 200 {
-			preview = preview[:200]
+		if len(preview) > 300 {
+			preview = preview[:300] + "..."
 		}
-		log.Printf("parseResponse: stripped markdown, snippet=%q", preview)
+		log.Printf("parseResponse: STRIPPED JSON START\n%s\nparseResponse: STRIPPED JSON END", preview)
 	}
 
 	// Try to parse as JSON directly
 	var result JobAnalysisResponse
 	if err := json.Unmarshal([]byte(fullText), &result); err == nil {
-		log.Printf("parseResponse: json.Unmarshal succeeded")
+		log.Printf("parseResponse: ✅ json.Unmarshal succeeded")
+		log.Printf("parseResponse: proposal length=%d, spec_sheet length=%d, questions=%d, tips=%d",
+			len(result.Proposal), len(result.SpecSheetPrompt),
+			len(result.QuestionsForClient), len(result.TipsAndAdvice))
+
 		// If the proposal field contains JSON-like content, it might be double-encoded
 		// Check if proposal starts with { and try to re-parse
 		if strings.HasPrefix(strings.TrimSpace(result.Proposal), "{") {
+			log.Printf("parseResponse: proposal looks like nested JSON, attempting to re-parse...")
 			var innerResult JobAnalysisResponse
 			if err2 := json.Unmarshal([]byte(result.Proposal), &innerResult); err2 == nil {
-				log.Printf("parseResponse: proposal contained nested JSON, reused inner result")
+				log.Printf("parseResponse: ✅ successfully parsed nested JSON from proposal field")
 				return &innerResult
 			}
+			log.Printf("parseResponse: ⚠️ nested JSON parse failed, using outer result")
 		}
 		return &result
-	}
+	} else {
+		log.Printf("parseResponse: ❌ json.Unmarshal FAILED: %v", err)
+		log.Printf("parseResponse: JSON error details - Type: %T, Message: %s", err, err.Error())
 
-	preview := fullText
-	if len(preview) > 200 {
-		preview = preview[:200]
-	}
-	log.Printf("parseResponse: json.Unmarshal failed, returning raw text snippet=%q", preview)
-	return &JobAnalysisResponse{
-		Proposal:           fullText,
-		SpecSheetPrompt:    "Failed to parse response. Please check the API server logs.",
-		TimeEstimate:       "",
-		WorkloadDivision:   "",
-		QuestionsForClient: []string{},
-		TipsAndAdvice:      []string{},
-		ToneAnalysis:       "",
+		// Try to identify the specific JSON error location
+		if syntaxErr, ok := err.(*json.SyntaxError); ok {
+			log.Printf("parseResponse: JSON syntax error at byte offset %d", syntaxErr.Offset)
+			// Show context around the error
+			start := int(syntaxErr.Offset) - 100
+			if start < 0 {
+				start = 0
+			}
+			end := int(syntaxErr.Offset) + 100
+			if end > len(fullText) {
+				end = len(fullText)
+			}
+			log.Printf("parseResponse: ERROR CONTEXT: ...%s...", fullText[start:end])
+		}
+
+		preview := fullText
+		if len(preview) > 500 {
+			preview = preview[:500] + "..."
+		}
+		log.Printf("parseResponse: FAILED JSON CONTENT START\n%s\nparseResponse: FAILED JSON CONTENT END", preview)
+
+		return &JobAnalysisResponse{
+			Proposal:           fullText,
+			SpecSheetPrompt:    "Failed to parse response. Please check the API server logs.",
+			TimeEstimate:       json.RawMessage(`""`),
+			WorkloadDivision:   json.RawMessage(`""`),
+			QuestionsForClient: []string{},
+			TipsAndAdvice:      []string{},
+			ToneAnalysis:       "",
+		}
 	}
 }

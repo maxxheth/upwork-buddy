@@ -3,10 +3,26 @@
  */
 
 export const STYLES = `
-.upwork-buddy-trigger {
+.upwork-buddy-button-container {
   position: fixed;
-  bottom: 20px;
-  right: 20px;
+  bottom: 24px;
+  right: 24px;
+  z-index: 999999;
+  display: none;
+  flex-direction: row;
+  gap: 12px;
+  padding: 16px;
+  background: white;
+  border-radius: 12px;
+  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.15);
+  border: 1px solid #e0e0e0;
+}
+
+.upwork-buddy-button-container.visible {
+  display: flex;
+}
+
+.upwork-buddy-trigger {
   background: #14a800;
   color: white;
   border: none;
@@ -15,22 +31,20 @@ export const STYLES = `
   cursor: pointer;
   font-weight: 600;
   font-size: 14px;
-  box-shadow: 0 4px 12px rgba(0, 0, 0, 0.15);
-  z-index: 999999;
+  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.1);
   display: flex;
   align-items: center;
   gap: 8px;
+  transition: all 0.2s ease;
 }
 
 .upwork-buddy-trigger:hover {
   background: #0e7a00;
-  box-shadow: 0 6px 16px rgba(0, 0, 0, 0.2);
+  box-shadow: 0 4px 12px rgba(0, 0, 0, 0.15);
+  transform: translateY(-1px);
 }
 
 .upwork-buddy-view-projects-btn {
-  position: fixed;
-  bottom: 20px;
-  right: 160px;
   background: #108ee9;
   color: white;
   border: none;
@@ -39,22 +53,24 @@ export const STYLES = `
   cursor: pointer;
   font-weight: 600;
   font-size: 14px;
-  box-shadow: 0 4px 12px rgba(0, 0, 0, 0.15);
-  z-index: 999999;
+  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.1);
   display: none;
   align-items: center;
   gap: 8px;
+  transition: all 0.2s ease;
+}
+
+.upwork-buddy-view-projects-btn.visible {
+  display: flex;
 }
 
 .upwork-buddy-view-projects-btn:hover {
   background: #0c6cb3;
-  box-shadow: 0 6px 16px rgba(0, 0, 0, 0.2);
+  box-shadow: 0 4px 12px rgba(0, 0, 0, 0.15);
+  transform: translateY(-1px);
 }
 
 .upwork-buddy-profile-btn {
-  position: fixed;
-  bottom: 20px;
-  right: 320px;
   background: #f0ad4e;
   color: white;
   border: none;
@@ -63,16 +79,17 @@ export const STYLES = `
   cursor: pointer;
   font-weight: 600;
   font-size: 14px;
-  box-shadow: 0 4px 12px rgba(0, 0, 0, 0.15);
-  z-index: 999999;
+  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.1);
   display: flex;
   align-items: center;
   gap: 8px;
+  transition: all 0.2s ease;
 }
 
 .upwork-buddy-profile-btn:hover {
   background: #ec971f;
-  box-shadow: 0 6px 16px rgba(0, 0, 0, 0.2);
+  box-shadow: 0 4px 12px rgba(0, 0, 0, 0.15);
+  transform: translateY(-1px);
 }
 
 .upwork-buddy-view-projects-btn .badge {
@@ -109,10 +126,6 @@ export const STYLES = `
   display: flex;
   flex-direction: column;
   position: relative;
-}
-
-.upwork-buddy-modal.minimized {
-  max-height: auto;
 }
 
 .upwork-buddy-modal-header {
@@ -162,10 +175,6 @@ export const STYLES = `
   padding: 20px;
   overflow-y: auto;
   flex: 1;
-}
-
-.upwork-buddy-modal.minimized .upwork-buddy-modal-body {
-  display: none;
 }
 
 .upwork-buddy-section {

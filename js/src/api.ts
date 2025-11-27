@@ -52,6 +52,15 @@ export class ApiClient {
    * Analyze a job posting
    */
   async analyzeJob(jobInfo: JobInfo, userProfile: string, userSkills: string): Promise<AnalysisResponse> {
+    console.log('🚀 API: Sending analyze request', {
+      title: jobInfo.title,
+      descriptionLength: jobInfo.description.length,
+      budget: jobInfo.budget,
+      skills: jobInfo.skills,
+      profileLength: userProfile.length,
+      userSkillsLength: userSkills.length
+    });
+
     const response = await fetch(`${CONFIG.apiBaseUrl}/api/analyze-job`, {
       method: 'POST',
       headers: {
@@ -67,11 +76,25 @@ export class ApiClient {
       })
     });
 
+    console.log('📡 API: Response status', response.status, response.statusText);
+
     if (!response.ok) {
+      console.error('❌ API: Request failed', response.status, response.statusText);
       throw new Error(`API error: ${response.status} ${response.statusText}`);
     }
 
-    return await response.json();
+    const data: AnalysisResponse = await response.json();
+    console.log('✅ API: Received response', {
+      proposalLength: data.proposal?.length || 0,
+      specSheetLength: data.spec_sheet_prompt?.length || 0,
+      questionsCount: data.questions_for_client?.length || 0,
+      tipsCount: data.tips_and_advice?.length || 0,
+      hasTimeEstimate: !!data.time_estimate,
+      hasWorkloadDivision: !!data.workload_division,
+      hasToneAnalysis: !!data.tone_analysis
+    });
+
+    return data;
   }
 
   /**

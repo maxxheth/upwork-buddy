@@ -5,11 +5,13 @@
 import type { ProfileState, AnalysisCache, AnalysisResponse, JobInfo } from './types';
 import { CONFIG } from './types';
 import { ApiClient } from './api';
+import { StorageAdapter } from './storage';
 
 export class StateManager {
   private currentProfile: ProfileState;
   private analyzedJobs: Map<string, AnalysisCache>;
   private apiClient: ApiClient;
+  private storage: StorageAdapter;
 
   constructor() {
     this.currentProfile = {
@@ -19,7 +21,19 @@ export class StateManager {
     };
     this.analyzedJobs = new Map();
     this.apiClient = new ApiClient();
-    this.loadCacheFromStorage();
+    this.storage = new StorageAdapter();
+  }
+
+  /**
+   * Hydrate local state from extension/bookmarklet storage.
+   */
+  async initializeStorage(): Promise<void> {
+    await this.loadCacheFromStorage();
+
+    const storedProfile = await this.storage.getProfile();
+    if (storedProfile) {
+      this.currentProfile = storedProfile;
+    }
   }
 
   /**
@@ -43,11 +57,11 @@ export class StateManager {
     const apiProfile = await this.apiClient.loadProfile();
     if (apiProfile) {
       this.currentProfile = apiProfile;
-      this.persistProfileLocally(apiProfile);
+      await this.persistProfile(apiProfile);
       return;
     }
 
-    const storedProfile = this.loadProfileFromStorage();
+    const storedProfile = await this.storage.getProfile();
     if (storedProfile) {
       this.currentProfile = storedProfile;
     }
@@ -59,40 +73,15 @@ export class StateManager {
   async saveProfile(profile: ProfileState): Promise<ProfileState> {
     const saved = await this.apiClient.saveProfile(profile);
     this.currentProfile = saved;
-    this.persistProfileLocally(saved);
+    await this.persistProfile(saved);
     return saved;
   }
 
-  /**
-   * Persist profile to localStorage
-   */
-  private persistProfileLocally(profile: ProfileState): void {
+  private async persistProfile(profile: ProfileState): Promise<void> {
     try {
-      localStorage.setItem(CONFIG.profileStorageKey, JSON.stringify(profile));
+      await this.storage.saveProfile(profile);
     } catch (error) {
-      console.warn('Failed to persist profile locally', error);
-    }
-  }
-
-  /**
-   * Load profile from localStorage
-   */
-  private loadProfileFromStorage(): ProfileState | null {
-    try {
-      const stored = localStorage.getItem(CONFIG.profileStorageKey);
-      if (!stored) return null;
-
-      const parsed = JSON.parse(stored);
-      if (!parsed || typeof parsed !== 'object') return null;
-
-      return {
-        description: parsed.description || '',
-        skills: parsed.skills || '',
-        portfolioItems: Array.isArray(parsed.portfolioItems) ? parsed.portfolioItems : []
-      };
-    } catch (error) {
-      console.warn('Failed to read profile from storage', error);
-      return null;
+      console.warn('Failed to persist profile', error);
     }
   }
 
@@ -123,7 +112,7 @@ export class StateManager {
   /**
    * Cache analysis result
    */
-  cacheAnalysis(jobInfo: JobInfo, analysis: AnalysisResponse): void {
+  async cacheAnalysis(jobInfo: JobInfo, analysis: AnalysisResponse): Promise<void> {
     const cacheKey = this.generateCacheKey(jobInfo);
     this.analyzedJobs.set(cacheKey, {
       jobInfo,
@@ -133,7 +122,7 @@ export class StateManager {
     });
 
     console.log('✅ Cached analysis. New cache size:', this.analyzedJobs.size);
-    this.persistCacheLocally();
+    await this.persistCache();
   }
 
   /**
@@ -154,9 +143,9 @@ export class StateManager {
   /**
    * Clear all cached analyses
    */
-  clearCache(): void {
+  async clearCache(): Promise<void> {
     this.analyzedJobs.clear();
-    this.persistCacheLocally();
+    await this.persistCache();
   }
 
   /**
@@ -169,24 +158,21 @@ export class StateManager {
   /**
    * Persist cache to localStorage
    */
-  private persistCacheLocally(): void {
+  private async persistCache(): Promise<void> {
     try {
       const cacheArray = Array.from(this.analyzedJobs.entries());
-      localStorage.setItem('upworkBuddyCachedJobs', JSON.stringify(cacheArray));
+      await this.storage.saveCache(cacheArray);
     } catch (error) {
-      console.warn('Failed to persist cache locally', error);
+      console.warn('Failed to persist cache', error);
     }
   }
 
   /**
-   * Load cache from localStorage
+   * Load cache from persistent storage
    */
-  private loadCacheFromStorage(): void {
+  private async loadCacheFromStorage(): Promise<void> {
     try {
-      const stored = localStorage.getItem('upworkBuddyCachedJobs');
-      if (!stored) return;
-
-      const cacheArray = JSON.parse(stored);
+      const cacheArray = await this.storage.getCache();
       if (Array.isArray(cacheArray)) {
         this.analyzedJobs = new Map(cacheArray);
         console.log('✅ Loaded', this.analyzedJobs.size, 'cached analyses from storage');

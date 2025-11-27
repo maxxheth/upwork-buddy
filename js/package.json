@@ -2,11 +2,11 @@
   "name": "upwork-buddy-bookmarklet",
   "version": "1.0.0",
   "description": "TypeScript-based Upwork job analysis bookmarklet",
-  "main": "dist/upwork-buddy-snippet.js",
+  "main": "dist/content.js",
   "scripts": {
-    "build": "esbuild src/main.ts --bundle --minify --outfile=dist/upwork-buddy-snippet.js --format=iife --target=es2020",
-    "build:dev": "esbuild src/main.ts --bundle --outfile=dist/upwork-buddy-snippet.js --format=iife --target=es2020 --sourcemap",
-    "watch": "esbuild src/main.ts --bundle --outfile=dist/upwork-buddy-snippet.js --format=iife --target=es2020 --sourcemap --watch",
+    "build": "node ./scripts/build-extension.mjs",
+    "build:dev": "node ./scripts/build-extension.mjs --dev",
+    "watch": "node ./scripts/build-extension.mjs --dev --watch",
     "type-check": "tsc --noEmit"
   },
   "keywords": ["upwork", "bookmarklet", "typescript"],

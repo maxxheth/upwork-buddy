@@ -46,6 +46,7 @@ class UpworkBuddy {
   }
 
   private async initialize(): Promise<void> {
+    await this.stateManager.initializeStorage();
     // Load profile configuration
     await this.stateManager.loadProfile();
 
@@ -63,7 +64,7 @@ class UpworkBuddy {
   }
 
   /**
-   * Watch for job details drawer to appear
+   * Watch for job details drawer to appear and disappear
    */
   private watchForDrawer(): void {
     console.log('👀 Watching for job details drawer...');
@@ -73,8 +74,12 @@ class UpworkBuddy {
 
       if (drawer && !drawer.hasAttribute('data-upwork-buddy')) {
         console.log('✅ Job details drawer found!');
-        this.buttonManager.showAnalyzeButton();
+        this.buttonManager.showContainer();
         drawer.setAttribute('data-upwork-buddy', 'true');
+      } else if (!drawer) {
+        // Drawer was closed or removed
+        console.log('👋 Job details drawer closed');
+        this.buttonManager.hideContainer();
       }
     });
 
@@ -117,7 +122,7 @@ class UpworkBuddy {
       console.log('✅ Got analysis response:', analysis);
 
       // Cache the result
-      this.stateManager.cacheAnalysis(jobInfo, analysis);
+      await this.stateManager.cacheAnalysis(jobInfo, analysis);
 
       // Update projects list badge
       if (this.projectsListUI) {
