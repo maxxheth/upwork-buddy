@@ -22,6 +22,7 @@ class UpworkBuddy {
   private buttonManager: ButtonManager;
   private profileConfigUI: ProfileConfigUI | null = null;
   private projectsListUI: ProjectsListUI | null = null;
+  private logPrefix = '[UpworkBuddy][Main]';
 
   constructor() {
     this.stateManager = new StateManager();
@@ -46,15 +47,19 @@ class UpworkBuddy {
   }
 
   private async initialize(): Promise<void> {
+    this.log('Initializing extension...');
     await this.stateManager.initializeStorage();
+    this.log('Storage initialized', { cacheSize: this.stateManager.getCacheSize() });
     // Load profile configuration
     await this.stateManager.loadProfile();
 
     // Initialize projects list UI to update badge if we have cached projects
     if (this.stateManager.getCacheSize() > 0) {
+      this.log('Cached projects detected, bootstrapping ProjectsListUI');
       const modalBody = this.modal.getBody();
       this.projectsListUI = new ProjectsListUI(this.stateManager, modalBody);
       this.projectsListUI.updateBadge();
+      this.log('ProjectsListUI ready with initial badge update');
     }
 
     // Watch for job drawer to appear
@@ -123,9 +128,16 @@ class UpworkBuddy {
 
       // Cache the result
       await this.stateManager.cacheAnalysis(jobInfo, analysis);
+      this.log('Analysis cached', { cacheSize: this.stateManager.getCacheSize() });
 
       // Update projects list badge
       if (this.projectsListUI) {
+        this.log('Updating badge after analysis');
+        this.projectsListUI.updateBadge();
+      } else {
+        this.log('ProjectsListUI missing when trying to update badge; creating instance now');
+        const modalBody = this.modal.getBody();
+        this.projectsListUI = new ProjectsListUI(this.stateManager, modalBody);
         this.projectsListUI.updateBadge();
       }
 
@@ -172,10 +184,20 @@ class UpworkBuddy {
     const modalBody = this.modal.getBody();
 
     if (!this.projectsListUI) {
+      this.log('ProjectsListUI not instantiated; creating before render');
       this.projectsListUI = new ProjectsListUI(this.stateManager, modalBody);
     }
 
+    this.log('Rendering projects list modal');
     this.projectsListUI.render();
+  }
+
+  private log(message: string, payload?: Record<string, unknown>): void {
+    if (payload) {
+      console.log(this.logPrefix, message, payload);
+      return;
+    }
+    console.log(this.logPrefix, message);
   }
 }
 

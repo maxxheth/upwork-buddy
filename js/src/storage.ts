@@ -97,12 +97,12 @@ function resolveExtensionStorage(): PromisifiedStorageArea | null {
   const browserApi = typeof browser === 'undefined' ? undefined : browser;
   const chromeApi = typeof chrome === 'undefined' ? undefined : chrome;
 
-  const browserArea = browserApi?.storage?.sync ?? browserApi?.storage?.local;
+  const browserArea = browserApi?.storage?.local ?? browserApi?.storage?.sync;
   if (browserArea) {
     return browserArea;
   }
 
-  const chromeArea = chromeApi?.storage?.sync ?? chromeApi?.storage?.local;
+  const chromeArea = chromeApi?.storage?.local ?? chromeApi?.storage?.sync;
   if (chromeArea) {
     return wrapChromeStorage(chromeArea);
   }

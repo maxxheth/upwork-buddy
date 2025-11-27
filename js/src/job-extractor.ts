@@ -18,6 +18,8 @@ export class JobExtractor {
       '[data-test="job-title-link"]',
       'h2 a',
       '.job-tile-title a',
+      '.job-details-card h4 .flex-1',
+      '.job-details-card h4 span',
       'h2',
       'h3'
     ], 'title');
