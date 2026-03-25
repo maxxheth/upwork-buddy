@@ -18,7 +18,7 @@
 
 - This repo is a two-part system: a Go API in `cmd/api` + `internal/...` and a TypeScript browser extension in `js/`.
 - The Go entrypoint is `cmd/api/main.go`. `internal/server/server.go` loads `.env` automatically, creates the singleton database service, and serves the routes from `internal/server/routes.go`.
-- The main backend flow is `POST /api/analyze-job` in `internal/server/handlers.go`: decode request JSON -> create `internal/gemini.Service` -> build a structured prompt -> call Gemini -> normalize the model output into JSON before returning it.
+- The main backend flow is `POST /api/analyze-job` in `internal/server/handlers.go`: decode request JSON -> create `internal/ollama.Service` -> build a structured prompt -> call the Ollama Cloud chat API -> normalize the model output into JSON before returning it.
 - The profile flow is `GET/POST /api/profile`: the API persists one `Profile` row plus related `PortfolioItem` rows in PostgreSQL using GORM transactions.
 - The extension entrypoint is `js/src/main.ts`. It injects styles, creates the modal/buttons, waits for Upwork’s `.job-details-content` drawer via `MutationObserver`, extracts job data from the live DOM, then calls the API.
 - Frontend state is centered in `js/src/state.ts`: profile data and analyzed-job cache live in memory and are persisted through `js/src/storage.ts`.
@@ -32,4 +32,4 @@
 - The extension should read URLs/default profile text from `CONFIG` in `js/src/types.ts`; avoid hardcoding API endpoints elsewhere.
 - Cached analyses are keyed by `title + first 100 chars of description` in `StateManager.generateCacheKey()`. Preserve that behavior unless you intentionally migrate stored cache data.
 - The UI only appears when Upwork’s job drawer exists. DOM-related changes should keep the `MutationObserver` + selector-based extraction flow intact instead of assuming a static page.
-- Logging is intentionally verbose for Gemini/debugging work. Backend request/parse logging lives in `internal/server/handlers.go` and `internal/gemini/service.go`; frontend request/render logging lives in `js/src/api.ts`, `js/src/main.ts`, and related UI/state modules.
+- Logging is intentionally verbose for AI/debugging work. Backend request/parse logging lives in `internal/server/handlers.go` and `internal/ollama/service.go`; frontend request/render logging lives in `js/src/api.ts`, `js/src/main.ts`, and related UI/state modules.
