@@ -10,11 +10,7 @@ export class ProjectsListUI {
     private stateManager: StateManager,
     private modalBody: HTMLDivElement
   ) {
-    // Expose global handlers for onclick attributes
-    (window as any).upworkBuddyShowProject = this.showProject.bind(this);
-    (window as any).upworkBuddyBackToList = this.render.bind(this);
-    (window as any).upworkBuddyClearCache = this.clearCache.bind(this);
-    this.log('Initialized ProjectsListUI and registered window handlers');
+    this.log('Initialized ProjectsListUI');
   }
 
   private log(message: string, payload?: unknown): void {
@@ -36,6 +32,11 @@ export class ProjectsListUI {
 
     if (projects.length === 0) {
       html += '<p style="text-align: center; color: #999; padding: 40px;">No projects analyzed yet. Click "Analyze Job" on a job posting to get started.</p>';
+      html += `
+        <div class="upwork-buddy-cache-actions">
+          <button class="upwork-buddy-secondary-btn js-upwork-buddy-import">⬆️ Import JSON</button>
+        </div>
+      `;
     } else {
       html += '<ul class="upwork-buddy-projects-list">';
 
@@ -44,11 +45,8 @@ export class ProjectsListUI {
         const date = new Date(timestamp);
         const timeAgo = getTimeAgo(date);
 
-        // Escape quotes in cache key for onclick handler
-        const escapedKey = cacheKey.replace(/'/g, "\\'").replace(/"/g, '\\"');
-
         html += `
-          <li class="upwork-buddy-project-item" onclick="window.upworkBuddyShowProject(\`${escapedKey}\`)">
+          <li class="upwork-buddy-project-item js-upwork-buddy-project" data-cache-key="${cacheKey}">
             <h4 class="upwork-buddy-project-title">${escapeHtml(jobInfo.title)}</h4>
             <div class="upwork-buddy-project-meta">
               <span>💰 ${escapeHtml(jobInfo.budget)}</span>
@@ -60,10 +58,18 @@ export class ProjectsListUI {
       });
 
       html += '</ul>';
-      html += '<button class="upwork-buddy-clear-cache-btn" onclick="window.upworkBuddyClearCache()">🗑️ Clear All Cached Projects</button>';
+      html += `
+        <div class="upwork-buddy-cache-actions">
+          <button class="upwork-buddy-secondary-btn js-upwork-buddy-export">⬇️ Export JSON</button>
+          <button class="upwork-buddy-secondary-btn js-upwork-buddy-import">⬆️ Import JSON</button>
+          <button class="upwork-buddy-clear-cache-btn js-upwork-buddy-clear">🗑️ Clear All Cached Projects</button>
+        </div>
+      `;
     }
 
     this.modalBody.innerHTML = html;
+    this.attachCacheActionHandlers();
+    this.attachProjectHandlers();
   }
 
   /**
@@ -81,12 +87,37 @@ export class ProjectsListUI {
     const analysis = { ...data.analysis, _cached: true };
 
     this.modalBody.innerHTML = `
-      <button onclick="window.upworkBuddyBackToList()" style="background: #108ee9; color: white; border: none; padding: 8px 16px; border-radius: 6px; cursor: pointer; margin-bottom: 16px;">
+      <button class="upwork-buddy-secondary-btn js-upwork-buddy-back" style="background: #108ee9; color: white; border: none; padding: 8px 16px; border-radius: 6px; cursor: pointer; margin-bottom: 16px;">
         ← Back to Projects List
       </button>
       <h3 style="margin-top: 0; color: #14a800;">${escapeHtml(data.jobInfo.title)}</h3>
       ${renderAnalysis(analysis, true)}
     `;
+
+    const backBtn = this.modalBody.querySelector<HTMLButtonElement>('.js-upwork-buddy-back');
+    backBtn?.addEventListener('click', () => this.render());
+  }
+
+  private attachCacheActionHandlers(): void {
+    const exportBtn = this.modalBody.querySelector<HTMLButtonElement>('.js-upwork-buddy-export');
+    const importBtn = this.modalBody.querySelector<HTMLButtonElement>('.js-upwork-buddy-import');
+    const clearBtn = this.modalBody.querySelector<HTMLButtonElement>('.js-upwork-buddy-clear');
+
+    exportBtn?.addEventListener('click', () => this.exportCache());
+    importBtn?.addEventListener('click', () => this.importCache());
+    clearBtn?.addEventListener('click', () => this.clearCache());
+  }
+
+  private attachProjectHandlers(): void {
+    const projectItems = this.modalBody.querySelectorAll<HTMLLIElement>('.js-upwork-buddy-project');
+    projectItems.forEach(item => {
+      item.addEventListener('click', () => {
+        const cacheKey = item.getAttribute('data-cache-key');
+        if (cacheKey) {
+          this.showProject(cacheKey);
+        }
+      });
+    });
   }
 
   /**
@@ -102,6 +133,72 @@ export class ProjectsListUI {
     }
   }
 
+  private exportCache(): void {
+    const snapshot = this.stateManager.getCacheSnapshot();
+    this.log('Export cache requested', { count: snapshot.length });
+    if (snapshot.length === 0) {
+      alert('No cached analyses available to export.');
+      return;
+    }
+
+    const payload = {
+      version: 1,
+      exportedAt: new Date().toISOString(),
+      items: snapshot
+    };
+
+    const blob = new Blob([JSON.stringify(payload, null, 2)], { type: 'application/json' });
+    const url = URL.createObjectURL(blob);
+    const link = document.createElement('a');
+    link.href = url;
+    link.download = `upwork-buddy-cache-${Date.now()}.json`;
+    document.body.appendChild(link);
+    link.click();
+    document.body.removeChild(link);
+    URL.revokeObjectURL(url);
+    this.log('Cache export complete');
+  }
+
+  private importCache(): void {
+    this.log('Import cache requested');
+    const input = document.createElement('input');
+    input.type = 'file';
+    input.accept = 'application/json';
+    input.addEventListener('change', () => {
+      const file = input.files?.[0];
+      if (!file) {
+        this.log('Import cancelled (no file selected)');
+        return;
+      }
+
+      const reader = new FileReader();
+      reader.onload = async () => {
+        try {
+          const text = typeof reader.result === 'string' ? reader.result : '';
+          if (!text) {
+            throw new Error('File was empty or unreadable');
+          }
+          const parsed = JSON.parse(text);
+          const count = await this.stateManager.importCacheFromJson(parsed);
+          this.log('Import completed', { count });
+          if (count > 0) {
+            this.render();
+            this.updateBadge();
+            alert(`Imported ${count} cached analyses.`);
+          } else {
+            alert('No valid cached analyses found in the selected file.');
+          }
+        } catch (error) {
+          console.error('[UpworkBuddy][ProjectsListUI] ❌ Failed to import cache', error);
+          alert(`Failed to import cache: ${error instanceof Error ? error.message : String(error)}`);
+        }
+      };
+      reader.readAsText(file);
+    }, { once: true });
+
+    input.click();
+  }
+
   /**
    * Update the badge count on the View Projects button
    */
@@ -115,12 +212,7 @@ export class ProjectsListUI {
         badge.textContent = size.toString();
       }
 
-      // Show button if we have analyzed jobs
-      if (size > 0) {
-        btn.classList.add('visible');
-      } else {
-        btn.classList.remove('visible');
-      }
+      btn.classList.add('visible');
     }
   }
 }
