@@ -8,7 +8,7 @@ import (
 	"strings"
 
 	dbservice "upwork-buddy/internal/database/service"
-	"upwork-buddy/internal/gemini"
+	"upwork-buddy/internal/ollama"
 
 	"gorm.io/gorm"
 )
@@ -21,7 +21,7 @@ func (s *Server) analyzeJobHandler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	var req gemini.JobAnalysisRequest
+	var req ollama.JobAnalysisRequest
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		log.Printf("❌ Invalid request body: %v", err)
 		http.Error(w, "Invalid request body", http.StatusBadRequest)
@@ -31,17 +31,17 @@ func (s *Server) analyzeJobHandler(w http.ResponseWriter, r *http.Request) {
 	log.Printf("📥 Received request: title=%q, budget=%q, skills=%q, profile_length=%d, user_skills_length=%d",
 		req.JobTitle, req.Budget, req.Skills, len(req.UserProfile), len(req.UserSkills))
 
-	// Create Gemini service
-	geminiService, err := gemini.New()
+	// Create Ollama service
+	ollamaService, err := ollama.New()
 	if err != nil {
-		log.Printf("❌ Failed to create Gemini service: %v", err)
+		log.Printf("❌ Failed to create Ollama service: %v", err)
 		http.Error(w, "Service unavailable", http.StatusServiceUnavailable)
 		return
 	}
-	defer geminiService.Close()
+	defer ollamaService.Close()
 
 	// Analyze the job
-	result, err := geminiService.AnalyzeJob(r.Context(), req)
+	result, err := ollamaService.AnalyzeJob(r.Context(), req)
 	if err != nil {
 		log.Printf("❌ Failed to analyze job: %v", err)
 		http.Error(w, "Failed to analyze job", http.StatusInternalServerError)

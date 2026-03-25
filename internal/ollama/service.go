@@ -1,24 +1,33 @@
-package gemini
+package ollama
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
+	"io"
 	"log"
+	"net/http"
 	"os"
 	"regexp"
 	"strings"
-
-	"google.golang.org/genai"
+	"time"
 )
 
-// Service handles interactions with Google's Gemini AI
+const (
+	defaultHost  = "https://ollama.com"
+	defaultModel = "gpt-oss:120b"
+)
+
+// Service handles interactions with Ollama Cloud.
 type Service struct {
-	client *genai.Client
+	client *http.Client
+	host   string
+	apiKey string
 	model  string
 }
 
-// JobAnalysisRequest contains the job posting and user profile
+// JobAnalysisRequest contains the job posting and user profile.
 type JobAnalysisRequest struct {
 	JobTitle       string `json:"job_title"`
 	JobDescription string `json:"job_description"`
@@ -28,72 +37,129 @@ type JobAnalysisRequest struct {
 	UserSkills     string `json:"user_skills"`
 }
 
-// JobAnalysisResponse contains the AI-generated analysis
+// JobAnalysisResponse contains the AI-generated analysis.
 type JobAnalysisResponse struct {
 	Proposal           string          `json:"proposal"`
 	SpecSheetPrompt    string          `json:"spec_sheet_prompt"`
-	TimeEstimate       json.RawMessage `json:"time_estimate"`     // Can be string or object
-	WorkloadDivision   json.RawMessage `json:"workload_division"` // Can be string or object
+	TimeEstimate       json.RawMessage `json:"time_estimate"`
+	WorkloadDivision   json.RawMessage `json:"workload_division"`
 	QuestionsForClient []string        `json:"questions_for_client"`
 	TipsAndAdvice      []string        `json:"tips_and_advice"`
 	ToneAnalysis       string          `json:"tone_analysis"`
 }
 
-// New creates a new Gemini service instance
+type chatRequest struct {
+	Model    string        `json:"model"`
+	Messages []chatMessage `json:"messages"`
+	Stream   bool          `json:"stream"`
+	Format   string        `json:"format,omitempty"`
+}
+
+type chatMessage struct {
+	Role    string `json:"role"`
+	Content string `json:"content"`
+}
+
+type chatResponse struct {
+	Model     string      `json:"model"`
+	CreatedAt string      `json:"created_at"`
+	Message   chatMessage `json:"message"`
+	Error     string      `json:"error,omitempty"`
+}
+
+// New creates a new Ollama service instance.
 func New() (*Service, error) {
-	apiKey := os.Getenv("GEMINI_API_KEY")
+	apiKey := strings.TrimSpace(os.Getenv("OLLAMA_API_KEY"))
 	if apiKey == "" {
-		return nil, fmt.Errorf("GEMINI_API_KEY environment variable not set")
+		return nil, fmt.Errorf("OLLAMA_API_KEY environment variable not set")
 	}
 
-	ctx := context.Background()
-	client, err := genai.NewClient(ctx, &genai.ClientConfig{
-		APIKey:  apiKey,
-		Backend: genai.BackendGeminiAPI,
-	})
-	if err != nil {
-		return nil, fmt.Errorf("failed to create Gemini client: %w", err)
+	host := normalizeHost(os.Getenv("OLLAMA_HOST"))
+	if host == "" {
+		host = defaultHost
+	}
+
+	model := strings.TrimSpace(os.Getenv("OLLAMA_MODEL"))
+	if model == "" {
+		model = defaultModel
 	}
 
 	return &Service{
-		client: client,
-		model:  "gemini-2.0-flash-exp", // Using the latest model
+		client: &http.Client{Timeout: 90 * time.Second},
+		host:   host,
+		apiKey: apiKey,
+		model:  model,
 	}, nil
 }
 
-// Close closes the Gemini client connection
+// Close closes the service connection.
 func (s *Service) Close() error {
-	// The genai.Client doesn't have a Close method in this version
 	return nil
 }
 
-// AnalyzeJob analyzes a job posting and generates a comprehensive response
+// AnalyzeJob analyzes a job posting and generates a comprehensive response.
 func (s *Service) AnalyzeJob(ctx context.Context, req JobAnalysisRequest) (*JobAnalysisResponse, error) {
 	prompt := s.buildAnalysisPrompt(req)
-	log.Printf("Gemini analyze job request: title=%q budget=%q skills=%q", req.JobTitle, req.Budget, req.Skills)
+	log.Printf("Ollama analyze job request: title=%q budget=%q skills=%q model=%q host=%q", req.JobTitle, req.Budget, req.Skills, s.model, s.host)
 	log.Printf("Prompt length: %d characters", len(prompt))
 
-	resp, err := s.client.Models.GenerateContent(ctx, s.model, []*genai.Content{
-		{
-			Role: "user",
-			Parts: []*genai.Part{
-				{Text: prompt},
+	payload, err := json.Marshal(chatRequest{
+		Model: s.model,
+		Messages: []chatMessage{
+			{
+				Role:    "user",
+				Content: prompt,
 			},
 		},
-	}, nil)
+		Stream: false,
+		Format: "json",
+	})
 	if err != nil {
-		log.Printf("GenerateContent failed: %v", err)
-		return nil, fmt.Errorf("failed to generate content: %w", err)
+		return nil, fmt.Errorf("failed to encode Ollama request: %w", err)
 	}
 
-	// Parse the response
-	log.Printf("GenerateContent succeeded: %d candidates", len(resp.Candidates))
-	result := s.parseResponse(resp)
+	httpReq, err := http.NewRequestWithContext(ctx, http.MethodPost, s.host+"/api/chat", bytes.NewReader(payload))
+	if err != nil {
+		return nil, fmt.Errorf("failed to create Ollama request: %w", err)
+	}
+	httpReq.Header.Set("Content-Type", "application/json")
+	httpReq.Header.Set("Accept", "application/json")
+	httpReq.Header.Set("Authorization", "Bearer "+s.apiKey)
+
+	resp, err := s.client.Do(httpReq)
+	if err != nil {
+		log.Printf("Ollama chat request failed: %v", err)
+		return nil, fmt.Errorf("failed to call Ollama Cloud API: %w", err)
+	}
+	defer resp.Body.Close()
+
+	respBody, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return nil, fmt.Errorf("failed to read Ollama response: %w", err)
+	}
+
+	if resp.StatusCode < http.StatusOK || resp.StatusCode >= http.StatusMultipleChoices {
+		log.Printf("Ollama chat failed: status=%d body=%s", resp.StatusCode, truncateForLog(string(respBody), 500))
+		return nil, fmt.Errorf("Ollama Cloud API returned %s", resp.Status)
+	}
+
+	var chatResp chatResponse
+	if err := json.Unmarshal(respBody, &chatResp); err != nil {
+		log.Printf("Failed to decode Ollama response: %v", err)
+		return nil, fmt.Errorf("failed to decode Ollama response: %w", err)
+	}
+	if chatResp.Error != "" {
+		log.Printf("Ollama response error: %s", chatResp.Error)
+		return nil, fmt.Errorf("Ollama Cloud API error: %s", chatResp.Error)
+	}
+
+	log.Printf("Ollama chat succeeded: model=%q created_at=%q content_length=%d", chatResp.Model, chatResp.CreatedAt, len(chatResp.Message.Content))
+	result := s.parseResponse(chatResp.Message.Content)
 	log.Printf("Parsed analysis result: proposal length=%d spec_sheet length=%d", len(result.Proposal), len(result.SpecSheetPrompt))
 	return result, nil
 }
 
-// buildAnalysisPrompt constructs the comprehensive prompt for the AI
+// buildAnalysisPrompt constructs the comprehensive prompt for the AI.
 func (s *Service) buildAnalysisPrompt(req JobAnalysisRequest) string {
 	return fmt.Sprintf(`You are an expert freelance consultant helping contractors on Upwork create winning proposals and project plans.
 
@@ -154,7 +220,7 @@ Provide actionable advice on:
 7. TONE ANALYSIS
 Analyze the job posting's tone (formal, casual, technical, etc.) and suggest the best communication approach.
 
-Format your response as JSON with these exact keys:
+Return valid JSON only, with these exact keys:
 {
   "proposal": "...",
   "spec_sheet_prompt": "...",
@@ -173,49 +239,24 @@ Format your response as JSON with these exact keys:
 	)
 }
 
-// parseResponse parses the AI response into structured data
-func (s *Service) parseResponse(resp *genai.GenerateContentResponse) *JobAnalysisResponse {
-	// Extract text from response
-	var fullText string
-	var candidateCount int
-	for _, candidate := range resp.Candidates {
-		candidateCount++
-		if candidate.Content != nil {
-			for _, part := range candidate.Content.Parts {
-				if part.Text != "" {
-					fullText += part.Text
-				}
-			}
-		}
-	}
-	log.Printf("parseResponse: collected text length=%d from %d candidates", len(fullText), candidateCount)
+// parseResponse parses the AI response into structured data.
+func (s *Service) parseResponse(fullText string) *JobAnalysisResponse {
+	log.Printf("parseResponse: collected text length=%d from assistant response", len(fullText))
 
-	// Log the raw response for debugging
 	if len(fullText) > 0 {
-		preview := fullText
-		if len(preview) > 500 {
-			preview = preview[:500] + "..."
-		}
-		log.Printf("parseResponse: RAW RESPONSE START\n%s\nparseResponse: RAW RESPONSE END", preview)
+		log.Printf("parseResponse: RAW RESPONSE START\n%s\nparseResponse: RAW RESPONSE END", truncateForLog(fullText, 500))
 	}
 
-	// Strip markdown code block if present
 	fullText = strings.TrimSpace(fullText)
 	originalLength := len(fullText)
 
-	// Remove ```json and ``` wrappers
 	jsonBlockRegex := regexp.MustCompile("(?s)^```(?:json)?\\s*\\n?(.*?)\\n?```$")
 	if matches := jsonBlockRegex.FindStringSubmatch(fullText); len(matches) > 1 {
 		fullText = strings.TrimSpace(matches[1])
 		log.Printf("parseResponse: stripped markdown wrapper (before=%d, after=%d)", originalLength, len(fullText))
-		preview := fullText
-		if len(preview) > 300 {
-			preview = preview[:300] + "..."
-		}
-		log.Printf("parseResponse: STRIPPED JSON START\n%s\nparseResponse: STRIPPED JSON END", preview)
+		log.Printf("parseResponse: STRIPPED JSON START\n%s\nparseResponse: STRIPPED JSON END", truncateForLog(fullText, 300))
 	}
 
-	// Try to parse as JSON directly
 	var result JobAnalysisResponse
 	if err := json.Unmarshal([]byte(fullText), &result); err == nil {
 		log.Printf("parseResponse: ✅ json.Unmarshal succeeded")
@@ -223,8 +264,6 @@ func (s *Service) parseResponse(resp *genai.GenerateContentResponse) *JobAnalysi
 			len(result.Proposal), len(result.SpecSheetPrompt),
 			len(result.QuestionsForClient), len(result.TipsAndAdvice))
 
-		// If the proposal field contains JSON-like content, it might be double-encoded
-		// Check if proposal starts with { and try to re-parse
 		if strings.HasPrefix(strings.TrimSpace(result.Proposal), "{") {
 			log.Printf("parseResponse: proposal looks like nested JSON, attempting to re-parse...")
 			var innerResult JobAnalysisResponse
@@ -239,10 +278,8 @@ func (s *Service) parseResponse(resp *genai.GenerateContentResponse) *JobAnalysi
 		log.Printf("parseResponse: ❌ json.Unmarshal FAILED: %v", err)
 		log.Printf("parseResponse: JSON error details - Type: %T, Message: %s", err, err.Error())
 
-		// Try to identify the specific JSON error location
 		if syntaxErr, ok := err.(*json.SyntaxError); ok {
 			log.Printf("parseResponse: JSON syntax error at byte offset %d", syntaxErr.Offset)
-			// Show context around the error
 			start := int(syntaxErr.Offset) - 100
 			if start < 0 {
 				start = 0
@@ -254,11 +291,7 @@ func (s *Service) parseResponse(resp *genai.GenerateContentResponse) *JobAnalysi
 			log.Printf("parseResponse: ERROR CONTEXT: ...%s...", fullText[start:end])
 		}
 
-		preview := fullText
-		if len(preview) > 500 {
-			preview = preview[:500] + "..."
-		}
-		log.Printf("parseResponse: FAILED JSON CONTENT START\n%s\nparseResponse: FAILED JSON CONTENT END", preview)
+		log.Printf("parseResponse: FAILED JSON CONTENT START\n%s\nparseResponse: FAILED JSON CONTENT END", truncateForLog(fullText, 500))
 
 		return &JobAnalysisResponse{
 			Proposal:           fullText,
@@ -270,4 +303,22 @@ func (s *Service) parseResponse(resp *genai.GenerateContentResponse) *JobAnalysi
 			ToneAnalysis:       "",
 		}
 	}
+}
+
+func truncateForLog(value string, limit int) string {
+	if len(value) <= limit {
+		return value
+	}
+	return value[:limit] + "..."
+}
+
+func normalizeHost(raw string) string {
+	host := strings.TrimSpace(raw)
+	if host == "" {
+		return ""
+	}
+	if !strings.Contains(host, "://") {
+		host = "http://" + host
+	}
+	return strings.TrimRight(host, "/")
 }

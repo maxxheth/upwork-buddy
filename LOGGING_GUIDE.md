@@ -9,19 +9,19 @@
 - **Frontend (TypeScript):** Browser DevTools Console (F12 → Console tab)
 
 ## Overview
-Comprehensive logging has been added throughout the application to help diagnose issues, especially JSON parsing problems from the Gemini API.
+Comprehensive logging has been added throughout the application to help diagnose issues, especially JSON parsing problems from the Ollama Cloud API.
 
 ## Backend Logging (Go)
 
-### Location: `internal/gemini/service.go`
+### Location: `internal/ollama/service.go`
 
 **AnalyzeJob Method:**
 - Logs job analysis requests with title, budget, and skills
-- Logs prompt length sent to Gemini
+- Logs prompt length sent to Ollama Cloud
 - Logs response status and result lengths
 
 **parseResponse Method (Enhanced):**
-- **Raw Response Logging**: First 500 characters of raw Gemini response
+- **Raw Response Logging**: First 500 characters of raw Ollama response
 - **Markdown Stripping**: Shows before/after lengths when code blocks are removed
 - **Stripped JSON**: First 300 characters after markdown removal
 - **Parse Success**: Logs field lengths when successful
@@ -137,7 +137,7 @@ Example console output:
 ### Common Issues to Look For
 
 **Issue: "Failed to parse response. Please check the API server logs."**
-- Backend logs will show the raw Gemini response
+- Backend logs will show the raw Ollama response
 - Look for `parseResponse: ❌ json.Unmarshal FAILED`
 - Check the error context for invalid JSON characters
 
@@ -149,7 +149,7 @@ Example console output:
 **Issue: Missing sections**
 - Check `renderAnalysis: Field lengths` - are fields empty?
 - Backend should show `Analysis complete: proposal_length=0` if field is missing
-- Gemini may not be returning complete JSON structure
+- Ollama may not be returning complete JSON structure
 
 ## Restart After Changes
 

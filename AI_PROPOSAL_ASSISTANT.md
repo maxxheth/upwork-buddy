@@ -1,6 +1,6 @@
 # Upwork Buddy - AI Proposal Assistant
 
-An intelligent Chrome extension (currently a JavaScript snippet) that analyzes Upwork job postings and generates comprehensive proposals using Google's Gemini AI.
+An intelligent Chrome extension (currently a JavaScript snippet) that analyzes Upwork job postings and generates comprehensive proposals using Ollama Cloud models.
 
 ## Features
 
@@ -31,14 +31,16 @@ An intelligent Chrome extension (currently a JavaScript snippet) that analyzes U
 
 ## Setup
 
-### 1. Get a Gemini API Key
+### 1. Get an Ollama API Key
 
-1. Visit [Google AI Studio](https://aistudio.google.com/)
-2. Create an API key
+1. Visit [Ollama Cloud](https://ollama.com/)
+2. Create an API key in your account settings
 3. Add it to your `.env` file:
 
 ```bash
-GEMINI_API_KEY=your_actual_api_key_here
+OLLAMA_API_KEY=your_actual_api_key_here
+OLLAMA_HOST=https://ollama.com
+OLLAMA_MODEL=gpt-oss:120b
 ```
 
 ### 2. Start the API Server
@@ -121,7 +123,7 @@ Analyzes a job posting and generates a comprehensive response.
 ## Architecture
 
 ```
-Browser/Extension → Go API Server → Google Gemini AI
+Browser/Extension → Go API Server → Ollama Cloud API
 ```
 
 **Why this architecture?**
@@ -171,8 +173,8 @@ curl -X POST http://localhost:9090/api/analyze-job \
 ## Troubleshooting
 
 **API Error: Service unavailable**
-- Make sure `GEMINI_API_KEY` is set in `.env`
-- Verify your API key is valid at [Google AI Studio](https://aistudio.google.com/)
+- Make sure `OLLAMA_API_KEY` is set in `.env`
+- Verify your API key is valid in your [Ollama account settings](https://ollama.com/settings/keys)
 
 **CORS Error**
 - The API has CORS enabled for all origins during development
