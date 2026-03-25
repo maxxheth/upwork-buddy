@@ -54,7 +54,6 @@ export const STYLES = `
   font-weight: 600;
   font-size: 14px;
   box-shadow: 0 2px 8px rgba(0, 0, 0, 0.1);
-  display: none;
   align-items: center;
   gap: 8px;
   transition: all 0.2s ease;
@@ -475,6 +474,27 @@ export const STYLES = `
 
 .upwork-buddy-clear-cache-btn:hover {
   background: #c82333;
+}
+
+.upwork-buddy-cache-actions {
+  display: flex;
+  gap: 10px;
+  flex-wrap: wrap;
+  margin-top: 16px;
+}
+
+.upwork-buddy-secondary-btn {
+  background: #f5f5f5;
+  color: #333;
+  border: 1px solid #e0e0e0;
+  padding: 8px 16px;
+  border-radius: 8px;
+  cursor: pointer;
+  font-weight: 600;
+}
+
+.upwork-buddy-secondary-btn:hover {
+  background: #ebebeb;
 }
 `;
 

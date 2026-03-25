@@ -101,7 +101,15 @@ If you deploy the API elsewhere, adjust `host_permissions` (and `CONFIG.apiBaseU
 - ✅ Single-file bundle output
 - ✅ Fast builds with esbuild
 - ✅ Development mode with source maps
+- ✅ Export/import cached analyses as JSON backups
 
 ## Usage
 
 After running a build, load the unpacked extension (instructions above) and navigate to an Upwork job post. The floating Upwork Buddy controls and modal should appear automatically.
+
+### Exporting / Importing Cached Analyses
+
+1. Open the **View Projects** modal from the floating controls.
+2. Use **Export JSON** to download every cached analysis to a timestamped file (includes job info, responses, and timestamps).
+3. Later (or on another browser/machine), use **Import JSON** to select a previously exported file. The cache will be replaced with the file contents and the badge/count refreshes automatically.
+4. The JSON format is `{ version: 1, exportedAt, items: AnalysisCache[] }`, but older raw arrays are also accepted for backwards compatibility.

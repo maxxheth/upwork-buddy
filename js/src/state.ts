@@ -134,6 +134,13 @@ export class StateManager {
   }
 
   /**
+   * Raw snapshot of the cache in insertion order (used for export)
+   */
+  getCacheSnapshot(): AnalysisCache[] {
+    return Array.from(this.analyzedJobs.values());
+  }
+
+  /**
    * Get cached job by cache key
    */
   getCachedJobByKey(cacheKey: string): AnalysisCache | null {
@@ -152,6 +159,27 @@ export class StateManager {
    * Get cache size
    */
   getCacheSize(): number {
+    return this.analyzedJobs.size;
+  }
+
+  /**
+   * Replace cache contents with entries loaded from disk/JSON file
+   */
+  async importCacheFromJson(rawData: unknown): Promise<number> {
+    const normalizedEntries = this.normalizeCacheEntries(rawData);
+    if (normalizedEntries.length === 0) {
+      console.warn('Import cache: no valid entries detected');
+      return 0;
+    }
+
+    const nextMap = new Map<string, AnalysisCache>();
+    for (const entry of normalizedEntries) {
+      nextMap.set(entry.cacheKey, entry);
+    }
+
+    this.analyzedJobs = nextMap;
+    await this.persistCache();
+    console.log(`✅ Imported ${this.analyzedJobs.size} cached analyses from file`);
     return this.analyzedJobs.size;
   }
 
@@ -180,5 +208,62 @@ export class StateManager {
     } catch (error) {
       console.warn('Failed to load cache from storage', error);
     }
+  }
+
+  private normalizeCacheEntries(rawData: unknown): AnalysisCache[] {
+    const rows = this.extractEntriesArray(rawData);
+    if (!rows) {
+      return [];
+    }
+
+    const normalized: AnalysisCache[] = [];
+    for (const row of rows) {
+      if (!row || typeof row !== 'object') {
+        continue;
+      }
+
+      const candidate = row as Partial<AnalysisCache> & { jobInfo?: Partial<JobInfo>; analysis?: AnalysisResponse };
+      const jobInfo = candidate.jobInfo;
+      if (!jobInfo || typeof jobInfo !== 'object') {
+        continue;
+      }
+
+      const title = typeof jobInfo.title === 'string' ? jobInfo.title : 'Unknown Title';
+      const description = typeof jobInfo.description === 'string' ? jobInfo.description : 'No description available';
+      const budget = typeof jobInfo.budget === 'string' ? jobInfo.budget : 'Not specified';
+      const skills = typeof jobInfo.skills === 'string' ? jobInfo.skills : 'Not specified';
+
+      const cacheKey = typeof candidate.cacheKey === 'string' && candidate.cacheKey.trim().length > 0
+        ? candidate.cacheKey
+        : this.generateCacheKey({ title, description, budget, skills });
+      const timestamp = typeof candidate.timestamp === 'string' ? candidate.timestamp : new Date().toISOString();
+      const analysis = candidate.analysis && typeof candidate.analysis === 'object'
+        ? candidate.analysis
+        : {};
+
+      normalized.push({
+        jobInfo: { title, description, budget, skills },
+        analysis: analysis as AnalysisResponse,
+        timestamp,
+        cacheKey
+      });
+    }
+
+    return normalized;
+  }
+
+  private extractEntriesArray(rawData: unknown): Array<AnalysisCache | Record<string, unknown>> | null {
+    if (Array.isArray(rawData)) {
+      return rawData as Array<AnalysisCache | Record<string, unknown>>;
+    }
+
+    if (rawData && typeof rawData === 'object') {
+      const withItems = rawData as { items?: unknown };
+      if (Array.isArray(withItems.items)) {
+        return withItems.items as Array<AnalysisCache | Record<string, unknown>>;
+      }
+    }
+
+    return null;
   }
 }
