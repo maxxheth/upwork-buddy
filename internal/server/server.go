@@ -2,6 +2,7 @@ package server
 
 import (
 	"fmt"
+	"log"
 	"net/http"
 	"os"
 	"strconv"
@@ -13,18 +14,45 @@ import (
 )
 
 type Server struct {
-	port int
+	port               int
+	env                string
+	corsAllowedOrigins string
 
 	db service.DatabaseService
 }
 
 func NewServer() *http.Server {
-	port, _ := strconv.Atoi(os.Getenv("PORT"))
+	port, _ := strconv.Atoi(os.Getenv("APP_PORT"))
+	if port == 0 {
+		port, _ = strconv.Atoi(os.Getenv("PORT"))
+	}
+	if port == 0 {
+		port = 9090
+	}
+
+	env := os.Getenv("APP_ENV")
+	if env == "" {
+		env = "development"
+	}
+
+	corsAllowedOrigins := os.Getenv("CORS_ALLOWED_ORIGINS")
+	if corsAllowedOrigins == "" {
+		if env == "production" {
+			corsAllowedOrigins = "" // Restrictive in production — must be explicitly set
+		} else {
+			corsAllowedOrigins = "*" // Permissive in development
+		}
+	}
+
 	NewServer := &Server{
-		port: port,
+		port:               port,
+		env:                env,
+		corsAllowedOrigins: corsAllowedOrigins,
 
 		db: service.New(),
 	}
+
+	log.Printf("🚀 Server configured: port=%d, env=%s, cors_allowed_origins=%q", port, env, corsAllowedOrigins)
 
 	// Declare Server config
 	server := &http.Server{
