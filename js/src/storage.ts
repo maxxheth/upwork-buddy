@@ -1,4 +1,4 @@
-import type { AnalysisCache, ProfileState } from './types';
+import type { AnalysisCache, ProfileState, CustomConfigOverrides } from './types';
 import { CONFIG } from './types';
 
 // Declare ambient globals for browser extension runtimes.
@@ -39,6 +39,7 @@ type PromisifiedStorageArea = {
 
 const PROFILE_STORAGE_KEY = CONFIG.profileStorageKey;
 const CACHE_STORAGE_KEY = 'upworkBuddyCachedJobs';
+const CUSTOM_CONFIG_STORAGE_KEY = 'upworkBuddyCustomConfig';
 
 /**
  * StorageAdapter centralizes persistence so the content script can use
@@ -90,6 +91,29 @@ export class StorageAdapter {
       return;
     }
     persistWithLocalStorage(CACHE_STORAGE_KEY, []);
+  }
+
+  /**
+   * Retrieve custom config overrides stored by the user.
+   * Returns null when no overrides have been saved.
+   */
+  async getCustomConfig(): Promise<CustomConfigOverrides | null> {
+    if (this.extensionStorage) {
+      const result = await this.extensionStorage.get(CUSTOM_CONFIG_STORAGE_KEY);
+      return (result?.[CUSTOM_CONFIG_STORAGE_KEY] as CustomConfigOverrides) ?? null;
+    }
+    return readFromLocalStorage<CustomConfigOverrides>(CUSTOM_CONFIG_STORAGE_KEY);
+  }
+
+  /**
+   * Persist custom config overrides so they survive page reloads.
+   */
+  async saveCustomConfig(overrides: CustomConfigOverrides): Promise<void> {
+    if (this.extensionStorage) {
+      await this.extensionStorage.set({ [CUSTOM_CONFIG_STORAGE_KEY]: overrides });
+      return;
+    }
+    persistWithLocalStorage(CUSTOM_CONFIG_STORAGE_KEY, overrides);
   }
 }
 
