@@ -2,26 +2,44 @@
  * State management for profile and analyzed jobs cache
  */
 
-import type { ProfileState, AnalysisCache, AnalysisResponse, JobInfo } from './types';
+import type { ProfileState, AnalysisCache, AnalysisResponse, JobInfo, SavedJob, SaveJobRequest, SyncedProfile } from './types';
 import { CONFIG } from './types';
 import { ApiClient } from './api';
 import { StorageAdapter } from './storage';
 
+export interface StateManagerDependencies {
+  apiClient?: ApiClient;
+  storage?: StorageAdapter;
+}
+
+/** Internal wrapper that tracks sync metadata alongside the profile */
+interface ProfileWithSync {
+  profile: ProfileState;
+  lastSyncedAt: string | null;
+  isDirty: boolean;
+}
+
 export class StateManager {
-  private currentProfile: ProfileState;
+  private profileWithSync: ProfileWithSync;
   private analyzedJobs: Map<string, AnalysisCache>;
+  private savedJobs: SavedJob[];
   private apiClient: ApiClient;
   private storage: StorageAdapter;
 
-  constructor() {
-    this.currentProfile = {
-      description: CONFIG.defaultProfile,
-      skills: CONFIG.defaultSkills,
-      portfolioItems: []
+  constructor(deps?: StateManagerDependencies) {
+    this.profileWithSync = {
+      profile: {
+        description: CONFIG.defaultProfile,
+        skills: CONFIG.defaultSkills,
+        portfolioItems: []
+      },
+      lastSyncedAt: null,
+      isDirty: false
     };
     this.analyzedJobs = new Map();
-    this.apiClient = new ApiClient();
-    this.storage = new StorageAdapter();
+    this.savedJobs = [];
+    this.apiClient = deps?.apiClient ?? new ApiClient();
+    this.storage = deps?.storage ?? new StorageAdapter();
   }
 
   /**
@@ -30,9 +48,21 @@ export class StateManager {
   async initializeStorage(): Promise<void> {
     await this.loadCacheFromStorage();
 
-    const storedProfile = await this.storage.getProfile();
+    const storedProfile = await this.storage.getProfile() as SyncedProfile | null;
     if (storedProfile) {
-      this.currentProfile = storedProfile;
+      // Separate profile data from sync metadata
+      const { lastSyncedAt, isDirty, ...profileData } = storedProfile;
+      this.profileWithSync.profile = profileData;
+      this.profileWithSync.lastSyncedAt = lastSyncedAt ?? null;
+      this.profileWithSync.isDirty = isDirty ?? false;
+    }
+
+    // If the profile is dirty (unsynced), attempt a background sync
+    if (this.profileWithSync.isDirty) {
+      console.log('🔄 Profile has unsynced changes — attempting background sync');
+      this.attemptSync().catch(err => {
+        console.warn('⚠️ Background sync failed, will retry later', err);
+      });
     }
   }
 
@@ -40,46 +70,166 @@ export class StateManager {
    * Get current profile state
    */
   getProfile(): ProfileState {
-    return { ...this.currentProfile };
+    return { ...this.profileWithSync.profile };
   }
 
   /**
-   * Update profile state
+   * Update profile state (marks as dirty)
    */
   setProfile(profile: ProfileState): void {
-    this.currentProfile = profile;
+    this.profileWithSync.profile = profile;
+    this.profileWithSync.isDirty = true;
   }
 
   /**
-   * Load profile from API or localStorage
+   * Whether the profile has unsynced local changes
+   */
+  isProfileDirty(): boolean {
+    return this.profileWithSync.isDirty;
+  }
+
+  /**
+   * When the profile was last successfully synced with the server
+   */
+  getProfileLastSyncedAt(): string | null {
+    return this.profileWithSync.lastSyncedAt;
+  }
+
+  /**
+   * Load profile from API or localStorage with sync awareness.
+   *
+   * Strategy:
+   *  1. Try the API first — if it responds, it's the source of truth.
+   *  2. If the API fails, fall back to storage.
+   *  3. After a successful API load, clear the isDirty flag.
    */
   async loadProfile(): Promise<void> {
     const apiProfile = await this.apiClient.loadProfile();
     if (apiProfile) {
-      this.currentProfile = apiProfile;
-      await this.persistProfile(apiProfile);
+      const { lastSyncedAt, isDirty, ...profileData } = apiProfile as SyncedProfile;
+      this.profileWithSync = {
+        profile: profileData,
+        lastSyncedAt: new Date().toISOString(),
+        isDirty: false
+      };
+      await this.persistProfile(this.profileWithSync.profile);
       return;
     }
 
-    const storedProfile = await this.storage.getProfile();
+    const storedProfile = await this.storage.getProfile() as SyncedProfile | null;
     if (storedProfile) {
-      this.currentProfile = storedProfile;
+      const { lastSyncedAt, isDirty, ...profileData } = storedProfile;
+      this.profileWithSync = {
+        profile: profileData,
+        lastSyncedAt: lastSyncedAt ?? null,
+        isDirty: isDirty ?? false
+      };
     }
   }
 
   /**
-   * Save profile to API and localStorage
+   * Save profile to API and localStorage.
+   * On success, clears the isDirty flag and updates lastSyncedAt.
    */
   async saveProfile(profile: ProfileState): Promise<ProfileState> {
     const saved = await this.apiClient.saveProfile(profile);
-    this.currentProfile = saved;
+    this.profileWithSync = {
+      profile: saved,
+      lastSyncedAt: new Date().toISOString(),
+      isDirty: false
+    };
     await this.persistProfile(saved);
     return saved;
   }
 
+  /**
+   * Sync the profile between local storage and the API.
+   *
+   * Conflict resolution strategy:
+   *  - If the local profile is dirty AND the server has a newer lastSyncedAt,
+   *    the server version wins (it was saved more recently from another device).
+   *  - If the local profile is dirty but the server hasn't been updated since
+   *    our last sync, push the local version to the server.
+   *  - If neither side has changes, do nothing.
+   */
+  async syncProfile(): Promise<'pushed' | 'pulled' | 'no-change' | 'conflict-server-wins'> {
+    const apiProfile = await this.apiClient.loadProfile();
+
+    // No server profile — push local if dirty
+    if (!apiProfile) {
+      if (this.profileWithSync.isDirty) {
+        console.log('🔄 No server profile — pushing local changes');
+        await this.saveProfile(this.profileWithSync.profile);
+        return 'pushed';
+      }
+      return 'no-change';
+    }
+
+    const { lastSyncedAt: serverSyncTime, ...serverData } = apiProfile as SyncedProfile;
+    const localSyncTime = this.profileWithSync.lastSyncedAt;
+
+    // Local profile is clean — just pull from server
+    if (!this.profileWithSync.isDirty) {
+      if (serverSyncTime && serverSyncTime !== localSyncTime) {
+        console.log('🔄 Local profile is clean — pulling from server');
+        this.profileWithSync = {
+          profile: serverData,
+          lastSyncedAt: serverSyncTime ?? new Date().toISOString(),
+          isDirty: false
+        };
+        await this.persistProfile(serverData);
+        return 'pulled';
+      }
+      return 'no-change';
+    }
+
+    // Both sides have changes — compare timestamps
+    const serverTime = serverSyncTime ? new Date(serverSyncTime).getTime() : 0;
+    const localTime = localSyncTime ? new Date(localSyncTime).getTime() : 0;
+
+    if (serverTime > localTime) {
+      // Server is newer — server wins
+      console.log('⚠️ Conflict detected — server profile is newer, pulling');
+      this.profileWithSync = {
+        profile: serverData,
+        lastSyncedAt: serverSyncTime,
+        isDirty: false
+      };
+      await this.persistProfile(serverData);
+      return 'conflict-server-wins';
+    }
+
+    // Local is newer or same — push to server
+    console.log('🔄 Pushing local profile — it is newer than server');
+    await this.saveProfile(this.profileWithSync.profile);
+    return 'pushed';
+  }
+
+  /**
+   * Attempt a background sync if the profile is dirty.
+   * Non-throwing — errors are logged but not propagated.
+   */
+  async attemptSync(): Promise<void> {
+    if (!this.profileWithSync.isDirty) {
+      return;
+    }
+
+    try {
+      await this.syncProfile();
+      console.log('✅ Background sync completed');
+    } catch (error) {
+      console.warn('⚠️ Background sync failed:', error);
+    }
+  }
+
   private async persistProfile(profile: ProfileState): Promise<void> {
     try {
-      await this.storage.saveProfile(profile);
+      const synced: SyncedProfile = {
+        ...profile,
+        lastSyncedAt: this.profileWithSync.lastSyncedAt,
+        isDirty: this.profileWithSync.isDirty
+      };
+      await this.storage.saveProfile(synced as ProfileState);
     } catch (error) {
       console.warn('Failed to persist profile', error);
     }
@@ -153,6 +303,50 @@ export class StateManager {
   async clearCache(): Promise<void> {
     this.analyzedJobs.clear();
     await this.persistCache();
+  }
+
+  /**
+   * Load saved jobs from the backend API and store locally
+   */
+  async loadSavedJobs(): Promise<SavedJob[]> {
+    this.savedJobs = await this.apiClient.loadJobs();
+    return this.savedJobs;
+  }
+
+  /**
+   * Get locally cached saved jobs
+   */
+  getSavedJobs(): SavedJob[] {
+    return [...this.savedJobs];
+  }
+
+  /**
+   * Save a job analysis to history
+   */
+  async saveJobToHistory(job: SaveJobRequest): Promise<SavedJob> {
+    const result = await this.apiClient.saveJob(job);
+    const savedJob: SavedJob = {
+      id: result.id,
+      job_title: job.job_title,
+      job_description: job.job_description,
+      budget: job.budget,
+      skills: job.skills,
+      proposal: job.proposal,
+      time_estimate: job.time_estimate,
+      spec_sheet_prompt: job.spec_sheet_prompt,
+      tone_analysis: job.tone_analysis,
+      created_at: result.created_at
+    };
+    this.savedJobs.unshift(savedJob);
+    return savedJob;
+  }
+
+  /**
+   * Delete a job from history
+   */
+  async deleteJobFromHistory(id: number): Promise<void> {
+    await this.apiClient.deleteJob(id);
+    this.savedJobs = this.savedJobs.filter(j => j.id !== id);
   }
 
   /**
