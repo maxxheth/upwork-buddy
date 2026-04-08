@@ -2,7 +2,7 @@
  * API layer for communicating with Upwork Buddy backend
  */
 
-import type { ProfileState, ProfileApiResponse, JobInfo, AnalysisResponse } from './types';
+import type { ProfileState, ProfileApiResponse, JobInfo, AnalysisResponse, SaveJobRequest, SavedJob, SavedJobsResponse } from './types';
 import { CONFIG } from './types';
 
 export class ApiClient {
@@ -95,6 +95,49 @@ export class ApiClient {
     });
 
     return data;
+  }
+
+  /**
+   * Save a job analysis to the backend
+   */
+  async saveJob(job: SaveJobRequest): Promise<{ id: number; job_title: string; created_at: string }> {
+    const response = await fetch(CONFIG.jobsApiEndpoint, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(job)
+    });
+    if (!response.ok) {
+      throw new Error(`Save job failed: ${response.status} ${response.statusText}`);
+    }
+    return response.json();
+  }
+
+  /**
+   * Load all saved jobs from the backend
+   */
+  async loadJobs(): Promise<SavedJob[]> {
+    try {
+      const response = await fetch(CONFIG.jobsApiEndpoint, { method: 'GET' });
+      if (!response.ok) {
+        console.warn('Load jobs returned status', response.status);
+        return [];
+      }
+      const data: SavedJobsResponse = await response.json();
+      return data.jobs || [];
+    } catch (error) {
+      console.warn('Load jobs error', error);
+      return [];
+    }
+  }
+
+  /**
+   * Delete a saved job
+   */
+  async deleteJob(id: number): Promise<void> {
+    const response = await fetch(`${CONFIG.jobsApiEndpoint}/${id}`, { method: 'DELETE' });
+    if (!response.ok && response.status !== 204) {
+      throw new Error(`Delete job failed: ${response.status} ${response.statusText}`);
+    }
   }
 
   /**
