@@ -11,8 +11,11 @@ import { Modal } from './ui/modal';
 import { ButtonManager } from './ui/buttons';
 import { ProfileConfigUI } from './ui/profile-config';
 import { ProjectsListUI } from './ui/projects-list';
+import { JobHistoryPanel } from './ui/job-history';
 import { renderAnalysis, escapeHtml } from './utils';
-import { CONFIG } from './types';
+import { detectEnvironment, loadConfig, CONFIG } from './types';
+import type { SavedJob } from './types';
+import { StorageAdapter } from './storage';
 
 class UpworkBuddy {
   private stateManager: StateManager;
@@ -22,6 +25,7 @@ class UpworkBuddy {
   private buttonManager: ButtonManager;
   private profileConfigUI: ProfileConfigUI | null = null;
   private projectsListUI: ProjectsListUI | null = null;
+  private jobHistoryPanel: JobHistoryPanel | null = null;
   private logPrefix = '[UpworkBuddy][Main]';
 
   constructor() {
@@ -39,7 +43,8 @@ class UpworkBuddy {
     this.buttonManager = new ButtonManager(
       () => this.handleAnalyze(),
       () => this.openProfileConfig(),
-      () => this.showProjectsList()
+      () => this.showProjectsList(),
+      () => this.showJobHistory()
     );
 
     // Initialize
@@ -47,6 +52,22 @@ class UpworkBuddy {
   }
 
   private async initialize(): Promise<void> {
+    // ── Environment-aware config resolution ──
+    const storage = new StorageAdapter();
+    const customOverrides = await storage.getCustomConfig();
+    const env = detectEnvironment();
+    const resolvedConfig = loadConfig(undefined, customOverrides ?? undefined);
+
+    // PATCH: Override the module-level CONFIG object so all existing references
+    // (ApiClient, StateManager, etc.) pick up the resolved values without
+    // requiring constructor injection.
+    Object.assign(CONFIG, resolvedConfig);
+
+    console.log(`🌍 Upwork Buddy starting in "${resolvedConfig.env}" environment (detected: "${env}")`);
+    if (customOverrides) {
+      console.log('🔧 Custom config overrides applied:', customOverrides);
+    }
+
     this.log('Initializing extension...');
     await this.stateManager.initializeStorage();
     this.log('Storage initialized', { cacheSize: this.stateManager.getCacheSize() });
@@ -62,10 +83,61 @@ class UpworkBuddy {
       this.log('ProjectsListUI ready with initial badge update');
     }
 
+    // Run selector health check and show warning if needed
+    this.runHealthCheck();
+
     // Watch for job drawer to appear
     this.watchForDrawer();
 
     console.log('✅ Upwork Buddy activated! Open a job to see the Analyze button.');
+  }
+
+  /**
+   * Run the selector health check and show a warning banner if any fields are broken.
+   */
+  private runHealthCheck(): void {
+    const results = this.jobExtractor.healthCheck();
+    const brokenFields = results.filter((r) => r.status === 'broken');
+
+    if (brokenFields.length > 0) {
+      this.log('Health check: broken fields detected', {
+        broken: brokenFields.map((f) => f.field),
+      });
+      this.showHealthWarning(brokenFields.map((f) => f.field));
+    } else {
+      const fallbackFields = results.filter((r) => r.status === 'fallback');
+      if (fallbackFields.length > 0) {
+        this.log('Health check: some fields using fallback selectors', {
+          fallback: fallbackFields.map((f) => f.field),
+        });
+      } else {
+        this.log('Health check: all selectors ok');
+      }
+    }
+  }
+
+  /**
+   * Show a dismissible warning banner on the page when some selectors are broken.
+   */
+  private showHealthWarning(brokenFields: string[]): void {
+    // Don't show the warning more than once per session
+    if (document.getElementById('upwork-buddy-health-warning')) {
+      return;
+    }
+
+    const banner = document.createElement('div');
+    banner.id = 'upwork-buddy-health-warning';
+    banner.className = 'upwork-buddy-health-warning';
+    banner.innerHTML = `
+      <span>⚠️ Upwork Buddy: Some selectors need updating (${escapeHtml(brokenFields.join(', '))}). Job extraction may be incomplete.</span>
+      <button class="upwork-buddy-health-dismiss" title="Dismiss for this session">✕</button>
+    `;
+
+    banner.querySelector('.upwork-buddy-health-dismiss')?.addEventListener('click', () => {
+      banner.remove();
+    });
+
+    document.body.appendChild(banner);
   }
 
   /**
@@ -130,6 +202,23 @@ class UpworkBuddy {
       await this.stateManager.cacheAnalysis(jobInfo, analysis);
       this.log('Analysis cached', { cacheSize: this.stateManager.getCacheSize() });
 
+      // Auto-save job to history via API
+      try {
+        await this.stateManager.saveJobToHistory({
+          job_title: jobInfo.title,
+          job_description: jobInfo.description,
+          budget: jobInfo.budget,
+          skills: jobInfo.skills,
+          proposal: analysis.proposal || '',
+          time_estimate: analysis.time_estimate || '',
+          spec_sheet_prompt: analysis.spec_sheet_prompt || '',
+          tone_analysis: analysis.tone_analysis || ''
+        });
+        this.log('Job auto-saved to history');
+      } catch (saveError) {
+        console.warn('⚠️ Failed to auto-save job to history:', saveError);
+      }
+
       // Update projects list badge
       if (this.projectsListUI) {
         this.log('Updating badge after analysis');
@@ -190,6 +279,82 @@ class UpworkBuddy {
 
     this.log('Rendering projects list modal');
     this.projectsListUI.render();
+  }
+
+  /**
+   * Show job history modal
+   */
+  private async showJobHistory(): Promise<void> {
+    this.modal.open();
+    const modalBody = this.modal.getBody();
+
+    modalBody.innerHTML = '<div class="upwork-buddy-loading">📋 Loading job history...</div>';
+
+    try {
+      const jobs = await this.stateManager.loadSavedJobs();
+
+      this.jobHistoryPanel = new JobHistoryPanel(
+        modalBody,
+        (job: SavedJob) => this.viewSavedJob(job),
+        (id: number) => this.deleteSavedJob(id)
+      );
+
+      this.jobHistoryPanel.render(jobs);
+    } catch (error) {
+      console.error('❌ Failed to load job history:', error);
+      const errorMessage = error instanceof Error ? error.message : String(error);
+      modalBody.innerHTML = `
+        <div class="upwork-buddy-error">
+          ❌ Failed to load job history: ${escapeHtml(errorMessage)}
+        </div>
+      `;
+    }
+  }
+
+  /**
+   * View a saved job's full analysis
+   */
+  private viewSavedJob(job: SavedJob): void {
+    const modalBody = this.modal.getBody();
+    const analysis = {
+      proposal: job.proposal,
+      time_estimate: job.time_estimate,
+      spec_sheet_prompt: job.spec_sheet_prompt,
+      tone_analysis: job.tone_analysis
+    };
+
+    modalBody.innerHTML = `
+      <button class="upwork-buddy-secondary-btn" style="background: #108ee9; color: white; border: none; padding: 8px 16px; border-radius: 6px; cursor: pointer; margin-bottom: 16px;" id="upwork-buddy-back-to-history">
+        ← Back to Job History
+      </button>
+      <h3 style="margin-top: 0; color: #14a800;">${escapeHtml(job.job_title)}</h3>
+      <div class="upwork-buddy-project-meta" style="margin-bottom: 16px;">
+        <span>💰 ${escapeHtml(job.budget || 'Not specified')}</span>
+        <span>🛠️ ${escapeHtml(job.skills || 'Not specified')}</span>
+      </div>
+      ${renderAnalysis(analysis, true)}
+    `;
+
+    const backBtn = modalBody.querySelector('#upwork-buddy-back-to-history');
+    backBtn?.addEventListener('click', () => this.showJobHistory());
+  }
+
+  /**
+   * Delete a saved job and refresh the list
+   */
+  private async deleteSavedJob(id: number): Promise<void> {
+    try {
+      await this.stateManager.deleteJobFromHistory(id);
+      // Refresh the job history panel
+      const jobs = this.stateManager.getSavedJobs();
+      if (this.jobHistoryPanel) {
+        this.jobHistoryPanel.render(jobs);
+      }
+    } catch (error) {
+      console.error('❌ Failed to delete job:', error);
+      const errorMessage = error instanceof Error ? error.message : String(error);
+      alert(`Failed to delete job: ${errorMessage}`);
+    }
   }
 
   private log(message: string, payload?: Record<string, unknown>): void {
