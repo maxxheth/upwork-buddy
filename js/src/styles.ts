@@ -496,6 +496,209 @@ export const STYLES = `
 .upwork-buddy-secondary-btn:hover {
   background: #ebebeb;
 }
+
+.upwork-buddy-health-warning {
+  position: fixed;
+  top: 0;
+  left: 0;
+  right: 0;
+  z-index: 999998;
+  background: #fff3cd;
+  color: #856404;
+  padding: 10px 16px;
+  font-size: 13px;
+  font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 12px;
+  border-bottom: 2px solid #ffc107;
+  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.1);
+}
+
+.upwork-buddy-health-warning span {
+  flex: 1;
+  text-align: center;
+}
+
+.upwork-buddy-health-dismiss {
+  background: transparent;
+  border: 1px solid #856404;
+  color: #856404;
+  width: 24px;
+  height: 24px;
+  border-radius: 4px;
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 14px;
+  flex-shrink: 0;
+  transition: background 0.2s;
+}
+
+.upwork-buddy-health-dismiss:hover {
+  background: #856404;
+  color: white;
+}
+
+.upwork-buddy-job-history {
+  margin-top: 8px;
+}
+
+.upwork-buddy-job-history h3 {
+  margin-top: 0;
+  color: #14a800;
+  font-size: 16px;
+}
+
+.upwork-buddy-job-list {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+.upwork-buddy-job-card {
+  border: 1px solid #e0e0e0;
+  border-radius: 8px;
+  padding: 14px 16px;
+  background: #fff;
+  transition: all 0.2s ease;
+}
+
+.upwork-buddy-job-card:hover {
+  border-color: #14a800;
+  box-shadow: 0 2px 8px rgba(20, 168, 0, 0.1);
+}
+
+.upwork-buddy-job-card-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: flex-start;
+  gap: 12px;
+  margin-bottom: 8px;
+}
+
+.upwork-buddy-job-card-header h4 {
+  margin: 0;
+  font-size: 15px;
+  font-weight: 600;
+  color: #333;
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.upwork-buddy-job-card-time {
+  font-size: 12px;
+  color: #999;
+  white-space: nowrap;
+  flex-shrink: 0;
+}
+
+.upwork-buddy-job-card-details {
+  display: flex;
+  gap: 16px;
+  flex-wrap: wrap;
+  font-size: 13px;
+  color: #666;
+  margin-bottom: 10px;
+}
+
+.upwork-buddy-job-card-actions {
+  display: flex;
+  gap: 8px;
+  justify-content: flex-end;
+}
+
+.upwork-buddy-view-job {
+  background: #108ee9;
+  color: white;
+  border: none;
+  padding: 6px 14px;
+  border-radius: 6px;
+  cursor: pointer;
+  font-weight: 600;
+  font-size: 13px;
+  transition: background 0.2s ease;
+}
+
+.upwork-buddy-view-job:hover {
+  background: #0c6cb3;
+}
+
+.upwork-buddy-delete-job {
+  background: transparent;
+  color: #dc3545;
+  border: 1px solid #dc3545;
+  padding: 6px 10px;
+  border-radius: 6px;
+  cursor: pointer;
+  font-size: 13px;
+  transition: all 0.2s ease;
+}
+
+.upwork-buddy-delete-job:hover {
+  background: #dc3545;
+  color: white;
+}
+
+.upwork-buddy-empty-state {
+  text-align: center;
+  padding: 40px 20px;
+  color: #999;
+}
+
+.upwork-buddy-empty-state p:first-child {
+  font-size: 16px;
+  margin-bottom: 8px;
+}
+
+.upwork-buddy-job-history-btn {
+  background: #6f42c1;
+  color: white;
+  border: none;
+  padding: 12px 20px;
+  border-radius: 8px;
+  cursor: pointer;
+  font-weight: 600;
+  font-size: 14px;
+  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.1);
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  transition: all 0.2s ease;
+}
+
+.upwork-buddy-job-history-btn:hover {
+  background: #5a32a3;
+  box-shadow: 0 4px 12px rgba(0, 0, 0, 0.15);
+  transform: translateY(-1px);
+}
+
+@media (max-width: 600px) {
+  .upwork-buddy-job-card-header {
+    flex-direction: column;
+    gap: 4px;
+  }
+
+  .upwork-buddy-job-card-details {
+    flex-direction: column;
+    gap: 4px;
+  }
+
+  .upwork-buddy-job-card-actions {
+    justify-content: stretch;
+  }
+
+  .upwork-buddy-view-job,
+  .upwork-buddy-delete-job {
+    flex: 1;
+    text-align: center;
+  }
+}
 `;
 
 export function injectStyles(): void {
