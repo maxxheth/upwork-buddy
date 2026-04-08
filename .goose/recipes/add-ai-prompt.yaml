@@ -1,0 +1,89 @@
+version: "1.0.0"
+title: "Add AI Analysis Prompt"
+description: >
+  Add or modify an AI analysis prompt in the Ollama service layer. The project uses structured
+  JSON prompts sent to an Ollama-compatible API to analyze Upwork job postings. This recipe
+  guides you through adding new prompt templates, response parsing, and response fields following
+  the project's established patterns.
+
+parameters:
+  - key: prompt_name
+    input_type: string
+    requirement: required
+    description: "Name for this analysis feature, e.g. 'CoverLetter' or 'RateEstimate'"
+
+  - key: analysis_description
+    input_type: string
+    requirement: required
+    description: "What this analysis should produce, e.g. 'Generate a tailored cover letter based on the job and freelancer profile'"
+
+  - key: response_fields
+    input_type: string
+    requirement: required
+    description: "Comma-separated response field names, e.g. 'cover_letter,rate_range,rationale'"
+
+  - key: include_job_context
+    input_type: boolean
+    requirement: optional
+    default: "true"
+    description: "Whether the prompt should include the job posting details (title, description, budget, skills)"
+
+  - key: include_profile_context
+    input_type: boolean
+    requirement: optional
+    default: "true"
+    description: "Whether the prompt should include the freelancer profile and skills"
+
+instructions: |
+  You are adding or modifying an AI analysis prompt in the Upwork Buddy Ollama service. Follow
+  the project's established conventions precisely.
+
+  ## Architecture Context
+  - AI service: `internal/ollama/service.go` — `Service` struct wraps HTTP calls to an
+    Ollama-compatible chat API. Uses `chatRequest` with `Model`, `Messages`, `Stream: false`,
+    `Format: "json"` to force structured JSON output.
+  - Prompt construction: The `buildAnalysisPrompt()` method concatenates a system instruction with
+    job details and freelancer profile info into a single user message. The prompt explicitly asks
+    for JSON output with specific field names.
+  - Response parsing: `parseResponse()` handles JSON extraction from responses, including markdown-
+    wrapped JSON (```json...```). Falls back to putting raw text in the `Proposal` field.
+  - Types: `JobAnalysisRequest` and `JobAnalysisResponse` are the main request/response structs.
+    `JobAnalysisResponse` uses `json.RawMessage` for flexible fields (`TimeEstimate`, `WorkloadDivision`),
+    `[]string` for list fields (`QuestionsForClient`, `TipsAndAdvice`), and `string` for scalar fields.
+  - Configuration: `OLLAMA_API_KEY`, `OLLAMA_HOST` (defaults to ollama.com), `OLLAMA_MODEL`
+    (defaults to gpt-oss:120b) are read from env vars in `New()`.
+  - Client timeout: 90 seconds on the HTTP client.
+  - The service uses `normalizeHost()` to ensure host URLs have a scheme.
+
+  ## Adding a New Prompt/Response Pattern
+  1. Read `internal/ollama/service.go` thoroughly — understand the `AnalyzeJob` flow, prompt
+    construction, and response parsing.
+  2. If adding a new analysis type (not modifying the existing one):
+    a. Add new request/response structs (e.g. `{{ prompt_name }}Request`, `{{ prompt_name }}Response`).
+    b. Add a new method on `*Service` (e.g. `Analyze{{ prompt_name }}`) following the `AnalyzeJob` pattern.
+    c. Build the prompt using the same concatenation approach but tailored to the new use case.
+    d. Add a new handler in `internal/server/handlers.go` and route in `routes.go`.
+    e. Add corresponding types and API method in the frontend (`js/src/api.ts`, `js/src/types.ts`).
+  3. If modifying the existing prompt:
+    a. Update `buildAnalysisPrompt()` to include the new requested output format.
+    b. Add new fields to `JobAnalysisResponse` with proper JSON tags.
+    c. Update `parseResponse()` to extract the new fields from the LLM response.
+    d. Update `js/src/types.ts` `AnalysisResponse` interface to include new fields.
+    e. Update `js/src/utils.ts` `renderAnalysis()` with icons and labels for new sections.
+  4. Always include explicit JSON structure instructions in the prompt so the LLM produces parseable output.
+  5. Always handle the case where the LLM returns markdown-wrapped JSON (```json...```).
+  6. Test by running the backend and making a real request, or add a test to `internal/ollama/service_test.go`.
+
+  ## Analysis details
+  - Name: {{ prompt_name }}
+  - Description: {{ analysis_description }}
+  - Response fields: {{ response_fields }}
+  - Include job context: {{ include_job_context }}
+  - Include profile context: {{ include_profile_context }}
+
+activities:
+  - "message: 🤖 I'll add the **{{ prompt_name }}** analysis prompt with fields ({{ response_fields }})."
+  - "Just update the prompt and response types (skip backend handler and frontend)"
+  - "Also add the backend handler and API route"
+  - "Also update the frontend to display the new fields"
+  - "Write tests for the new prompt parsing"

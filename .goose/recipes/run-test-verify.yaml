@@ -1,0 +1,84 @@
+version: "1.0.0"
+title: "Run Tests & Verify"
+description: >
+  Run the full test suite for the Upwork Buddy project (Go backend + TypeScript frontend) and
+  fix any failing tests. Covers unit tests, type checking, build verification, and database
+  migration checks.
+
+parameters:
+  - key: scope
+    input_type: select
+    requirement: required
+    description: "Which part of the project to test and verify"
+    options:
+      - backend
+      - frontend
+      - full-stack
+      - migrations
+
+  - key: fix_failures
+    input_type: boolean
+    requirement: optional
+    default: "true"
+    description: "Whether to attempt fixing any test failures found"
+
+  - key: verbose
+    input_type: boolean
+    requirement: optional
+    default: "true"
+    description: "Show verbose test output with full log lines"
+
+instructions: |
+  You are running tests and verification for the Upwork Buddy project. Follow the appropriate
+  steps based on the scope parameter.
+
+  ## Project Test Infrastructure
+  - **Go tests**: `go test ./... -v` for all packages, or target specific packages:
+    - `go test ./internal/server/ -v` — handler and route tests
+    - `go test ./internal/ollama/ -v` — Ollama service and parsing tests
+    - `go test ./internal/database/ -v` — integration database tests
+  - **TypeScript type check**: `cd js && npm run type-check` — runs `tsc --noEmit`
+  - **Frontend build**: `cd js && npm run build` — esbuild bundle verification
+  - **Backend build**: `go build -o ./dist/upwork-buddy ./cmd/api/main.go`
+  - **Database migrations**: `atlas migrate diff --env app` then `atlas migrate apply --env app`
+  - **Docker**: `docker compose up --build` starts Postgres + Atlas
+  - **Go vet**: `go vet ./...` for static analysis
+  - **Integration tests**: `go test ./internal/database -v` (requires running Postgres)
+
+  ## Steps for 'backend' scope
+  1. Run `go test ./... -v` to execute all Go tests.
+  2. Run `go vet ./...` for static analysis.
+  3. Run `go build ./cmd/api/main.go` to verify compilation.
+  4. If any tests fail and fix_failures is true, read the failing test file and the source code
+    it tests, then fix the issue and re-run.
+
+  ## Steps for 'frontend' scope
+  1. Run `cd js && npm install` to ensure dependencies are installed.
+  2. Run `cd js && npm run type-check` to verify TypeScript types.
+  3. Run `cd js && npm run build` to verify the build succeeds.
+  4. If any step fails and fix_failures is true, read the error output and fix the source.
+
+  ## Steps for 'full-stack' scope
+  1. Run all backend steps (tests, vet, build).
+  2. Run all frontend steps (install, type-check, build).
+  3. Run `docker compose up --build` to verify the full stack starts.
+  4. Run `curl http://localhost:9090/health` to verify the server responds.
+  5. Fix any failures if fix_failures is true.
+
+  ## Steps for 'migrations' scope
+  1. Ensure Docker Postgres is running: `docker compose up -d app_db`.
+  2. Run `atlas migrate diff --env app` to check for schema drift.
+  3. If there's drift, review the generated migration file.
+  4. Run `atlas migrate apply --env app` to apply pending migrations.
+  5. Verify with `go test ./internal/database/ -v`.
+
+  ## Test Scope
+  - Scope: {{ scope }}
+  - Fix failures: {{ fix_failures }}
+  - Verbose: {{ verbose }}
+
+activities:
+  - "message: 🧪 I'll run **{{ scope }}** tests and {{ fix_failures }} fix any failures."
+  - "Run tests first, then report results without fixing"
+  - "Run tests and auto-fix all failures"
+  - "Just check if everything compiles and builds" 
