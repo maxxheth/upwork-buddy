@@ -1,0 +1,89 @@
+version: "1.0.0"
+title: "Add API Endpoint"
+description: >
+  Scaffold a new REST API endpoint in the Upwork Buddy Go backend. Generates the route
+  registration, handler function, request/response types, and corresponding tests following
+  the project's established patterns (net/http ServeMux, JSON encoding, CORS middleware,
+  GORM database access, structured logging with emoji prefixes).
+
+parameters:
+  - key: endpoint_path
+    input_type: string
+    requirement: required
+    description: "The URL path for the new endpoint, e.g. /api/jobs"
+
+  - key: http_method
+    input_type: select
+    requirement: required
+    description: "The HTTP method the endpoint will handle"
+    options:
+      - GET
+      - POST
+      - PUT
+      - DELETE
+
+  - key: feature_description
+    input_type: string
+    requirement: required
+    description: "Brief description of what this endpoint does, e.g. 'List all saved jobs for the current user'"
+
+  - key: requires_database
+    input_type: boolean
+    requirement: optional
+    default: "true"
+    description: "Whether this endpoint reads from or writes to the database"
+
+  - key: requires_ai
+    input_type: boolean
+    requirement: optional
+    default: "false"
+    description: "Whether this endpoint calls the Ollama AI service"
+
+instructions: |
+  You are adding a new API endpoint to the Upwork Buddy Go backend. Follow the project's
+  established conventions precisely.
+
+  ## Architecture Context
+  - Go backend lives in `internal/server/` with `server.go` (Server struct + NewServer),
+    `routes.go` (RegisterRoutes + CORS middleware), and `handlers.go` (handler methods on *Server).
+  - Router: `http.NewServeMux()` — use `mux.HandleFunc("{{ endpoint_path }}", s.handlerName)`.
+  - Database: GORM via `s.db.GetGorm()` on the `service.DatabaseService` interface. Models live in
+    `internal/database/service/schema.go`. If a new model is needed, add it there and regenerate
+    Atlas migrations with `atlas migrate diff --env app` then `atlas migrate apply --env app`.
+  - Ollama AI service: `internal/ollama/service.go` — create with `ollama.New()`, defer `Close()`.
+  - Request/response JSON types: define them as private structs right above the handler in
+    `handlers.go` (e.g. `type fooRequest struct { ... }` and `type fooResponse struct { ... }`).
+  - JSON responses: use the `respondWithJSON(w, payload)` helper already in handlers.go.
+  - Error responses: use `http.Error(w, "message", statusCode)`.
+  - Logging: use `log.Printf()` with emoji prefixes — 📥 for requests, ✅ for success, ❌ for errors.
+  - GORM transactions: wrap multi-write operations in `db.Begin()` / `tx.Commit()` / `tx.Rollback()`
+    with a `defer recover()` rollback guard for panics.
+
+  ## Steps
+  1. Read the existing `internal/server/handlers.go`, `routes.go`, and `server.go` to absorb the current patterns.
+  2. If requires_database is true and a new GORM model is needed, add it to `internal/database/service/schema.go`,
+    then update the Atlas loader in `internal/database/service/loader/main.go` to include the new model,
+    then run `atlas migrate diff --env app` to generate a migration and `atlas migrate apply --env app` to apply it.
+  3. Add the handler method on `*Server` in `handlers.go` following the existing pattern:
+     - Validate HTTP method at the top (unless it handles multiple methods like the profile handler)
+     - Decode JSON body for POST/PUT
+     - Perform business logic, call `s.db.GetGorm()` for DB access or `ollama.New()` for AI
+     - Encode JSON response with `respondWithJSON` or return error with `http.Error`
+     - Add structured logging with emoji prefixes
+  4. Register the route in `routes.go` inside `RegisterRoutes()`.
+  5. Add a test in a new or existing `_test.go` file following the `httptest.NewServer` pattern
+    already in `internal/server/routes_test.go`.
+  6. Run `go test ./internal/server/ -v` and `go vet ./...` to verify everything compiles and passes.
+
+  ## New endpoint details
+  - Path: {{ endpoint_path }}
+  - Method: {{ http_method }}
+  - Description: {{ feature_description }}
+  - Requires database: {{ requires_database }}
+  - Requires AI service: {{ requires_ai }}
+
+activities:
+  - "message: 🚀 I'll scaffold a **{{ http_method }} {{ endpoint_path }}** endpoint following the project's conventions."
+  - "Just add the handler, route, and types (skip DB model and tests)"
+  - "Also add a new GORM model and migration"
+  - "Write comprehensive tests with edge cases"

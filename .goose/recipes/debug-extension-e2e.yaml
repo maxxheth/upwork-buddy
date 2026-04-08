@@ -1,0 +1,111 @@
+version: "1.0.0"
+title: "Debug Extension End-to-End"
+description: >
+  Systematically debug an issue that spans the browser extension frontend and Go backend.
+  Guides through checking the full request pipeline: DOM extraction → API call → backend handler →
+  Ollama service → response parsing → UI rendering. Includes common failure mode checklist and
+  fix suggestions.
+
+parameters:
+  - key: issue_description
+    input_type: string
+    requirement: required
+    description: "Describe the bug or error you're seeing, e.g. 'Analysis button does nothing' or 'Response shows empty proposal'"
+
+  - key: error_message
+    input_type: string
+    requirement: optional
+    default: ""
+    description: "Any error message from the browser console or backend logs"
+
+  - key: failing_component
+    input_type: select
+    requirement: required
+    description: "Which part of the pipeline seems to be failing"
+    options:
+      - frontend-dom
+      - frontend-api-call
+      - backend-handler
+      - backend-ollama
+      - backend-response
+      - frontend-rendering
+      - unknown
+
+instructions: |
+  You are debugging an end-to-end issue in Upwork Buddy. The app has a clear pipeline:
+
+  ## The Request Pipeline
+  1. **DOM Extraction** (`js/src/job-extractor.ts`): `JobExtractor.extractJobInfo()` finds job
+    details in the Upwork page DOM using CSS selectors. Common issue: Upwork changes their HTML
+    structure, breaking selectors.
+  2. **State Assembly** (`js/src/state.ts`): `StateManager` loads the user profile from API or
+    localStorage, combines it with the extracted job info.
+  3. **API Call** (`js/src/api.ts`): `ApiClient.analyzeJob()` sends a POST to
+    `/api/analyze-job` with the job details and profile. Common issue: CORS, wrong `apiBaseUrl`,
+    network errors.
+  4. **Backend Handler** (`internal/server/handlers.go`): `analyzeJobHandler` decodes the request,
+    creates an Ollama service, calls `AnalyzeJob`. Common issue: request body decode errors,
+    missing env vars.
+  5. **Ollama Service** (`internal/ollama/service.go`): `AnalyzeJob` builds a prompt, sends it to
+    the Ollama API, parses the JSON response. Common issue: `OLLAMA_API_KEY` not set, API
+    timeout, model not found, response format issues.
+  6. **Response Return** (`internal/server/handlers.go`): Handler encodes the Ollama response as
+    JSON and returns it. Common issue: encoding errors, partial responses.
+  7. **Frontend Rendering** (`js/src/utils.ts`): `renderAnalysis()` iterates over response fields,
+    creates collapsible sections. Common issue: unexpected field types, null/undefined values.
+
+  ## Debugging Steps
+  Based on the failing component, focus your investigation:
+
+  ### frontend-dom
+  - Read `js/src/job-extractor.ts` — check the CSS selectors.
+  - Open Upwork in a browser and inspect the actual DOM structure.
+  - Add `console.log` to `extractJobInfo()` to see what's being extracted.
+  - Check if Upwork changed their HTML classes (e.g. `air3-token`, `job-details-content`).
+
+  ### frontend-api-call
+  - Read `js/src/api.ts` — check the fetch call to `/api/analyze-job`.
+  - Check `CONFIG.apiBaseUrl` in `js/src/types.ts` — is it pointing to the right server?
+  - Open browser DevTools Network tab — is the request being sent? What's the response status?
+  - Check CORS headers in `internal/server/routes.go` — are they allowing your origin?
+
+  ### backend-handler
+  - Read `internal/server/handlers.go` `analyzeJobHandler` — check request decoding.
+  - Check the backend logs for the 📥/✅/❌ emoji-prefixed log lines.
+  - Verify `OLLAMA_API_KEY`, `OLLAMA_HOST`, `OLLAMA_MODEL` environment variables are set.
+  - Try `curl http://localhost:9090/health` to verify the server is running.
+
+  ### backend-ollama
+  - Read `internal/ollama/service.go` — check prompt construction and response parsing.
+  - Check `parseResponse()` — is it handling markdown-wrapped JSON correctly?
+  - Verify the Ollama API is accessible from the backend server.
+  - Check the model name in `defaultModel` or `OLLAMA_MODEL` env var.
+  - Look at the 90-second HTTP client timeout — is the request timing out?
+
+  ### backend-response
+  - Check the JSON encoding in `analyzeJobHandler` — are all fields in `JobAnalysisResponse`
+    properly tagged?
+  - Check for `json.RawMessage` fields that might not be properly initialized.
+
+  ### frontend-rendering
+  - Read `js/src/utils.ts` `renderAnalysis()` — check how each field type is rendered.
+  - Check `js/src/types.ts` `AnalysisResponse` — does the frontend interface match the backend struct?
+  - Open browser console for errors during rendering.
+  - Check for fields starting with `_` (they're skipped in rendering).
+
+  ### unknown
+  - Start from step 1 of the pipeline and work through each stage.
+  - Add logging at each stage to identify where the pipeline breaks.
+
+  ## Issue details
+  - Description: {{ issue_description }}
+  - Error message: {{ error_message }}
+  - Failing component: {{ failing_component }}
+
+activities:
+  - "message: 🔍 I'll systematically debug the **{{ failing_component }}** issue: {{ issue_description }}"
+  - "Check the full pipeline end-to-end"
+  - "Focus on the frontend (DOM extraction and rendering)"
+  - "Focus on the backend (handler and Ollama service)"
+  - "Focus on the API connection (CORS, network, config)"
+  - "Add logging and error handling to identify the break point"
