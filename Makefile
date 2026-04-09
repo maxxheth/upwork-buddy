@@ -53,6 +53,16 @@ clean:
 	@echo "Cleaning..."
 	@rm -rf ./dist
 
+# Start the server in the background
+start: build
+	@mkdir -p ./logs
+	@nohup ./dist/upwork-buddy > ./logs/server.log 2>&1 &
+	@echo "Server started (PID: $$!). Logs: ./logs/server.log"
+
+# Stop the background server
+stop:
+	@pkill -f "./dist/upwork-buddy" 2>/dev/null && echo "Server stopped" || echo "Server not running"
+
 # Live Reload
 watch:
 	@if command -v air > /dev/null; then \
@@ -79,4 +89,4 @@ diff:
 	@echo "Diffing schema..."
 	@atlas migrate diff --env app
 
-.PHONY: all build run test clean watch docker-run docker-down itest apply diff
+.PHONY: all build run test clean watch docker-run docker-down itest apply diff start stop

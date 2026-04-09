@@ -13,11 +13,17 @@ import (
 type saveJobRequest struct {
 	JobTitle        string `json:"job_title"`
 	JobDescription  string `json:"job_description"`
+	ContractType    string `json:"contract_type"`
 	Budget          string `json:"budget"`
+	RateRange       string `json:"rate_range"`
+	RateMin         string `json:"rate_min"`
+	RateMax         string `json:"rate_max"`
+	BudgetAmount    string `json:"budget_amount"`
+	ExperienceLevel string `json:"experience_level"`
 	Skills          string `json:"skills"`
 	Proposal        string `json:"proposal"`
 	TimeEstimate    string `json:"time_estimate"`
-	SpecSheetPrompt string `json:"spec_sheet_prompt"`
+	ExecutionPrompt string `json:"execution_prompt"`
 	ToneAnalysis    string `json:"tone_analysis"`
 }
 
@@ -35,11 +41,17 @@ type jobEntry struct {
 	ID              uint   `json:"id"`
 	JobTitle        string `json:"job_title"`
 	JobDescription  string `json:"job_description"`
+	ContractType    string `json:"contract_type"`
 	Budget          string `json:"budget"`
+	RateRange       string `json:"rate_range"`
+	RateMin         string `json:"rate_min"`
+	RateMax         string `json:"rate_max"`
+	BudgetAmount    string `json:"budget_amount"`
+	ExperienceLevel string `json:"experience_level"`
 	Skills          string `json:"skills"`
 	Proposal        string `json:"proposal"`
 	TimeEstimate    string `json:"time_estimate"`
-	SpecSheetPrompt string `json:"spec_sheet_prompt"`
+	ExecutionPrompt string `json:"execution_prompt"`
 	ToneAnalysis    string `json:"tone_analysis"`
 	CreatedAt       string `json:"created_at"`
 }
@@ -61,11 +73,17 @@ func (s *Server) saveJobHandler(w http.ResponseWriter, r *http.Request) {
 	job := dbservice.Job{
 		Title:           req.JobTitle,
 		Description:     req.JobDescription,
+		ContractType:    req.ContractType,
 		Budget:          req.Budget,
+		RateRange:       req.RateRange,
+		RateMin:         req.RateMin,
+		RateMax:         req.RateMax,
+		BudgetAmount:    req.BudgetAmount,
+		ExperienceLevel: req.ExperienceLevel,
 		Skills:          req.Skills,
 		Proposal:        req.Proposal,
 		TimeEstimate:    req.TimeEstimate,
-		SpecSheetPrompt: req.SpecSheetPrompt,
+		ExecutionPrompt: req.ExecutionPrompt,
 		ToneAnalysis:    req.ToneAnalysis,
 	}
 
@@ -103,11 +121,17 @@ func (s *Server) listJobsHandler(w http.ResponseWriter, r *http.Request) {
 			ID:              j.ID,
 			JobTitle:        j.Title,
 			JobDescription:  j.Description,
+			ContractType:    j.ContractType,
 			Budget:          j.Budget,
+			RateRange:       j.RateRange,
+			RateMin:         j.RateMin,
+			RateMax:         j.RateMax,
+			BudgetAmount:    j.BudgetAmount,
+			ExperienceLevel: j.ExperienceLevel,
 			Skills:          j.Skills,
 			Proposal:        j.Proposal,
 			TimeEstimate:    j.TimeEstimate,
-			SpecSheetPrompt: j.SpecSheetPrompt,
+			ExecutionPrompt: j.ExecutionPrompt,
 			ToneAnalysis:    j.ToneAnalysis,
 			CreatedAt:       j.CreatedAt.Format("2006-01-02T15:04:05Z07:00"),
 		})

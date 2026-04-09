@@ -11,6 +11,12 @@ const defaultProfile: ProfileState = {
 const sampleJobInfo: JobInfo = {
   title: 'Build a Website',
   description: 'We need a responsive website built with React and TypeScript for our e-commerce platform. The site should include a product catalog, shopping cart, and checkout flow.',
+  contractType: '',
+  rateRange: '',
+  rateMin: '',
+  rateMax: '',
+  budgetAmount: '',
+  experienceLevel: '',
   budget: '$5000',
   skills: 'React, TypeScript, Node.js'
 };
@@ -18,7 +24,7 @@ const sampleJobInfo: JobInfo = {
 const sampleAnalysis: AnalysisResponse = {
   proposal: 'Dear Client, I am excited to apply...',
   time_estimate: '2-3 weeks',
-  spec_sheet_prompt: 'Build a responsive e-commerce website'
+  execution_prompt: 'Build a responsive e-commerce website'
 };
 
 function createMockApi(overrides: Record<string, unknown> = {}) {

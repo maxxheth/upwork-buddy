@@ -12,6 +12,7 @@ import { ButtonManager } from './ui/buttons';
 import { ProfileConfigUI } from './ui/profile-config';
 import { ProjectsListUI } from './ui/projects-list';
 import { JobHistoryPanel } from './ui/job-history';
+import { TemplateBrowser } from './ui/template-browser';
 import { renderAnalysis, escapeHtml } from './utils';
 import { detectEnvironment, loadConfig, CONFIG } from './types';
 import type { SavedJob } from './types';
@@ -26,6 +27,7 @@ class UpworkBuddy {
   private profileConfigUI: ProfileConfigUI | null = null;
   private projectsListUI: ProjectsListUI | null = null;
   private jobHistoryPanel: JobHistoryPanel | null = null;
+  private templateBrowser: TemplateBrowser | null = null;
   private logPrefix = '[UpworkBuddy][Main]';
 
   constructor() {
@@ -44,7 +46,8 @@ class UpworkBuddy {
       () => this.handleAnalyze(),
       () => this.openProfileConfig(),
       () => this.showProjectsList(),
-      () => this.showJobHistory()
+      () => this.showJobHistory(),
+      () => this.showTemplateBrowser()
     );
 
     // Initialize
@@ -54,16 +57,24 @@ class UpworkBuddy {
   private async initialize(): Promise<void> {
     // ── Environment-aware config resolution ──
     const storage = new StorageAdapter();
+
+    // Check for an explicit env override stored in extension storage.
+    // This allows APP_ENV=local to take effect even when running on
+    // upwork.com (where hostname detection would resolve to "production").
+    const envOverride = await storage.getEnvOverride();
     const customOverrides = await storage.getCustomConfig();
-    const env = detectEnvironment();
-    const resolvedConfig = loadConfig(undefined, customOverrides ?? undefined);
+
+    const detectedEnv = detectEnvironment();
+    // envOverride takes highest priority, then detected, then default
+    const resolvedEnv = envOverride ?? undefined;
+    const resolvedConfig = loadConfig(resolvedEnv, customOverrides ?? undefined);
 
     // PATCH: Override the module-level CONFIG object so all existing references
     // (ApiClient, StateManager, etc.) pick up the resolved values without
     // requiring constructor injection.
     Object.assign(CONFIG, resolvedConfig);
 
-    console.log(`🌍 Upwork Buddy starting in "${resolvedConfig.env}" environment (detected: "${env}")`);
+    console.log(`🌍 Upwork Buddy starting in "${resolvedConfig.env}" environment (detected: "${detectedEnv}"${envOverride ? `, override: "${envOverride}"` : ''})`);
     if (customOverrides) {
       console.log('🔧 Custom config overrides applied:', customOverrides);
     }
@@ -207,11 +218,17 @@ class UpworkBuddy {
         await this.stateManager.saveJobToHistory({
           job_title: jobInfo.title,
           job_description: jobInfo.description,
+          contract_type: jobInfo.contractType,
           budget: jobInfo.budget,
+          rate_range: jobInfo.rateRange,
+          rate_min: jobInfo.rateMin,
+          rate_max: jobInfo.rateMax,
+          budget_amount: jobInfo.budgetAmount,
+          experience_level: jobInfo.experienceLevel,
           skills: jobInfo.skills,
           proposal: analysis.proposal || '',
           time_estimate: analysis.time_estimate || '',
-          spec_sheet_prompt: analysis.spec_sheet_prompt || '',
+          execution_prompt: analysis.execution_prompt || '',
           tone_analysis: analysis.tone_analysis || ''
         });
         this.log('Job auto-saved to history');
@@ -240,7 +257,11 @@ class UpworkBuddy {
         <div class="upwork-buddy-error">
           ❌ Error: ${escapeHtml(errorMessage)}
           <br><br>
-          Make sure the Upwork Buddy API is running on ${CONFIG.apiBaseUrl}
+          Make sure the Upwork Buddy API is running on <strong>${escapeHtml(CONFIG.apiBaseUrl)}</strong>
+          <br>
+          <small>Current environment: <strong>${escapeHtml(CONFIG.env)}</strong> —
+          open Profile Settings to switch to Local/Development, or run:
+          <code>localStorage.setItem('upwork_buddy_env', 'local')</code> in the console.</small>
           <br><br>
           <details>
             <summary>Technical Details</summary>
@@ -319,7 +340,7 @@ class UpworkBuddy {
     const analysis = {
       proposal: job.proposal,
       time_estimate: job.time_estimate,
-      spec_sheet_prompt: job.spec_sheet_prompt,
+      execution_prompt: job.execution_prompt,
       tone_analysis: job.tone_analysis
     };
 
@@ -355,6 +376,16 @@ class UpworkBuddy {
       const errorMessage = error instanceof Error ? error.message : String(error);
       alert(`Failed to delete job: ${errorMessage}`);
     }
+  }
+
+  /**
+   * Show the template browser for generating and downloading AI agents
+   */
+  private showTemplateBrowser(): void {
+    this.modal.open();
+    const modalBody = this.modal.getBody();
+    this.templateBrowser = new TemplateBrowser(this.apiClient, modalBody);
+    this.templateBrowser.render();
   }
 
   private log(message: string, payload?: Record<string, unknown>): void {

@@ -2,7 +2,7 @@
  * API layer for communicating with Upwork Buddy backend
  */
 
-import type { ProfileState, ProfileApiResponse, JobInfo, AnalysisResponse, SaveJobRequest, SavedJob, SavedJobsResponse } from './types';
+import type { ProfileState, ProfileApiResponse, JobInfo, AnalysisResponse, SaveJobRequest, SavedJob, SavedJobsResponse, TemplatesListResponse, TemplateCategory, GenerateAgentsRequest, GenerateAgentsResponse, GeneratedAgent } from './types';
 import { CONFIG } from './types';
 
 export class ApiClient {
@@ -55,8 +55,12 @@ export class ApiClient {
     console.log('🚀 API: Sending analyze request', {
       title: jobInfo.title,
       descriptionLength: jobInfo.description.length,
+      contractType: jobInfo.contractType,
       budget: jobInfo.budget,
+      rateRange: jobInfo.rateRange,
+      budgetAmount: jobInfo.budgetAmount,
       skills: jobInfo.skills,
+      experienceLevel: jobInfo.experienceLevel,
       profileLength: userProfile.length,
       userSkillsLength: userSkills.length
     });
@@ -69,8 +73,14 @@ export class ApiClient {
       body: JSON.stringify({
         job_title: jobInfo.title,
         job_description: jobInfo.description,
+        contract_type: jobInfo.contractType,
         budget: jobInfo.budget,
+        rate_range: jobInfo.rateRange,
+        rate_min: jobInfo.rateMin,
+        rate_max: jobInfo.rateMax,
+        budget_amount: jobInfo.budgetAmount,
         skills: jobInfo.skills,
+        experience_level: jobInfo.experienceLevel,
         user_profile: userProfile,
         user_skills: userSkills
       })
@@ -86,7 +96,7 @@ export class ApiClient {
     const data: AnalysisResponse = await response.json();
     console.log('✅ API: Received response', {
       proposalLength: data.proposal?.length || 0,
-      specSheetLength: data.spec_sheet_prompt?.length || 0,
+      executionPromptLength: data.execution_prompt?.length || 0,
       questionsCount: data.questions_for_client?.length || 0,
       tipsCount: data.tips_and_advice?.length || 0,
       hasTimeEstimate: !!data.time_estimate,
@@ -138,6 +148,69 @@ export class ApiClient {
     if (!response.ok && response.status !== 204) {
       throw new Error(`Delete job failed: ${response.status} ${response.statusText}`);
     }
+  }
+
+  /**
+   * List available template categories
+   */
+  async listTemplates(): Promise<TemplatesListResponse> {
+    const response = await fetch(`${CONFIG.apiBaseUrl}/api/templates`, { method: 'GET' });
+    if (!response.ok) {
+      throw new Error(`List templates failed: ${response.status} ${response.statusText}`);
+    }
+    return response.json();
+  }
+
+  /**
+   * Get full details for a template category
+   */
+  async getTemplate(name: string): Promise<TemplateCategory> {
+    const response = await fetch(`${CONFIG.apiBaseUrl}/api/templates/${encodeURIComponent(name)}`, { method: 'GET' });
+    if (!response.ok) {
+      throw new Error(`Get template failed: ${response.status} ${response.statusText}`);
+    }
+    return response.json();
+  }
+
+  /**
+   * Generate agents from a template category
+   */
+  async generateAgents(request: GenerateAgentsRequest): Promise<GenerateAgentsResponse> {
+    const response = await fetch(`${CONFIG.apiBaseUrl}/api/agents/generate`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(request)
+    });
+    if (!response.ok) {
+      throw new Error(`Generate agents failed: ${response.status} ${response.statusText}`);
+    }
+    return response.json();
+  }
+
+  /**
+   * List all generated agents
+   */
+  async listAgents(): Promise<{ agents: GeneratedAgent[] }> {
+    const response = await fetch(`${CONFIG.apiBaseUrl}/api/agents`, { method: 'GET' });
+    if (!response.ok) {
+      throw new Error(`List agents failed: ${response.status} ${response.statusText}`);
+    }
+    return response.json();
+  }
+
+  /**
+   * Download selected agents as a zip file
+   */
+  async downloadAgents(agentNames: string[]): Promise<Blob> {
+    const response = await fetch(`${CONFIG.apiBaseUrl}/api/agents/download`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ agent_names: agentNames })
+    });
+    if (!response.ok) {
+      throw new Error(`Download agents failed: ${response.status} ${response.statusText}`);
+    }
+    return response.blob();
   }
 
   /**

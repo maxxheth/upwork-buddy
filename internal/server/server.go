@@ -6,6 +6,7 @@ import (
 	"net/http"
 	"os"
 	"strconv"
+	"sync"
 	"time"
 
 	_ "github.com/joho/godotenv/autoload"
@@ -17,6 +18,8 @@ type Server struct {
 	port               int
 	env                string
 	corsAllowedOrigins string
+	templatesPath      string
+	generatedAgents   sync.Map
 
 	db service.DatabaseService
 }
@@ -44,23 +47,30 @@ func NewServer() *http.Server {
 		}
 	}
 
+	templatesPath := os.Getenv("TEMPLATES_PATH")
+	if templatesPath == "" {
+		templatesPath = "templates.yaml"
+	}
+
 	NewServer := &Server{
 		port:               port,
 		env:                env,
 		corsAllowedOrigins: corsAllowedOrigins,
+		templatesPath:      templatesPath,
 
 		db: service.New(),
 	}
 
 	log.Printf("🚀 Server configured: port=%d, env=%s, cors_allowed_origins=%q", port, env, corsAllowedOrigins)
 
-	// Declare Server config
+	// WriteTimeout must accommodate Ollama analysis calls (up to 90s).
+	// ReadTimeout is generous for large job descriptions but still bounded.
 	server := &http.Server{
 		Addr:         fmt.Sprintf(":%d", NewServer.port),
 		Handler:      NewServer.RegisterRoutes(),
-		IdleTimeout:  time.Minute,
-		ReadTimeout:  10 * time.Second,
-		WriteTimeout: 30 * time.Second,
+		IdleTimeout:  2 * time.Minute,
+		ReadTimeout:  30 * time.Second,
+		WriteTimeout: 2 * time.Minute,
 	}
 
 	return server

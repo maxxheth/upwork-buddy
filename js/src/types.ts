@@ -52,29 +52,54 @@ const DEFAULTS: Omit<Config, keyof EnvironmentConfig> = {
 };
 
 /**
+ * Normalize an environment name string to a valid EnvironmentName.
+ * Treats "local" as an alias for "development".
+ */
+function normalizeEnvName(raw: string): EnvironmentName | null {
+  const lower = raw.toLowerCase().trim();
+  if (lower === 'local' || lower === 'development') return 'development';
+  if (lower === 'staging' || lower === 'preprod') return 'staging';
+  if (lower === 'production' || lower === 'prod') return 'production';
+  if (lower in ENVIRONMENTS) return lower as EnvironmentName;
+  return null;
+}
+
+/**
  * Detect which environment we are running in.
  *
- * Strategy:
- *  1. If running as a Chrome extension, check the manifest for a custom
- *     `upwork_buddy_env` field set during packaging.
- *  2. If `window.location` is available, infer from hostname.
- *  3. Fall back to "development".
+ * Strategy (highest priority first):
+ *  1. Explicit env override stored in localStorage (set by user or APP_ENV).
+ *  2. Chrome extension manifest `upwork_buddy_env` field (set during packaging).
+ *  3. Hostname-based inference.
+ *  4. Fall back to "development".
  */
 export function detectEnvironment(): EnvironmentName {
-  // 1. Chrome extension manifest override
+  // 1. localStorage override — allows APP_ENV=local to take effect even
+  //    when running on upwork.com (where hostname would resolve to "production")
+  try {
+    if (typeof localStorage !== 'undefined' && localStorage.getItem) {
+      const stored = localStorage.getItem('upwork_buddy_env');
+      if (stored) {
+        const env = normalizeEnvName(stored);
+        if (env) return env;
+      }
+    }
+  } catch {
+    // localStorage not available (e.g. SSR) — continue
+  }
+
+  // 2. Chrome extension manifest override
   try {
     const manifest = (globalThis as any).chrome?.runtime?.getManifest?.();
     if (manifest && typeof manifest.upwork_buddy_env === 'string') {
-      const env = manifest.upwork_buddy_env;
-      if (env in ENVIRONMENTS) {
-        return env as EnvironmentName;
-      }
+      const env = normalizeEnvName(manifest.upwork_buddy_env);
+      if (env) return env;
     }
   } catch {
     // Not in extension context — continue to next strategy
   }
 
-  // 2. Hostname-based detection
+  // 3. Hostname-based detection
   try {
     const hostname = (globalThis as any).location?.hostname ?? '';
     if (hostname === 'localhost' || hostname === '127.0.0.1' || hostname.endsWith('.local')) {
@@ -91,7 +116,7 @@ export function detectEnvironment(): EnvironmentName {
     // location not available
   }
 
-  // 3. Fallback
+  // 4. Fallback
   return 'development';
 }
 
@@ -130,10 +155,37 @@ export const CONFIG: Config = loadConfig();
 
 // ── Domain types ──────────────────────────────────────────────────────
 
+/**
+ * Contract type distinguishes hourly from fixed-price engagements.
+ * - "hourly"  → rate_min / rate_max are populated; budget is derived
+ * - "fixed"   → budget_amount is populated; budget is derived
+ * - ""        → unknown / not yet detected
+ */
+export type ContractType = 'hourly' | 'fixed' | '';
+
 export interface JobInfo {
   title: string;
   description: string;
+  /** Contract type detected from the Upwork DOM */
+  contractType: ContractType;
+  /** Hourly rate range (e.g. "$25.00 - $100.00") — set when contractType is "hourly" */
+  rateRange: string;
+  /** Minimum hourly rate — set when contractType is "hourly" */
+  rateMin: string;
+  /** Maximum hourly rate — set when contractType is "hourly" */
+  rateMax: string;
+  /** Fixed-price budget (e.g. "$1,000.00") — set when contractType is "fixed" */
+  budgetAmount: string;
+  /**
+   * Human-readable budget string for backward compatibility:
+   *  - Hourly: "$25.00 - $100.00/hr"
+   *  - Fixed:  "$1,000.00 fixed"
+   *  - Unknown: "Not specified"
+   */
   budget: string;
+  /** Experience level (e.g. "Expert", "Intermediate", "Entry") */
+  experienceLevel: string;
+  /** Comma-separated skill names */
   skills: string;
 }
 
@@ -164,7 +216,7 @@ export interface ProfileApiResponse {
 
 export interface AnalysisResponse {
   proposal?: string;
-  spec_sheet_prompt?: string;
+  execution_prompt?: string;
   time_estimate?: string;
   workload_division?: string;
   questions_for_client?: string;
@@ -184,11 +236,17 @@ export interface SavedJob {
   id: number;
   job_title: string;
   job_description: string;
+  contract_type: string;
   budget: string;
+  rate_range: string;
+  rate_min: string;
+  rate_max: string;
+  budget_amount: string;
+  experience_level: string;
   skills: string;
   proposal: string;
   time_estimate: string;
-  spec_sheet_prompt: string;
+  execution_prompt: string;
   tone_analysis: string;
   created_at: string;
 }
@@ -200,10 +258,70 @@ export interface SavedJobsResponse {
 export interface SaveJobRequest {
   job_title: string;
   job_description: string;
+  contract_type: string;
   budget: string;
+  rate_range: string;
+  rate_min: string;
+  rate_max: string;
+  budget_amount: string;
+  experience_level: string;
   skills: string;
   proposal: string;
   time_estimate: string;
-  spec_sheet_prompt: string;
+  execution_prompt: string;
   tone_analysis: string;
+}
+
+// ── Template Agent System ──────────────────────────────────────
+
+export interface DocRef {
+  url: string;
+  label: string;
+}
+
+export interface AgentBlueprint {
+  name: string;
+  title: string;
+  description: string;
+}
+
+export interface TemplateCategory {
+  name: string;
+  display_name: string;
+  description: string;
+  icon: string;
+  docs: DocRef[];
+  agent_blueprints: AgentBlueprint[];
+}
+
+export interface TemplatesListResponse {
+  templates: {
+    name: string;
+    display_name: string;
+    description: string;
+    icon: string;
+    agent_count: number;
+  }[];
+}
+
+export interface GenerateAgentsRequest {
+  template_name: string;
+  agent_names: string[];
+  format?: string; // "goose" | "claude" | "codex" | "copilot" — defaults to "claude"
+}
+
+export interface GeneratedAgent {
+  file_name: string;
+  content: string;
+  template_name: string;
+  format: string;
+  generated_at: string;
+}
+
+export interface GenerateAgentsResponse {
+  agents: GeneratedAgent[];
+}
+
+export interface DownloadAgentsRequest {
+  agent_names: string[];
 }

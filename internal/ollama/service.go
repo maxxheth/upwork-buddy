@@ -31,8 +31,14 @@ type Service struct {
 type JobAnalysisRequest struct {
 	JobTitle       string `json:"job_title"`
 	JobDescription string `json:"job_description"`
+	ContractType   string `json:"contract_type,omitempty"`
 	Budget         string `json:"budget,omitempty"`
+	RateRange      string `json:"rate_range,omitempty"`
+	RateMin        string `json:"rate_min,omitempty"`
+	RateMax        string `json:"rate_max,omitempty"`
+	BudgetAmount   string `json:"budget_amount,omitempty"`
 	Skills         string `json:"skills,omitempty"`
+	ExperienceLevel string `json:"experience_level,omitempty"`
 	UserProfile    string `json:"user_profile"`
 	UserSkills     string `json:"user_skills"`
 }
@@ -40,7 +46,7 @@ type JobAnalysisRequest struct {
 // JobAnalysisResponse contains the AI-generated analysis.
 type JobAnalysisResponse struct {
 	Proposal           string          `json:"proposal"`
-	SpecSheetPrompt    string          `json:"spec_sheet_prompt"`
+	ExecutionPrompt    string          `json:"execution_prompt"`
 	TimeEstimate       json.RawMessage `json:"time_estimate"`
 	WorkloadDivision   json.RawMessage `json:"workload_division"`
 	QuestionsForClient []string        `json:"questions_for_client"`
@@ -100,7 +106,7 @@ func (s *Service) Close() error {
 // AnalyzeJob analyzes a job posting and generates a comprehensive response.
 func (s *Service) AnalyzeJob(ctx context.Context, req JobAnalysisRequest) (*JobAnalysisResponse, error) {
 	prompt := s.buildAnalysisPrompt(req)
-	log.Printf("Ollama analyze job request: title=%q budget=%q skills=%q model=%q host=%q", req.JobTitle, req.Budget, req.Skills, s.model, s.host)
+	log.Printf("Ollama analyze job request: title=%q contract_type=%q budget=%q skills=%q experience_level=%q model=%q host=%q", req.JobTitle, req.ContractType, req.Budget, req.Skills, req.ExperienceLevel, s.model, s.host)
 	log.Printf("Prompt length: %d characters", len(prompt))
 
 	payload, err := json.Marshal(chatRequest{
@@ -155,19 +161,43 @@ func (s *Service) AnalyzeJob(ctx context.Context, req JobAnalysisRequest) (*JobA
 
 	log.Printf("Ollama chat succeeded: model=%q created_at=%q content_length=%d", chatResp.Model, chatResp.CreatedAt, len(chatResp.Message.Content))
 	result := s.parseResponse(chatResp.Message.Content)
-	log.Printf("Parsed analysis result: proposal length=%d spec_sheet length=%d", len(result.Proposal), len(result.SpecSheetPrompt))
+	log.Printf("Parsed analysis result: proposal length=%d execution_prompt length=%d", len(result.Proposal), len(result.ExecutionPrompt))
 	return result, nil
 }
 
 // buildAnalysisPrompt constructs the comprehensive prompt for the AI.
 func (s *Service) buildAnalysisPrompt(req JobAnalysisRequest) string {
+	// Build a human-readable budget description
+	budgetDesc := req.Budget
+	if budgetDesc == "" || budgetDesc == "Not specified" {
+		switch req.ContractType {
+		case "hourly":
+			if req.RateRange != "" {
+				budgetDesc = fmt.Sprintf("%s/hr (Hourly)", req.RateRange)
+			}
+		case "fixed":
+			if req.BudgetAmount != "" {
+				budgetDesc = fmt.Sprintf("%s (Fixed-price)", req.BudgetAmount)
+			}
+		default:
+			budgetDesc = "Not specified"
+		}
+	}
+
+	experienceDesc := req.ExperienceLevel
+	if experienceDesc == "" || experienceDesc == "Not specified" {
+		experienceDesc = "Not specified"
+	}
+
 	return fmt.Sprintf(`You are an expert freelance consultant helping contractors on Upwork create winning proposals and project plans.
 
 JOB POSTING:
 Title: %s
 Description: %s
+Contract Type: %s
 Budget: %s
 Required Skills: %s
+Experience Level: %s
 
 CONTRACTOR PROFILE:
 Profile: %s
@@ -182,13 +212,15 @@ Write a compelling, professional yet relatable proposal that:
 - Shows enthusiasm and reliability
 - Uses a tone that matches the job posting's formality level
 
-2. SPEC SHEET PROMPT
-Create a detailed prompt that can be used with AI coding agents (GitHub Copilot, Jules, etc.) to generate a technical specification document. This prompt should include:
-- Project requirements breakdown
-- Technical architecture considerations
-- Implementation approach
-- Key deliverables
-- Testing and QA requirements
+2. EXECUTION PROMPT
+Write a self-contained, copy-paste-ready prompt for an AI coding agent (Claude Code, Codex, Goose, etc.) that will execute this project end-to-end. The prompt must include:
+- All project requirements and constraints from the job posting
+- Technical stack and architecture decisions
+- Step-by-step implementation instructions (numbered, specific)
+- File paths, naming conventions, and code patterns to follow
+- Testing and verification steps
+- Edge cases and error handling requirements
+Do NOT write a spec document — write an executable prompt that an agent can run with directly.
 
 3. TIME ESTIMATE
 Provide a realistic time estimate broken down by:
@@ -223,7 +255,7 @@ Analyze the job posting's tone (formal, casual, technical, etc.) and suggest the
 Return valid JSON only, with these exact keys:
 {
   "proposal": "...",
-  "spec_sheet_prompt": "...",
+  "execution_prompt": "...",
   "time_estimate": "...",
   "workload_division": "...",
   "questions_for_client": ["...", "..."],
@@ -232,8 +264,10 @@ Return valid JSON only, with these exact keys:
 }`,
 		req.JobTitle,
 		req.JobDescription,
-		req.Budget,
+		req.ContractType,
+		budgetDesc,
 		req.Skills,
+		experienceDesc,
 		req.UserProfile,
 		req.UserSkills,
 	)
@@ -260,8 +294,8 @@ func (s *Service) parseResponse(fullText string) *JobAnalysisResponse {
 	var result JobAnalysisResponse
 	if err := json.Unmarshal([]byte(fullText), &result); err == nil {
 		log.Printf("parseResponse: ✅ json.Unmarshal succeeded")
-		log.Printf("parseResponse: proposal length=%d, spec_sheet length=%d, questions=%d, tips=%d",
-			len(result.Proposal), len(result.SpecSheetPrompt),
+		log.Printf("parseResponse: proposal length=%d, execution_prompt length=%d, questions=%d, tips=%d",
+			len(result.Proposal), len(result.ExecutionPrompt),
 			len(result.QuestionsForClient), len(result.TipsAndAdvice))
 
 		if strings.HasPrefix(strings.TrimSpace(result.Proposal), "{") {
@@ -295,7 +329,7 @@ func (s *Service) parseResponse(fullText string) *JobAnalysisResponse {
 
 		return &JobAnalysisResponse{
 			Proposal:           fullText,
-			SpecSheetPrompt:    "Failed to parse response. Please check the API server logs.",
+			ExecutionPrompt:    "Failed to parse response. Please check the API server logs.",
 			TimeEstimate:       json.RawMessage(`""`),
 			WorkloadDivision:   json.RawMessage(`""`),
 			QuestionsForClient: []string{},

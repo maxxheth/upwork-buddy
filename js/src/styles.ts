@@ -698,6 +698,30 @@ export const STYLES = `
     flex: 1;
     text-align: center;
   }
+
+  /* ── Template Browser ──────────────────────────────────────── */
+  .upwork-buddy-template-browser { max-width: 700px; margin: 0 auto; }
+  .upwork-buddy-template-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(140px, 1fr)); gap: 12px; margin: 16px 0; }
+  .upwork-buddy-template-card { background: #fff; border: 2px solid #e0e0e0; border-radius: 10px; padding: 16px; cursor: pointer; text-align: center; transition: all 0.2s; }
+  .upwork-buddy-template-card:hover { border-color: #14a800; transform: translateY(-2px); box-shadow: 0 4px 12px rgba(0,0,0,0.1); }
+  .upwork-buddy-template-card.active { border-color: #14a800; background: #f0faf0; }
+  .upwork-buddy-template-card-icon { font-size: 32px; margin-bottom: 8px; }
+  .upwork-buddy-template-card-name { font-weight: 600; color: #333; font-size: 13px; }
+  .upwork-buddy-agent-list { margin: 12px 0; }
+  .upwork-buddy-agent-item { display: flex; align-items: flex-start; gap: 8px; padding: 8px 0; border-bottom: 1px solid #f0f0f0; }
+  .upwork-buddy-agent-item:last-child { border-bottom: none; }
+  .upwork-buddy-agent-item input[type="checkbox"] { margin-top: 3px; accent-color: #14a800; }
+  .upwork-buddy-agent-item-title { font-weight: 500; color: #333; }
+  .upwork-buddy-agent-item-desc { color: #666; font-size: 12px; margin-top: 2px; }
+  .upwork-buddy-generate-btn, .upwork-buddy-download-btn { background: #14a800; color: white; border: none; padding: 10px 20px; border-radius: 6px; cursor: pointer; font-size: 14px; font-weight: 500; margin-right: 8px; transition: background 0.2s; }
+  .upwork-buddy-generate-btn:hover, .upwork-buddy-download-btn:hover { background: #0f8c00; }
+  .upwork-buddy-generate-btn:disabled, .upwork-buddy-download-btn:disabled { background: #999; cursor: not-allowed; }
+  .upwork-buddy-agent-preview { background: #1e1e1e; color: #d4d4d4; padding: 12px; border-radius: 6px; font-family: 'Courier New', monospace; font-size: 11px; white-space: pre-wrap; overflow-x: auto; max-height: 300px; overflow-y: auto; margin: 8px 0; }
+  .upwork-buddy-agent-actions { display: flex; gap: 8px; margin: 12px 0; align-items: center; }
+  .upwork-buddy-loading { display: inline-block; width: 16px; height: 16px; border: 2px solid #fff; border-top-color: transparent; border-radius: 50%; animation: upwork-buddy-spin 0.6s linear infinite; vertical-align: middle; margin-right: 6px; }
+  @keyframes upwork-buddy-spin { to { transform: rotate(360deg); } }
+  .upwork-buddy-back-btn { background: #666; color: white; border: none; padding: 6px 14px; border-radius: 6px; cursor: pointer; font-size: 13px; margin-bottom: 12px; }
+  .upwork-buddy-back-btn:hover { background: #555; }
 }
 `;
 

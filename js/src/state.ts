@@ -329,11 +329,17 @@ export class StateManager {
       id: result.id,
       job_title: job.job_title,
       job_description: job.job_description,
+      contract_type: job.contract_type,
       budget: job.budget,
+      rate_range: job.rate_range,
+      rate_min: job.rate_min,
+      rate_max: job.rate_max,
+      budget_amount: job.budget_amount,
+      experience_level: job.experience_level,
       skills: job.skills,
       proposal: job.proposal,
       time_estimate: job.time_estimate,
-      spec_sheet_prompt: job.spec_sheet_prompt,
+      execution_prompt: job.execution_prompt,
       tone_analysis: job.tone_analysis,
       created_at: result.created_at
     };
@@ -424,19 +430,27 @@ export class StateManager {
 
       const title = typeof jobInfo.title === 'string' ? jobInfo.title : 'Unknown Title';
       const description = typeof jobInfo.description === 'string' ? jobInfo.description : 'No description available';
+      const contractType = typeof (jobInfo as any).contractType === 'string' ? (jobInfo as any).contractType : '';
+      const rateRange = typeof (jobInfo as any).rateRange === 'string' ? (jobInfo as any).rateRange : '';
+      const rateMin = typeof (jobInfo as any).rateMin === 'string' ? (jobInfo as any).rateMin : '';
+      const rateMax = typeof (jobInfo as any).rateMax === 'string' ? (jobInfo as any).rateMax : '';
+      const budgetAmount = typeof (jobInfo as any).budgetAmount === 'string' ? (jobInfo as any).budgetAmount : '';
+      const experienceLevel = typeof (jobInfo as any).experienceLevel === 'string' ? (jobInfo as any).experienceLevel : '';
       const budget = typeof jobInfo.budget === 'string' ? jobInfo.budget : 'Not specified';
       const skills = typeof jobInfo.skills === 'string' ? jobInfo.skills : 'Not specified';
 
+      const fullJobInfo: JobInfo = { title, description, contractType, rateRange, rateMin, rateMax, budgetAmount, experienceLevel, budget, skills };
+
       const cacheKey = typeof candidate.cacheKey === 'string' && candidate.cacheKey.trim().length > 0
         ? candidate.cacheKey
-        : this.generateCacheKey({ title, description, budget, skills });
+        : this.generateCacheKey(fullJobInfo);
       const timestamp = typeof candidate.timestamp === 'string' ? candidate.timestamp : new Date().toISOString();
       const analysis = candidate.analysis && typeof candidate.analysis === 'object'
         ? candidate.analysis
         : {};
 
       normalized.push({
-        jobInfo: { title, description, budget, skills },
+        jobInfo: fullJobInfo,
         analysis: analysis as AnalysisResponse,
         timestamp,
         cacheKey

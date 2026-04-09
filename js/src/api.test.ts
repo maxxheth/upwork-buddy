@@ -28,13 +28,19 @@ describe('ApiClient', () => {
     const jobInfo: JobInfo = {
       title: 'Build a React App',
       description: 'Need a professional React application with TypeScript',
-      budget: '$3000',
+      contractType: 'fixed',
+      rateRange: '',
+      rateMin: '',
+      rateMax: '',
+      budgetAmount: '$3000',
+      experienceLevel: '',
+      budget: '$3000 fixed',
       skills: 'React, TypeScript'
     };
 
     const successResponse: AnalysisResponse = {
       proposal: 'Dear Client, I would love to help...',
-      spec_sheet_prompt: 'Create a React app with TypeScript',
+      execution_prompt: 'Create a React app with TypeScript',
       time_estimate: '2-3 weeks',
       workload_division: 'Split into components',
       questions_for_client: 'Do you have design files?',
@@ -74,7 +80,8 @@ describe('ApiClient', () => {
       const body = JSON.parse(options.body);
       expect(body.job_title).toBe('Build a React App');
       expect(body.job_description).toBe('Need a professional React application with TypeScript');
-      expect(body.budget).toBe('$3000');
+      expect(body.contract_type).toBe('fixed');
+      expect(body.budget).toBe('$3000 fixed');
       expect(body.skills).toBe('React, TypeScript');
       expect(body.user_profile).toBe('senior dev');
       expect(body.user_skills).toBe('React');

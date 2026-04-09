@@ -1,38 +1,73 @@
 /**
- * Extract job information from Upwork job details drawer
- * Uses fallback selector chains for resilience against DOM changes
+ * Extract job information from Upwork job details drawer.
+ *
+ * Supports TWO contract layouts:
+ *  ──────────────────────────────────────────────────────────────────
+ *  HOURLY contract:
+ *    <li>
+ *      <div data-cy="clock-hourly">  … icon … </div>
+ *      <strong>More than 30 hrs/week</strong>
+ *      <div class="description">Hourly</div>
+ *    </li>
+ *    <li>
+ *      <div data-cy="clock-timelog"> … icon … </div>
+ *      <div class="d-flex">
+ *        <div><p><strong> $25.00 </strong></p></div>
+ *        <p class="mx-1x">-</p>
+ *        <div><p><strong> $100.00 </strong></p></div>
+ *      </div>
+ *      <div class="description">Hourly</div>
+ *    </li>
+ *
+ *  FIXED-PRICE contract:
+ *    <li>
+ *      <div data-cy="fixed-price"> … icon … </div>
+ *      <div data-test="BudgetAmount"><p><strong> $1,000.00 </strong></p></div>
+ *      <div class="description">Fixed-price</div>
+ *    </li>
+ *  ──────────────────────────────────────────────────────────────────
+ *
+ *  Skills use: data-test="Skill" on <span> parents with
+ *              <a class="air3-badge air3-badge-highlight badge"> containing
+ *              <div class="air3-line-clamp is-clamped">skill name</div>
+ *
+ *  Title:  <h4><span class="flex-1">Title text</span></h4>
+ *  Description: <div data-test="Description" …> or <div data-test="Description Description" …>
+ *                <p class="text-body-sm multiline-text">…</p>
  */
 
-import type { JobInfo } from './types';
+import type { JobInfo, ContractType } from './types';
 
 /**
  * Defines a chain of CSS selectors to try in order for a given field.
  * Primary selector first, then increasingly generic fallbacks.
  */
 interface SelectorChain {
-  field: keyof JobInfo;
+  field: string;
   selectors: string[];
   attribute?: string; // e.g., 'href' for links; textContent is default
-  transform?: (value: string) => string; // optional post-processing
+  transform?: (value: string) => string;
   isMulti?: boolean; // if true, collect all matches (e.g., skills)
 }
 
 /**
- * Selector chains defining primary + fallback selectors for each JobInfo field.
- * Primary selectors mirror the current Upwork DOM; fallbacks cover alternate
- * class names, data-test attributes, and generic patterns.
+ * Selector chains for each field — ordered from most specific to most generic.
+ * Primary selectors match the real Upwork DOM captured in June 2025.
  */
 const SELECTOR_CHAINS: SelectorChain[] = [
   {
     field: 'title',
     selectors: [
+      // June 2025: <h4><span class="flex-1">Title</span></h4> inside .job-details-card
+      '.job-details-card h4 span.flex-1',
+      'h4 span.flex-1',
+      // Older / alternate patterns
       'h2[itemprop="name"]',
       'h2.h4',
       'h3.job-tile-title a',
       '[data-test="job-title-link"]',
       'h2 a',
       '.job-tile-title a',
-      '.job-details-card h4 .flex-1',
       '.job-details-card h4 span',
       'h2',
       'h3',
@@ -41,6 +76,11 @@ const SELECTOR_CHAINS: SelectorChain[] = [
   {
     field: 'description',
     selectors: [
+      // June 2025: data-test="Description" or "Description Description"
+      '[data-test="Description"] p.text-body-sm.multiline-text',
+      '[data-test="Description Description"] p.text-body-sm.multiline-text',
+      '[data-test="Description"] p.multiline-text',
+      '[data-test="Description Description"] p.multiline-text',
       '[data-test="Description"]',
       '[data-test="job-description-text"]',
       '[data-test="job-description-line-clamp"] span',
@@ -48,39 +88,74 @@ const SELECTOR_CHAINS: SelectorChain[] = [
       '.description',
       '[data-test="UpCLineClamp"] span',
       '.job-details-content',
-      '.air3-section .mb-0',
     ],
   },
   {
-    field: 'budget',
+    // The budget chain now detects the full <li> row for BOTH contract types.
+    // We extract contract details ourselves in extractBudgetInfo().
+    field: 'budgetRow',
     selectors: [
+      // Hourly rate row identified by data-cy="clock-timelog"
+      'li:has([data-cy="clock-timelog"])',
+      // Fixed-price row identified by data-cy="fixed-price"
+      'li:has([data-cy="fixed-price"])',
+      // Fallback: BudgetAmount test attribute
+      '[data-test="BudgetAmount"]',
+      // Older fallbacks
       '[data-test="is-fixed-price"]',
       '[data-test="budget"]',
       '.budget',
-      '[data-test="job-type-label"]',
       '.js-budget',
-      '.air3-budget',
     ],
   },
   {
     field: 'skills',
     selectors: [
+      // June 2025: data-test="Skill" <span> → <a> → <div class="air3-line-clamp">
+      '[data-test="Skill"] a.air3-badge .air3-line-clamp',
+      '[data-test="Skill"] .air3-line-clamp',
+      '[data-test="Skill"] a',
+      '[data-test="Skill"]',
+      'a.air3-badge.air3-badge-highlight',
       'a.air3-token',
       '[data-test="token"]',
       '.skill-badge',
       '.o-tag-skill',
       '[data-test="attr-item"]',
-      '[data-test="skill"]',
       '.js-skill',
     ],
     isMulti: true,
   },
+  {
+    field: 'experienceLevel',
+    selectors: [
+      // June 2025: <li> with data-cy="expertise" icon → <strong>Level</strong>
+      'li:has([data-cy="expertise"]) strong:first-of-type',
+      '[data-cy="expertise"] + strong',
+      // Fallback text patterns
+      'strong:contains("Expert")',
+      'strong:contains("Intermediate")',
+      'strong:contains("Entry")',
+    ],
+  },
 ];
+
+/**
+ * Parsed budget info from the DOM.
+ */
+interface BudgetInfo {
+  contractType: ContractType;
+  rateRange: string;
+  rateMin: string;
+  rateMax: string;
+  budgetAmount: string;
+  budget: string;
+}
 
 export class JobExtractor {
   /**
-   * Extract job information from a container element using fallback selector chains.
-   * Returns a JobInfo even if some fields could not be extracted (partial extraction).
+   * Extract job information from a container element.
+   * Returns a complete JobInfo with contract-type-aware budget data.
    */
   extractJobInfo(container: Element): JobInfo {
     console.log('🔍 Extracting from container:', container.className);
@@ -88,48 +163,197 @@ export class JobExtractor {
     const result: Partial<JobInfo> = {};
     const fieldStatus: Record<string, 'ok' | 'fallback' | 'broken'> = {};
 
+    // Extract standard fields via selector chains
     for (const chain of SELECTOR_CHAINS) {
+      if (chain.field === 'budgetRow') continue; // handled separately
       const { value, usedIndex } = this.trySelectorChain(container, chain);
 
       if (value !== null) {
-        result[chain.field] = value;
+        (result as any)[chain.field] = value;
         fieldStatus[chain.field] = usedIndex === 0 ? 'ok' : 'fallback';
         if (usedIndex > 0) {
           this.logFallback(chain, usedIndex);
         }
       } else {
-        // Provide default values for missing fields so we always return a complete JobInfo
-        result[chain.field] = this.getDefaultValue(chain.field);
+        (result as any)[chain.field] = chain.isMulti ? 'Not specified' : '';
         fieldStatus[chain.field] = 'broken';
-        console.warn(
-          `⚠️ Selector chain for "${chain.field}" exhausted — all ${chain.selectors.length} selectors failed`
-        );
       }
     }
+
+    // ── Contract-type-aware budget extraction ─────────────────────────
+    const budgetInfo = this.extractBudgetInfo(container);
+    result.contractType = budgetInfo.contractType;
+    result.rateRange = budgetInfo.rateRange;
+    result.rateMin = budgetInfo.rateMin;
+    result.rateMax = budgetInfo.rateMax;
+    result.budgetAmount = budgetInfo.budgetAmount;
+    result.budget = budgetInfo.budget;
+    fieldStatus['budget'] = budgetInfo.contractType ? 'ok' : 'broken';
+
+    // ── Fill defaults for any missing fields ──────────────────────────
+    if (!result.title) result.title = 'Unknown Title';
+    if (!result.description) result.description = 'No description available';
+    if (!result.skills) result.skills = 'Not specified';
+    if (!result.budget) result.budget = 'Not specified';
+    if (!result.experienceLevel) result.experienceLevel = 'Not specified';
 
     // Log extraction summary
     const ok = Object.values(fieldStatus).filter((s) => s === 'ok').length;
     const fallback = Object.values(fieldStatus).filter((s) => s === 'fallback').length;
     const broken = Object.values(fieldStatus).filter((s) => s === 'broken').length;
     console.log(
-      `📊 Extraction summary: ${ok} ok, ${fallback} fallback, ${broken} broken`
+      `📊 Extraction summary: ${ok} ok, ${fallback} fallback, ${broken} broken — contract=${result.contractType || 'unknown'}`
     );
 
     return result as JobInfo;
   }
 
   /**
+   * Extract budget information by detecting whether the job is
+   * hourly (rate range) or fixed-price (single amount).
+   */
+  private extractBudgetInfo(container: Element): BudgetInfo {
+    const empty: BudgetInfo = {
+      contractType: '',
+      rateRange: '',
+      rateMin: '',
+      rateMax: '',
+      budgetAmount: '',
+      budget: 'Not specified',
+    };
+
+    // ── Strategy 1: Look for the hourly rate row (data-cy="clock-timelog") ──
+    const hourlyIcon = container.querySelector('[data-cy="clock-timelog"]');
+    if (hourlyIcon) {
+      const li = hourlyIcon.closest('li');
+      if (li) {
+        // The two <strong> elements contain min and max rates
+        const strongs = li.querySelectorAll('strong');
+        const prices: string[] = [];
+        strongs.forEach((s) => {
+          const t = s.textContent?.trim() ?? '';
+          if (/[\$€£]/.test(t) || /^\d+[\d,.]*$/.test(t)) {
+            prices.push(t);
+          }
+        });
+
+        if (prices.length >= 2) {
+          return {
+            contractType: 'hourly',
+            rateRange: `${prices[0]} - ${prices[1]}`,
+            rateMin: prices[0],
+            rateMax: prices[1],
+            budgetAmount: '',
+            budget: `${prices[0]} - ${prices[1]}/hr`,
+          };
+        } else if (prices.length === 1) {
+          return {
+            contractType: 'hourly',
+            rateRange: prices[0],
+            rateMin: prices[0],
+            rateMax: prices[0],
+            budgetAmount: '',
+            budget: `${prices[0]}/hr`,
+          };
+        }
+      }
+    }
+
+    // ── Strategy 2: Look for fixed-price row (data-cy="fixed-price") ──
+    const fixedIcon = container.querySelector('[data-cy="fixed-price"]');
+    if (fixedIcon) {
+      const li = fixedIcon.closest('li');
+      if (li) {
+        // BudgetAmount data-test or a strong with a dollar amount
+        const budgetEl =
+          li.querySelector('[data-test="BudgetAmount"] strong') ??
+          li.querySelector('strong');
+        const amount = budgetEl?.textContent?.trim() ?? '';
+        if (amount) {
+          return {
+            contractType: 'fixed',
+            rateRange: '',
+            rateMin: '',
+            rateMax: '',
+            budgetAmount: amount,
+            budget: `${amount} fixed`,
+          };
+        }
+      }
+    }
+
+    // ── Strategy 3: Fallback — BudgetAmount test attribute ──
+    const budgetAmount = container.querySelector('[data-test="BudgetAmount"] strong');
+    if (budgetAmount) {
+      const amount = budgetAmount.textContent?.trim() ?? '';
+      if (amount) {
+        // Check if parent has "Fixed-price" or "Hourly" description text
+        const parentLi = budgetAmount.closest('li');
+        const descEl = parentLi?.querySelector('.description');
+        const descText = descEl?.textContent?.trim()?.toLowerCase() ?? '';
+
+        if (descText.includes('hourly')) {
+          return {
+            contractType: 'hourly',
+            rateRange: amount,
+            rateMin: amount,
+            rateMax: amount,
+            budgetAmount: '',
+            budget: `${amount}/hr`,
+          };
+        }
+        return {
+          contractType: 'fixed',
+          rateRange: '',
+          rateMin: '',
+          rateMax: '',
+          budgetAmount: amount,
+          budget: `${amount} fixed`,
+        };
+      }
+    }
+
+    // ── Strategy 4: Fallback selector chains for budget ──
+    const budgetChain = SELECTOR_CHAINS.find((c) => c.field === 'budgetRow');
+    if (budgetChain) {
+      // Skip the :has() selectors in jsdom/test env — they may not be supported
+      const fallbackSelectors = budgetChain.selectors.filter(
+        (s) => !s.startsWith('li:has(')
+      );
+      for (const sel of fallbackSelectors) {
+        try {
+          const el = container.querySelector(sel);
+          if (el) {
+            const text = el.textContent?.trim() ?? '';
+            if (text) {
+              const isHourly = text.toLowerCase().includes('hourly');
+              return {
+                contractType: isHourly ? 'hourly' : 'fixed',
+                rateRange: isHourly ? text : '',
+                rateMin: '',
+                rateMax: '',
+                budgetAmount: isHourly ? '' : text,
+                budget: text,
+              };
+            }
+          }
+        } catch {
+          // selector not supported
+        }
+      }
+    }
+
+    return empty;
+  }
+
+  /**
    * Try each selector in a chain until one returns a value.
-   * Returns the extracted value and the index of the selector that worked,
-   * or { value: null, usedIndex: -1 } if nothing matched.
    */
   trySelectorChain(
     container: Element,
     chain: SelectorChain
   ): { value: string | null; usedIndex: number } {
     if (chain.isMulti) {
-      // For multi-match fields (e.g., skills), try each selector and
-      // return results from the first selector that finds any matches.
       for (let i = 0; i < chain.selectors.length; i++) {
         const selector = chain.selectors[i];
         try {
@@ -185,7 +409,6 @@ export class JobExtractor {
 
   /**
    * Log a warning when a fallback selector was needed.
-   * This helps identify when Upwork changes their DOM structure.
    */
   private logFallback(chain: SelectorChain, usedIndex: number): void {
     const primary = chain.selectors[0];
@@ -197,8 +420,6 @@ export class JobExtractor {
 
   /**
    * Check the health of all selector chains against the current page DOM.
-   * Returns an array of statuses that can be used to warn users about
-   * potentially broken extraction.
    */
   healthCheck(): { field: string; status: 'ok' | 'fallback' | 'broken' }[] {
     const container =
@@ -228,31 +449,13 @@ export class JobExtractor {
   }
 
   /**
-   * Extract a text value from an element using the chain's attribute/transform settings.
+   * Extract a text value from an element.
    */
   private extractValue(el: Element, chain: SelectorChain): string {
     const raw = chain.attribute
       ? (el.getAttribute(chain.attribute) ?? '')
       : (el.textContent?.trim() ?? '');
     return raw;
-  }
-
-  /**
-   * Return a sensible default when a field cannot be extracted.
-   */
-  private getDefaultValue(field: keyof JobInfo): string {
-    switch (field) {
-      case 'title':
-        return 'Unknown Title';
-      case 'description':
-        return 'No description available';
-      case 'budget':
-        return 'Not specified';
-      case 'skills':
-        return 'Not specified';
-      default:
-        return '';
-    }
   }
 }
 

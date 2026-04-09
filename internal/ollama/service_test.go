@@ -26,8 +26,8 @@ func TestParseResponseInvalidJSONFallsBackToRawText(t *testing.T) {
 	if result.Proposal != "this is not valid json" {
 		t.Fatalf("expected raw text fallback, got %q", result.Proposal)
 	}
-	if result.SpecSheetPrompt == "" {
-		t.Fatal("expected fallback spec sheet prompt message")
+	if result.ExecutionPrompt == "" {
+		t.Fatal("expected fallback execution prompt message")
 	}
 }
 
