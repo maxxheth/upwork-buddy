@@ -78,7 +78,7 @@ func TestSaveJobHandler_ValidPayload(t *testing.T) {
 		Skills:          "React, TypeScript, Node.js",
 		Proposal:        "I have 5 years of experience...",
 		TimeEstimate:    "2 weeks",
-		SpecSheetPrompt: "Create a comprehensive spec for a dashboard app",
+		ExecutionPrompt:  "Create a comprehensive spec for a dashboard app",
 		ToneAnalysis:    "Professional and concise",
 	}
 	body, _ := json.Marshal(payload)

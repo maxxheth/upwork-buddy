@@ -40,6 +40,7 @@ type PromisifiedStorageArea = {
 const PROFILE_STORAGE_KEY = CONFIG.profileStorageKey;
 const CACHE_STORAGE_KEY = 'upworkBuddyCachedJobs';
 const CUSTOM_CONFIG_STORAGE_KEY = 'upworkBuddyCustomConfig';
+const ENV_OVERRIDE_STORAGE_KEY = 'upwork_buddy_env';
 
 /**
  * StorageAdapter centralizes persistence so the content script can use
@@ -114,6 +115,40 @@ export class StorageAdapter {
       return;
     }
     persistWithLocalStorage(CUSTOM_CONFIG_STORAGE_KEY, overrides);
+  }
+
+  /**
+   * Get the stored environment override (e.g. "local", "development", "production").
+   * Returns null when no override has been set.
+   */
+  async getEnvOverride(): Promise<string | null> {
+    if (this.extensionStorage) {
+      const result = await this.extensionStorage.get(ENV_OVERRIDE_STORAGE_KEY);
+      return (result?.[ENV_OVERRIDE_STORAGE_KEY] as string) ?? null;
+    }
+    return readFromLocalStorage<string>(ENV_OVERRIDE_STORAGE_KEY);
+  }
+
+  /**
+   * Persist an environment override so it survives page reloads.
+   * Pass null to clear the override.
+   */
+  async saveEnvOverride(env: string | null): Promise<void> {
+    if (env === null) {
+      if (this.extensionStorage) {
+        // chrome.storage doesn't have a direct remove in our wrapper,
+        // so we set it to empty string which normalizeEnvName will reject
+        await this.extensionStorage.set({ [ENV_OVERRIDE_STORAGE_KEY]: '' });
+        return;
+      }
+      localStorage.removeItem(ENV_OVERRIDE_STORAGE_KEY);
+      return;
+    }
+    if (this.extensionStorage) {
+      await this.extensionStorage.set({ [ENV_OVERRIDE_STORAGE_KEY]: env });
+      return;
+    }
+    persistWithLocalStorage(ENV_OVERRIDE_STORAGE_KEY, env);
   }
 }
 

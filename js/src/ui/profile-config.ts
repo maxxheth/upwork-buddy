@@ -2,11 +2,15 @@
  * Profile configuration UI component
  */
 
-import type { ProfileState, PortfolioItem } from '../types';
+import type { ProfileState, PortfolioItem, EnvironmentName } from '../types';
 import { StateManager } from '../state';
+import { StorageAdapter } from '../storage';
+import { CONFIG, loadConfig, detectEnvironment } from '../types';
 import { escapeHtml } from '../utils';
 
 export class ProfileConfigUI {
+  private storage = new StorageAdapter();
+
   constructor(
     private stateManager: StateManager,
     private modalBody: HTMLDivElement
@@ -70,6 +74,29 @@ export class ProfileConfigUI {
         </div>
       </div>
       <div id="upwork-buddy-profile-status" class="upwork-buddy-profile-status" aria-live="polite"></div>
+      <div class="upwork-buddy-section">
+        <div class="upwork-buddy-section-header" onclick="this.parentElement.querySelector('.upwork-buddy-section-content').classList.toggle('open'); this.querySelector('.upwork-buddy-section-toggle').classList.toggle('open');">
+          <h4>⚙️ API Environment</h4>
+          <span class="upwork-buddy-section-toggle">▼</span>
+        </div>
+        <div class="upwork-buddy-section-content">
+          <div class="upwork-buddy-section-body">
+            <p style="font-size: 13px; color: #666; margin-top: 0;">
+              Current: <strong id="upwork-buddy-env-current">${escapeHtml(CONFIG.env)}</strong> &rarr; <code id="upwork-buddy-env-url">${escapeHtml(CONFIG.apiBaseUrl)}</code>
+            </p>
+            <label for="upwork-buddy-env-select">Environment:</label>
+            <select id="upwork-buddy-env-select" style="width: 100%; padding: 8px; border: 1px solid #ccc; border-radius: 4px; font-size: 14px;">
+              <option value="">Auto-detect (from hostname)</option>
+              <option value="development">Development / Local (localhost:9090)</option>
+              <option value="staging">Staging</option>
+              <option value="production">Production</option>
+            </select>
+            <p style="font-size: 12px; color: #888; margin-bottom: 0;">
+              Changing this overrides the detected environment. Requires page reload to take full effect.
+            </p>
+          </div>
+        </div>
+      </div>
       <div class="upwork-buddy-config-actions">
         <button type="button" class="upwork-buddy-save-profile-btn">Save profile</button>
       </div>
@@ -102,6 +129,18 @@ export class ProfileConfigUI {
           if (parent) parent.remove();
         }
       });
+    }
+
+    const envSelect = document.getElementById('upwork-buddy-env-select') as HTMLSelectElement;
+    if (envSelect) {
+      // Load current override
+      this.storage.getEnvOverride().then((envOverride) => {
+        if (envOverride) {
+          envSelect.value = envOverride;
+        }
+      });
+
+      envSelect.addEventListener('change', () => this.handleEnvChange(envSelect.value));
     }
   }
 
@@ -190,6 +229,38 @@ export class ProfileConfigUI {
       console.error('Failed to save profile:', error);
       this.setStatus(`Failed to save profile: ${(error as Error).message}`, true);
     }
+  }
+
+  /**
+   * Handle environment selection change.
+   * Saves the override to chrome.storage/localStorage and immediately
+   * patches CONFIG so subsequent API calls use the right endpoints.
+   * A page reload is needed for full effect.
+   */
+  private async handleEnvChange(value: string): Promise<void> {
+    const envOverride: EnvironmentName | '' = value as EnvironmentName | '';
+
+    if (envOverride === '') {
+      // Clear override — use auto-detection
+      await this.storage.saveEnvOverride(null);
+      // Re-detect and re-apply
+      const detectedEnv = detectEnvironment();
+      Object.assign(CONFIG, loadConfig(detectedEnv));
+      this.updateEnvDisplay(CONFIG.env, CONFIG.apiBaseUrl);
+      this.setStatus(`Environment set to auto-detect (${detectedEnv}). Reload the page for full effect.`, false);
+    } else {
+      await this.storage.saveEnvOverride(envOverride);
+      Object.assign(CONFIG, loadConfig(envOverride));
+      this.updateEnvDisplay(envOverride, CONFIG.apiBaseUrl);
+      this.setStatus(`Environment overridden to "${envOverride}" (${CONFIG.apiBaseUrl}). Reload the page for full effect.`, false);
+    }
+  }
+
+  private updateEnvDisplay(env: string, url: string): void {
+    const current = document.getElementById('upwork-buddy-env-current');
+    const urlEl = document.getElementById('upwork-buddy-env-url');
+    if (current) current.textContent = env;
+    if (urlEl) urlEl.textContent = url;
   }
 
   private setStatus(message: string, isError = false): void {

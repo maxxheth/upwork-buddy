@@ -28,8 +28,8 @@ func (s *Server) analyzeJobHandler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	log.Printf("📥 Received request: title=%q, budget=%q, skills=%q, profile_length=%d, user_skills_length=%d",
-		req.JobTitle, req.Budget, req.Skills, len(req.UserProfile), len(req.UserSkills))
+	log.Printf("📥 Received request: title=%q, contract_type=%q, budget=%q, rate_range=%q, budget_amount=%q, skills=%q, experience_level=%q, profile_length=%d, user_skills_length=%d",
+		req.JobTitle, req.ContractType, req.Budget, req.RateRange, req.BudgetAmount, req.Skills, req.ExperienceLevel, len(req.UserProfile), len(req.UserSkills))
 
 	// Create Ollama service
 	ollamaService, err := ollama.New()
@@ -48,8 +48,8 @@ func (s *Server) analyzeJobHandler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	log.Printf("✅ Analysis complete: proposal_length=%d, spec_sheet_length=%d, questions=%d, tips=%d",
-		len(result.Proposal), len(result.SpecSheetPrompt),
+	log.Printf("✅ Analysis complete: proposal_length=%d, execution_prompt_length=%d, questions=%d, tips=%d",
+		len(result.Proposal), len(result.ExecutionPrompt),
 		len(result.QuestionsForClient), len(result.TipsAndAdvice))
 
 	// Return the response

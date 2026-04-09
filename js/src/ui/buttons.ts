@@ -8,22 +8,26 @@ export class ButtonManager {
   private profileButton: HTMLButtonElement;
   private projectsButton: HTMLButtonElement;
   private jobHistoryButton: HTMLButtonElement;
+  private agentsButton: HTMLButtonElement;
 
   constructor(
     private onAnalyze: () => void,
     private onProfileConfig: () => void,
     private onViewProjects: () => void,
-    private onJobHistory: () => void
+    private onJobHistory: () => void,
+    private onAgents: () => void
   ) {
     this.container = this.createContainer();
     this.analyzeButton = this.createAnalyzeButton();
     this.profileButton = this.createProfileButton();
     this.projectsButton = this.createProjectsButton();
     this.jobHistoryButton = this.createJobHistoryButton();
+    this.agentsButton = this.createAgentsButton();
 
     // Add buttons to container
     this.container.appendChild(this.profileButton);
     this.container.appendChild(this.jobHistoryButton);
+    this.container.appendChild(this.agentsButton);
     this.container.appendChild(this.projectsButton);
     this.container.appendChild(this.analyzeButton);
 
@@ -99,6 +103,22 @@ export class ButtonManager {
 
     button.addEventListener('click', () => {
       this.onJobHistory();
+    });
+
+    return button;
+  }
+
+  /**
+   * Create the Agents button
+   */
+  private createAgentsButton(): HTMLButtonElement {
+    const button = document.createElement('button');
+    button.className = 'upwork-buddy-job-history-btn';
+    button.id = 'upwork-buddy-agents-btn';
+    button.innerHTML = '<span>🧩</span><span>Agents</span>';
+
+    button.addEventListener('click', () => {
+      this.onAgents();
     });
 
     return button;

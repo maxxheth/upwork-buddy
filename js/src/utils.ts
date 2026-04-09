@@ -82,7 +82,7 @@ export function renderAnalysis(analysis: AnalysisResponse, showCachedIndicator =
   console.log('🎨 renderAnalysis: Starting render with keys:', Object.keys(analysis));
   console.log('🎨 renderAnalysis: Field lengths:', {
     proposal: analysis.proposal?.length || 0,
-    spec_sheet_prompt: analysis.spec_sheet_prompt?.length || 0,
+    execution_prompt: analysis.execution_prompt?.length || 0,
     time_estimate: analysis.time_estimate?.length || 0,
     workload_division: analysis.workload_division?.length || 0,
     questions_for_client: analysis.questions_for_client?.length || 0,
@@ -102,7 +102,7 @@ export function renderAnalysis(analysis: AnalysisResponse, showCachedIndicator =
   // Icons for each section
   const icons: Record<string, string> = {
     'proposal': '📝',
-    'spec_sheet_prompt': '📋',
+    'execution_prompt': '⚡',
     'time_estimate': '⏱️',
     'workload_division': '🤖',
     'questions_for_client': '❓',

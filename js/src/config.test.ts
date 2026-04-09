@@ -1,11 +1,19 @@
-import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
+import { describe, it, expect, afterEach, vi } from 'vitest';
 import {
   detectEnvironment,
   loadConfig,
   CONFIG,
-  type EnvironmentName,
   type CustomConfigOverrides,
 } from './types';
+
+// Minimal localStorage mock for detectEnvironment tests
+const localStorageStore: Record<string, string> = {};
+const mockLocalStorage = {
+  getItem: (key: string) => localStorageStore[key] ?? null,
+  setItem: (key: string, value: string) => { localStorageStore[key] = value; },
+  removeItem: (key: string) => { delete localStorageStore[key]; },
+  clear: () => { Object.keys(localStorageStore).forEach(k => delete localStorageStore[k]); },
+};
 
 describe('detectEnvironment', () => {
   // Save originals so we can restore after each test
@@ -13,6 +21,8 @@ describe('detectEnvironment', () => {
   const originalChrome = (globalThis as any).chrome;
 
   afterEach(() => {
+    // Clean up localStorage mock
+    mockLocalStorage.clear();
     // Restore location
     if (originalLocation === undefined) {
       delete (globalThis as any).location;
@@ -98,8 +108,89 @@ describe('detectEnvironment', () => {
   });
 
   it('returns "development" as fallback when location is unavailable', () => {
+    mockLocalStorage.clear();
+    vi.stubGlobal('localStorage', mockLocalStorage);
     delete (globalThis as any).chrome;
     delete (globalThis as any).location;
+    expect(detectEnvironment()).toBe('development');
+  });
+
+  // ── localStorage override ────────────────────────────────────────────
+
+  it('returns "development" when localStorage has "local"', () => {
+    mockLocalStorage.setItem('upwork_buddy_env', 'local');
+    vi.stubGlobal('localStorage', mockLocalStorage);
+    delete (globalThis as any).chrome;
+    Object.defineProperty(globalThis, 'location', {
+      value: { hostname: 'www.upwork.com' },
+      writable: true,
+      configurable: true,
+    });
+    expect(detectEnvironment()).toBe('development');
+  });
+
+  it('returns "development" when localStorage has "development"', () => {
+    mockLocalStorage.setItem('upwork_buddy_env', 'development');
+    vi.stubGlobal('localStorage', mockLocalStorage);
+    delete (globalThis as any).chrome;
+    Object.defineProperty(globalThis, 'location', {
+      value: { hostname: 'www.upwork.com' },
+      writable: true,
+      configurable: true,
+    });
+    expect(detectEnvironment()).toBe('development');
+  });
+
+  it('returns "staging" when localStorage has "staging"', () => {
+    mockLocalStorage.setItem('upwork_buddy_env', 'staging');
+    vi.stubGlobal('localStorage', mockLocalStorage);
+    delete (globalThis as any).chrome;
+    Object.defineProperty(globalThis, 'location', {
+      value: { hostname: 'www.upwork.com' },
+      writable: true,
+      configurable: true,
+    });
+    expect(detectEnvironment()).toBe('staging');
+  });
+
+  it('returns "production" when localStorage has "production"', () => {
+    mockLocalStorage.setItem('upwork_buddy_env', 'production');
+    vi.stubGlobal('localStorage', mockLocalStorage);
+    delete (globalThis as any).chrome;
+    Object.defineProperty(globalThis, 'location', {
+      value: { hostname: 'localhost' },
+      writable: true,
+      configurable: true,
+    });
+    // localStorage override takes priority over hostname
+    expect(detectEnvironment()).toBe('production');
+  });
+
+  it('localStorage override takes priority over chrome manifest', () => {
+    mockLocalStorage.setItem('upwork_buddy_env', 'development');
+    vi.stubGlobal('localStorage', mockLocalStorage);
+    (globalThis as any).chrome = {
+      runtime: {
+        getManifest: () => ({ upwork_buddy_env: 'production' }),
+      },
+    };
+    Object.defineProperty(globalThis, 'location', {
+      value: { hostname: 'www.upwork.com' },
+      writable: true,
+      configurable: true,
+    });
+    expect(detectEnvironment()).toBe('development');
+  });
+
+  it('ignores invalid localStorage value and falls through to hostname', () => {
+    mockLocalStorage.setItem('upwork_buddy_env', 'nonsense');
+    vi.stubGlobal('localStorage', mockLocalStorage);
+    delete (globalThis as any).chrome;
+    Object.defineProperty(globalThis, 'location', {
+      value: { hostname: 'localhost' },
+      writable: true,
+      configurable: true,
+    });
     expect(detectEnvironment()).toBe('development');
   });
 

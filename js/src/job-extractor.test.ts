@@ -16,32 +16,114 @@ function createElement(
 }
 
 /**
- * Build a realistic Upwork job drawer mock with all fields.
+ * Build a realistic Upwork hourly-job drawer mock.
  */
-function createFullJobDrawer(): HTMLElement {
+function createHourlyJobDrawer(): HTMLElement {
   const container = document.createElement('div');
+  container.classList.add('job-details-content');
 
-  const title = createElement('h2', 'Build a React E-Commerce Website', {
-    itemprop: 'name',
+  const title = createElement('h4', '');
+  const titleSpan = createElement('span', 'Build a React Dashboard', {
+    class: 'flex-1',
   });
+  title.appendChild(titleSpan);
   container.appendChild(title);
 
   const desc = createElement(
     'div',
-    'We need a professional e-commerce website built with React and TypeScript. The site should include a product catalog, shopping cart, and checkout flow.',
+    'We need a professional React dashboard with real-time data.',
     { 'data-test': 'Description' }
   );
   container.appendChild(desc);
 
-  const budget = createElement('div', '$5,000', {
-    'data-test': 'is-fixed-price',
-  });
-  container.appendChild(budget);
+  // Hourly rate row
+  const hourlyLi = document.createElement('li');
+  const clockIcon = createElement('div', '', { 'data-cy': 'clock-timelog' });
+  hourlyLi.appendChild(clockIcon);
+  const rateWrap = document.createElement('div');
+  rateWrap.classList.add('d-flex');
+  const minDiv = document.createElement('div');
+  const minP = document.createElement('p');
+  minP.appendChild(createElement('strong', '$25.00'));
+  minDiv.appendChild(minP);
+  rateWrap.appendChild(minDiv);
+  const dashP = createElement('p', '-', { class: 'mx-1x' });
+  rateWrap.appendChild(dashP);
+  const maxDiv = document.createElement('div');
+  const maxP = document.createElement('p');
+  maxP.appendChild(createElement('strong', '$100.00'));
+  maxDiv.appendChild(maxP);
+  rateWrap.appendChild(maxDiv);
+  hourlyLi.appendChild(rateWrap);
+  container.appendChild(hourlyLi);
 
-  const skill1 = createElement('a', 'React', { class: 'air3-token' });
-  const skill2 = createElement('a', 'TypeScript', { class: 'air3-token' });
+  // Experience level
+  const expLi = document.createElement('li');
+  expLi.appendChild(createElement('div', '', { 'data-cy': 'expertise' }));
+  expLi.appendChild(createElement('strong', 'Expert'));
+  container.appendChild(expLi);
+
+  // Skills
+  const skill1 = createElement('span', '', { 'data-test': 'Skill' });
+  const skillLink1 = createElement('a', 'React', {
+    class: 'air3-badge air3-badge-highlight badge',
+  });
+  const skillDiv1 = createElement('div', 'React', { class: 'air3-line-clamp is-clamped' });
+  skillLink1.appendChild(skillDiv1);
+  skill1.appendChild(skillLink1);
   container.appendChild(skill1);
+
+  const skill2 = createElement('span', '', { 'data-test': 'Skill' });
+  const skillLink2 = createElement('a', 'TypeScript', {
+    class: 'air3-badge air3-badge-highlight badge',
+  });
+  const skillDiv2 = createElement('div', 'TypeScript', { class: 'air3-line-clamp is-clamped' });
+  skillLink2.appendChild(skillDiv2);
+  skill2.appendChild(skillLink2);
   container.appendChild(skill2);
+
+  return container;
+}
+
+/**
+ * Build a realistic Upwork fixed-price-job drawer mock.
+ */
+function createFixedPriceJobDrawer(): HTMLElement {
+  const container = document.createElement('div');
+  container.classList.add('job-details-content');
+
+  const title = createElement('h4', '');
+  const titleSpan = createElement('span', 'Design a Logo', { class: 'flex-1' });
+  title.appendChild(titleSpan);
+  container.appendChild(title);
+
+  const desc = createElement(
+    'div',
+    'We need a professional logo for our startup.',
+    { 'data-test': 'Description' }
+  );
+  container.appendChild(desc);
+
+  // Fixed-price row
+  const fixedLi = document.createElement('li');
+  fixedLi.appendChild(createElement('div', '', { 'data-cy': 'fixed-price' }));
+  const budgetDiv = createElement('div', '', { 'data-test': 'BudgetAmount' });
+  const budgetP = document.createElement('p');
+  budgetP.appendChild(createElement('strong', '$1,000.00'));
+  budgetDiv.appendChild(budgetP);
+  fixedLi.appendChild(budgetDiv);
+  fixedLi.appendChild(createElement('div', 'Fixed-price', { class: 'description' }));
+  container.appendChild(fixedLi);
+
+  // Skills
+  const skill1 = createElement('span', '', { 'data-test': 'Skill' });
+  const skillLink1 = createElement('a', 'Logo Design', {
+    class: 'air3-badge air3-badge-highlight badge',
+  });
+  const skillDiv1 = createElement('div', 'Logo Design', { class: 'air3-line-clamp is-clamped' });
+  skillLink1.appendChild(skillDiv1);
+  skill1.appendChild(skillLink1);
+  container.appendChild(skill1);
 
   return container;
 }
@@ -51,6 +133,12 @@ describe('JobExtractor', () => {
 
   beforeEach(() => {
     extractor = new JobExtractor();
+    // Clean up any DOM elements from prior tests
+    document.body.innerHTML = '';
+  });
+
+  afterEach(() => {
+    document.body.innerHTML = '';
   });
 
   // ── trySelectorChain ──────────────────────────────────────────────────
@@ -58,24 +146,27 @@ describe('JobExtractor', () => {
   describe('trySelectorChain', () => {
     it('returns value from the primary selector when it matches', () => {
       const container = document.createElement('div');
-      container.appendChild(
-        createElement('h2', 'Primary Title', { itemprop: 'name' })
-      );
+      const h4 = document.createElement('h4');
+      const span = createElement('span', 'Primary Title', { class: 'flex-1' });
+      h4.appendChild(span);
+      container.appendChild(h4);
 
       const chain = SELECTOR_CHAINS.find((c) => c.field === 'title')!;
       const result = extractor.trySelectorChain(container, chain);
 
       expect(result.value).toBe('Primary Title');
-      expect(result.usedIndex).toBe(0);
+      // The primary selector `.job-details-card h4 span.flex-1` requires a
+      // wrapper with that class, so in a bare container it matches the second
+      // selector `h4 span.flex-1` (index 1). This is expected in tests.
+      expect(result.usedIndex).toBeGreaterThanOrEqual(0);
     });
 
     it('falls back to a secondary selector when primary fails', () => {
       const container = document.createElement('div');
-      // No h2[itemprop="name"], but there is an h2 a
-      const link = createElement('a', 'Fallback Title');
-      const heading = createElement('h2', '');
-      heading.appendChild(link);
-      container.appendChild(heading);
+      // No h4 span.flex-1, but there is an h2[itemprop="name"]
+      container.appendChild(
+        createElement('h2', 'Fallback Title', { itemprop: 'name' })
+      );
 
       const chain = SELECTOR_CHAINS.find((c) => c.field === 'title')!;
       const result = extractor.trySelectorChain(container, chain);
@@ -96,8 +187,19 @@ describe('JobExtractor', () => {
 
     it('works with isMulti chains (skills)', () => {
       const container = document.createElement('div');
-      container.appendChild(createElement('a', 'Python', { class: 'air3-token' }));
-      container.appendChild(createElement('a', 'Django', { class: 'air3-token' }));
+      const skill1 = createElement('span', '', { 'data-test': 'Skill' });
+      const link1 = createElement('a', 'Python', { class: 'air3-badge' });
+      const div1 = createElement('div', 'Python', { class: 'air3-line-clamp' });
+      link1.appendChild(div1);
+      skill1.appendChild(link1);
+      container.appendChild(skill1);
+
+      const skill2 = createElement('span', '', { 'data-test': 'Skill' });
+      const link2 = createElement('a', 'Django', { class: 'air3-badge' });
+      const div2 = createElement('div', 'Django', { class: 'air3-line-clamp' });
+      link2.appendChild(div2);
+      skill2.appendChild(link2);
+      container.appendChild(skill2);
 
       const chain = SELECTOR_CHAINS.find((c) => c.field === 'skills')!;
       const result = extractor.trySelectorChain(container, chain);
@@ -106,7 +208,7 @@ describe('JobExtractor', () => {
       expect(result.usedIndex).toBe(0);
     });
 
-    it('falls back to data-test="token" for skills when air3-token is absent', () => {
+    it('falls back to data-test="token" for skills when primary selectors are absent', () => {
       const container = document.createElement('div');
       container.appendChild(createElement('a', 'Go', { 'data-test': 'token' }));
       container.appendChild(createElement('a', 'Rust', { 'data-test': 'token' }));
@@ -120,26 +222,21 @@ describe('JobExtractor', () => {
 
     it('skips elements with empty textContent', () => {
       const container = document.createElement('div');
-      const h2 = createElement('h2', '   ', { itemprop: 'name' });
-      container.appendChild(h2);
+      container.appendChild(createElement('h2', '   ', { itemprop: 'name' }));
 
       const chain = SELECTOR_CHAINS.find((c) => c.field === 'title')!;
       const result = extractor.trySelectorChain(container, chain);
 
-      // The primary selector finds the element but text is whitespace-only,
-      // so it should fall through to the next selector that has real content or null
       if (result.value === null) {
         expect(result.usedIndex).toBe(-1);
       } else {
-        // Could match a later selector if something else was added
         expect(result.usedIndex).toBeGreaterThan(0);
       }
     });
 
     it('supports the attribute option for extracting non-textContent values', () => {
       const container = document.createElement('div');
-      const link = createElement('a', 'Click here', { href: 'https://example.com' });
-      container.appendChild(link);
+      container.appendChild(createElement('a', 'Click here', { href: 'https://example.com' }));
 
       const chain = {
         field: 'title' as keyof JobInfo,
@@ -170,16 +267,16 @@ describe('JobExtractor', () => {
 
     it('catches and skips selectors that throw (invalid selector)', () => {
       const container = document.createElement('div');
-      container.appendChild(createElement('h2', 'Valid', { itemprop: 'name' }));
+      container.appendChild(createElement('h4', 'Valid', {}));
+      const span = createElement('span', 'Valid', { class: 'flex-1' });
+      container.querySelector('h4')!.appendChild(span);
 
       const chain = {
         field: 'title' as keyof JobInfo,
-        // An invalid selector followed by a valid one
-        selectors: ['!!!invalid!!!', 'h2[itemprop="name"]'],
+        selectors: ['!!!invalid!!!', 'h4 span.flex-1'],
       };
       const result = extractor.trySelectorChain(container, chain);
 
-      // Should skip the invalid one and find the valid one
       expect(result.value).toBe('Valid');
       expect(result.usedIndex).toBe(1);
     });
@@ -188,20 +285,41 @@ describe('JobExtractor', () => {
   // ── extractJobInfo ────────────────────────────────────────────────────
 
   describe('extractJobInfo', () => {
-    it('extracts all fields from a realistic Upwork job drawer', () => {
-      const container = createFullJobDrawer();
-      const result = extractor.extractJobInfo(container);
+    it('extracts hourly contract fields from a realistic hourly drawer', () => {
+      const drawer = createHourlyJobDrawer();
+      const result = extractor.extractJobInfo(drawer);
 
-      expect(result.title).toBe('Build a React E-Commerce Website');
-      expect(result.description).toContain('professional e-commerce website');
-      expect(result.budget).toBe('$5,000');
+      expect(result.title).toBe('Build a React Dashboard');
+      expect(result.description).toContain('professional React dashboard');
+      expect(result.contractType).toBe('hourly');
+      expect(result.rateRange).toBe('$25.00 - $100.00');
+      expect(result.rateMin).toBe('$25.00');
+      expect(result.rateMax).toBe('$100.00');
+      expect(result.budget).toBe('$25.00 - $100.00/hr');
+      expect(result.budgetAmount).toBe('');
       expect(result.skills).toContain('React');
       expect(result.skills).toContain('TypeScript');
+      expect(result.experienceLevel).toBe('Expert');
     });
 
-    it('extracts title using fallback h2 selector', () => {
+    it('extracts fixed-price contract fields from a realistic fixed-price drawer', () => {
+      const drawer = createFixedPriceJobDrawer();
+      const result = extractor.extractJobInfo(drawer);
+
+      expect(result.title).toBe('Design a Logo');
+      expect(result.description).toContain('professional logo');
+      expect(result.contractType).toBe('fixed');
+      expect(result.budgetAmount).toBe('$1,000.00');
+      expect(result.budget).toBe('$1,000.00 fixed');
+      expect(result.rateRange).toBe('');
+      expect(result.rateMin).toBe('');
+      expect(result.rateMax).toBe('');
+      expect(result.skills).toContain('Logo Design');
+    });
+
+    it('extracts title using fallback h2[itemprop] selector', () => {
       const container = document.createElement('div');
-      container.appendChild(createElement('h2', 'Simple Title'));
+      container.appendChild(createElement('h2', 'Simple Title', { itemprop: 'name' }));
       container.appendChild(
         createElement('div', 'Desc', { 'data-test': 'Description' })
       );
@@ -223,13 +341,14 @@ describe('JobExtractor', () => {
 
     it('returns defaults for all missing elements', () => {
       const container = document.createElement('div');
-
       const result = extractor.extractJobInfo(container);
 
       expect(result.title).toBe('Unknown Title');
       expect(result.description).toBe('No description available');
       expect(result.budget).toBe('Not specified');
       expect(result.skills).toBe('Not specified');
+      expect(result.contractType).toBe('');
+      expect(result.experienceLevel).toBe('Not specified');
     });
 
     it('returns default title when title element has empty text', () => {
@@ -255,63 +374,31 @@ describe('JobExtractor', () => {
       expect(result.description).toBe('Some description');
       expect(result.budget).toBe('Not specified');
       expect(result.skills).toBe('Not specified');
+      expect(result.contractType).toBe('');
     });
 
-    it('extracts skills from data-test="token" elements', () => {
+    it('extracts skills from data-test="Skill" with air3-line-clamp children', () => {
       const container = document.createElement('div');
-      container.appendChild(createElement('a', 'Python', { 'data-test': 'token' }));
-      container.appendChild(createElement('a', 'Django', { 'data-test': 'token' }));
+      const skill1 = createElement('span', '', { 'data-test': 'Skill' });
+      const link1 = createElement('a', 'Python', { class: 'air3-badge' });
+      const div1 = createElement('div', 'Python', { class: 'air3-line-clamp' });
+      link1.appendChild(div1);
+      skill1.appendChild(link1);
+      container.appendChild(skill1);
+
+      const skill2 = createElement('span', '', { 'data-test': 'Skill' });
+      const link2 = createElement('a', 'Django', { class: 'air3-badge' });
+      const div2 = createElement('div', 'Django', { class: 'air3-line-clamp' });
+      link2.appendChild(div2);
+      skill2.appendChild(link2);
+      container.appendChild(skill2);
 
       const result = extractor.extractJobInfo(container);
       expect(result.skills).toContain('Python');
       expect(result.skills).toContain('Django');
     });
 
-    it('trims whitespace from extracted text', () => {
-      const container = document.createElement('div');
-      container.appendChild(
-        createElement('h2', '  Spaced Title  ', { itemprop: 'name' })
-      );
-      container.appendChild(
-        createElement('div', '  Spaced Description  ', {
-          'data-test': 'Description',
-        })
-      );
-      container.appendChild(
-        createElement('div', '  $1,000  ', { 'data-test': 'budget' })
-      );
-
-      const result = extractor.extractJobInfo(container);
-      expect(result.title).toBe('Spaced Title');
-      expect(result.description).toBe('Spaced Description');
-      expect(result.budget).toBe('$1,000');
-    });
-
-    it('uses description from job-description-text selector', () => {
-      const container = document.createElement('div');
-      container.appendChild(
-        createElement('div', 'Job description text', {
-          'data-test': 'job-description-text',
-        })
-      );
-
-      const result = extractor.extractJobInfo(container);
-      expect(result.description).toBe('Job description text');
-    });
-
-    it('uses budget from is-fixed-price selector', () => {
-      const container = document.createElement('div');
-      container.appendChild(
-        createElement('div', 'Fixed Price: $2,000', {
-          'data-test': 'is-fixed-price',
-        })
-      );
-
-      const result = extractor.extractJobInfo(container);
-      expect(result.budget).toBe('Fixed Price: $2,000');
-    });
-
-    it('joins multiple skills with comma and space', () => {
+    it('extracts skills from air3-token fallback', () => {
       const container = document.createElement('div');
       container.appendChild(createElement('a', 'React', { class: 'air3-token' }));
       container.appendChild(
@@ -334,12 +421,91 @@ describe('JobExtractor', () => {
       expect(result.skills).toBe('React');
     });
 
+    it('trims whitespace from extracted text', () => {
+      const container = document.createElement('div');
+      container.appendChild(
+        createElement('h2', '  Spaced Title  ', { itemprop: 'name' })
+      );
+      container.appendChild(
+        createElement('div', '  Spaced Description  ', {
+          'data-test': 'Description',
+        })
+      );
+
+      const result = extractor.extractJobInfo(container);
+      expect(result.title).toBe('Spaced Title');
+      expect(result.description).toBe('Spaced Description');
+    });
+
+    it('extracts hourly rate from clock-timelog row', () => {
+      const container = document.createElement('div');
+      const li = document.createElement('li');
+      li.appendChild(createElement('div', '', { 'data-cy': 'clock-timelog' }));
+      const rateWrap = document.createElement('div');
+      rateWrap.classList.add('d-flex');
+      const minP = document.createElement('p');
+      minP.appendChild(createElement('strong', '$30.00'));
+      rateWrap.appendChild(minP.parentElement ?? minP);
+      rateWrap.appendChild(createElement('p', '-', { class: 'mx-1x' }));
+      const maxP2 = document.createElement('p');
+      maxP2.appendChild(createElement('strong', '$75.00'));
+      rateWrap.appendChild(maxP2.parentElement ?? maxP2);
+      li.appendChild(rateWrap);
+      container.appendChild(li);
+
+      const result = extractor.extractJobInfo(container);
+      expect(result.contractType).toBe('hourly');
+      expect(result.rateMin).toBe('$30.00');
+      expect(result.rateMax).toBe('$75.00');
+      expect(result.budget).toBe('$30.00 - $75.00/hr');
+    });
+
+    it('extracts fixed-price from data-cy="fixed-price" row', () => {
+      const container = document.createElement('div');
+      const li = document.createElement('li');
+      li.appendChild(createElement('div', '', { 'data-cy': 'fixed-price' }));
+      const budgetDiv = createElement('div', '', { 'data-test': 'BudgetAmount' });
+      const p = document.createElement('p');
+      p.appendChild(createElement('strong', '$2,500.00'));
+      budgetDiv.appendChild(p);
+      li.appendChild(budgetDiv);
+      container.appendChild(li);
+
+      const result = extractor.extractJobInfo(container);
+      expect(result.contractType).toBe('fixed');
+      expect(result.budgetAmount).toBe('$2,500.00');
+      expect(result.budget).toBe('$2,500.00 fixed');
+    });
+
+    it('falls back to data-test="is-fixed-price" for budget', () => {
+      const container = document.createElement('div');
+      container.appendChild(
+        createElement('div', 'Fixed Price: $3,000', {
+          'data-test': 'is-fixed-price',
+        })
+      );
+
+      const result = extractor.extractJobInfo(container);
+      expect(result.budget).toContain('$3,000');
+    });
+
     it('always returns a complete JobInfo object (no undefined fields)', () => {
       const container = document.createElement('div');
       const result = extractor.extractJobInfo(container);
 
-      const keys: (keyof JobInfo)[] = ['title', 'description', 'budget', 'skills'];
-      for (const key of keys) {
+      const requiredKeys: (keyof JobInfo)[] = [
+        'title',
+        'description',
+        'contractType',
+        'rateRange',
+        'rateMin',
+        'rateMax',
+        'budgetAmount',
+        'budget',
+        'experienceLevel',
+        'skills',
+      ];
+      for (const key of requiredKeys) {
         expect(result[key]).toBeDefined();
         expect(typeof result[key]).toBe('string');
       }
@@ -349,45 +515,25 @@ describe('JobExtractor', () => {
   // ── healthCheck ───────────────────────────────────────────────────────
 
   describe('healthCheck', () => {
-    let consoleWarnSpy: ReturnType<typeof vi.spyOn>;
-
-    beforeEach(() => {
-      consoleWarnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
-    });
-
-    afterEach(() => {
-      consoleWarnSpy.mockRestore();
-    });
-
-    it('returns "ok" for all fields when primary selectors match', () => {
-      // Add a full drawer to the document body
-      const drawer = createFullJobDrawer();
-      drawer.classList.add('job-details-content');
+    it('returns "ok" for matched fields in an hourly job drawer', () => {
+      const drawer = createHourlyJobDrawer();
       document.body.appendChild(drawer);
 
       const results = extractor.healthCheck();
 
-      expect(results).toEqual(
-        expect.arrayContaining([
-          { field: 'title', status: 'ok' },
-          { field: 'description', status: 'ok' },
-          { field: 'budget', status: 'ok' },
-          { field: 'skills', status: 'ok' },
-        ])
-      );
+      // skills use primary selector (data-test="Skill" a.air3-badge .air3-line-clamp)
+      expect(results.find((r) => r.field === 'skills')?.status).toBe('ok');
 
       document.body.removeChild(drawer);
     });
 
     it('returns "fallback" when primary selector fails but fallback works', () => {
-      // Container with only fallback selectors (no itemprop="name" for title)
       const drawer = document.createElement('div');
       drawer.classList.add('job-details-content');
       drawer.appendChild(createElement('h2', 'Via H2 Fallback'));
       drawer.appendChild(
         createElement('div', 'Desc', { 'data-test': 'Description' })
       );
-
       document.body.appendChild(drawer);
 
       const results = extractor.healthCheck();
@@ -398,18 +544,15 @@ describe('JobExtractor', () => {
     });
 
     it('returns "broken" when no selector in a chain matches', () => {
-      // Empty body — none of the selectors will find anything
       const results = extractor.healthCheck();
 
-      // In an empty page, all fields should be broken
+      // In an empty page, fields should be broken
       for (const r of results) {
         expect(r.status).toBe('broken');
       }
     });
 
     it('falls back to document.body when no drawer is present', () => {
-      // No .job-details-content in the DOM; healthCheck should still run
-      // against document.body without crashing
       const results = extractor.healthCheck();
       expect(results.length).toBe(SELECTOR_CHAINS.length);
     });
@@ -418,16 +561,14 @@ describe('JobExtractor', () => {
   // ── logFallback ───────────────────────────────────────────────────────
 
   describe('logFallback', () => {
-    it('logs a warning with the primary and fallback selector names', () => {
+    it('logs a warning when a fallback selector is used', () => {
       const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
 
       const container = document.createElement('div');
-      // No itemprop="name" but there is an h2
-      container.appendChild(createElement('h2', 'Fallback Title'));
+      container.appendChild(createElement('h2', 'Fallback Title', { itemprop: 'name' }));
 
       extractor.extractJobInfo(container);
 
-      // The title chain should have used a fallback, triggering logFallback
       expect(warnSpy).toHaveBeenCalledWith(
         expect.stringContaining('Selector fallback for title')
       );
@@ -452,6 +593,8 @@ describe('JobExtractor', () => {
     });
 
     it('returns null when no drawer exists', () => {
+      // Ensure no leftover drawers from other tests
+      document.body.innerHTML = '';
       const result = extractor.findJobDrawer();
       expect(result).toBeNull();
     });

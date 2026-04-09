@@ -22,13 +22,19 @@ type Job struct {
 	Description     string     `gorm:"type:text"`
 	URL             string     `gorm:"type:text"`
 	Source          string     `gorm:"type:text"` // e.g., "upwork", "linkedin", etc.
-	Status          string     `gorm:"type:text"` // e.g., "new", "applied", "rejected", etc.
+	ContractType    string     `gorm:"type:text"` // "hourly" or "fixed"
 	Budget          string     `gorm:"type:text"`
+	RateRange       string     `gorm:"type:text"`
+	RateMin         string     `gorm:"type:text"`
+	RateMax         string     `gorm:"type:text"`
+	BudgetAmount    string     `gorm:"type:text"`
+	ExperienceLevel string     `gorm:"type:text"`
 	Skills          string     `gorm:"type:text"`
 	Proposal        string     `gorm:"type:text"`
 	TimeEstimate    string     `gorm:"type:text"`
-	SpecSheetPrompt string     `gorm:"type:text"`
+	ExecutionPrompt  string     `gorm:"type:text"`
 	ToneAnalysis    string     `gorm:"type:text"`
+	Status          string     `gorm:"type:text"` // e.g., "new", "applied", "rejected", etc.
 	UserID          *uint      `gorm:"index"`
 	User            *User      `gorm:"foreignKey:UserID"`
 	CreatedAt       time.Time  `gorm:"type:timestamp(3);default:CURRENT_TIMESTAMP;not null"`

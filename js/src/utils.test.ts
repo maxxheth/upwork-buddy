@@ -166,7 +166,7 @@ describe('renderAnalysis', () => {
   it('should render a basic analysis with all sections', () => {
     const analysis: AnalysisResponse = {
       proposal: 'Here is a cover letter',
-      spec_sheet_prompt: 'Create a spec sheet',
+      execution_prompt: 'Create a spec sheet',
       time_estimate: '2-3 days',
       workload_division: 'Split the work',
       questions_for_client: 'What is your budget?',
@@ -178,7 +178,7 @@ describe('renderAnalysis', () => {
 
     expect(html).toContain('Proposal');
     expect(html).toContain('Here is a cover letter');
-    expect(html).toContain('Spec Sheet Prompt');
+    expect(html).toContain('Execution Prompt');
     expect(html).toContain('Time Estimate');
     expect(html).toContain('Workload Division');
     expect(html).toContain('Questions For Client');

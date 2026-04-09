@@ -29,6 +29,13 @@ func (s *Server) RegisterRoutes() http.Handler {
 	mux.HandleFunc("GET /api/jobs", s.listJobsHandler)
 	mux.HandleFunc("DELETE /api/jobs/{id}", s.deleteJobHandler)
 
+	// Template & Agent endpoints
+	mux.HandleFunc("GET /api/templates", s.listTemplatesHandler)
+	mux.HandleFunc("GET /api/templates/{name}", s.getTemplateHandler)
+	mux.HandleFunc("POST /api/agents/generate", s.generateAgentsHandler)
+	mux.HandleFunc("GET /api/agents", s.listAgentsHandler)
+	mux.HandleFunc("POST /api/agents/download", s.downloadAgentsHandler)
+
 	// Wrap the mux with CORS middleware
 	return s.corsMiddleware(mux)
 }
