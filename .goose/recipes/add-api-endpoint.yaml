@@ -62,7 +62,7 @@ instructions: |
   ## Steps
   1. Read the existing `internal/server/handlers.go`, `routes.go`, and `server.go` to absorb the current patterns.
   2. If requires_database is true and a new GORM model is needed, add it to `internal/database/service/schema.go`,
-    then update the Atlas loader in `internal/database/service/loader/main.go` to include the new model,
+    then update the Atlas loader in `tools/atlas-loader/main.go` to include the new model,
     then run `atlas migrate diff --env app` to generate a migration and `atlas migrate apply --env app` to apply it.
   3. Add the handler method on `*Server` in `handlers.go` following the existing pattern:
      - Validate HTTP method at the top (unless it handles multiple methods like the profile handler)

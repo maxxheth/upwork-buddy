@@ -11,7 +11,7 @@ You are adding a new GORM model to the Upwork Buddy database layer. Follow the p
 ## Architecture Context
 - Database service: `internal/database/service/database.go` — singleton `DatabaseService` interface with `Health()`, `Close()`, `GetDB()`, `GetGorm()` methods. Uses both `database/sql` and `gorm.DB`.
 - Models: `internal/database/service/schema.go` — all GORM models live here. Existing models: `User`, `Job`, `Profile`, `PortfolioItem`. Each has `ID uint`, `CreatedAt time.Time`, `UpdatedAt time.Time` fields, and uses `gorm` struct tags for column types.
-- Atlas loader: `internal/database/service/loader/main.go` — must include every model struct in the `gormschema.New("postgres").Load(...)` call for migrations to be generated.
+- Atlas loader: `tools/atlas-loader/main.go` — must include every model struct in the `gormschema.New("postgres").Load(...)` call for migrations to be generated.
 - Atlas config: `atlas.hcl` at project root — defines the migration directory, dev database, and format. Migrations live in `internal/database/migrations/app/`.
 - Current connection: PostgreSQL via pgx driver, GORM with `schema.NamingStrategy{TablePrefix: "public."}`.
 - Migrations: `make diff` runs `atlas migrate diff --env app`, `make apply` runs `atlas migrate apply --env app`.
@@ -30,7 +30,7 @@ You are adding a new GORM model to the Upwork Buddy database layer. Follow the p
 ## Steps
 1. Read `internal/database/service/schema.go` to see existing model patterns.
 2. Add the new model struct to `schema.go` with proper GORM tags.
-3. Update `internal/database/service/loader/main.go` to include the new model in the `Load()` call.
+3. Update `tools/atlas-loader/main.go` to include the new model in the `Load()` call.
 4. Run `atlas migrate diff --env app` to generate the migration.
 5. Run `atlas migrate apply --env app` (or `make apply`) to apply it.
 6. Verify by running `go test ./internal/database/... -v`.

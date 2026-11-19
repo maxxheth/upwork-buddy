@@ -25,9 +25,9 @@ export interface Config {
 /** Per-environment endpoint overrides */
 const ENVIRONMENTS: Record<EnvironmentName, EnvironmentConfig> = {
   development: {
-    apiBaseUrl: 'http://localhost:9090',
-    profileApiEndpoint: 'http://localhost:9090/api/profile',
-    jobsApiEndpoint: 'http://localhost:9090/api/jobs',
+    apiBaseUrl: 'http://127.0.0.1:9090',
+    profileApiEndpoint: 'http://127.0.0.1:9090/api/profile',
+    jobsApiEndpoint: 'http://127.0.0.1:9090/api/jobs',
   },
   staging: {
     apiBaseUrl: 'https://staging-api.upworkbuddy.app',
@@ -64,18 +64,33 @@ function normalizeEnvName(raw: string): EnvironmentName | null {
   return null;
 }
 
+interface ExtensionManifestLike {
+  upwork_buddy_env?: unknown;
+}
+
+interface GlobalRuntimeLike {
+  chrome?: {
+    runtime?: {
+      id?: string;
+      getManifest?: () => ExtensionManifestLike;
+    };
+  };
+  location?: {
+    hostname?: string;
+  };
+}
+
 /**
  * Detect which environment we are running in.
  *
  * Strategy (highest priority first):
  *  1. Explicit env override stored in localStorage (set by user or APP_ENV).
  *  2. Chrome extension manifest `upwork_buddy_env` field (set during packaging).
- *  3. Hostname-based inference.
+ *  3. Hostname / extension-runtime inference (www.upwork.com & extension runtime default to "development").
  *  4. Fall back to "development".
  */
 export function detectEnvironment(): EnvironmentName {
-  // 1. localStorage override — allows APP_ENV=local to take effect even
-  //    when running on upwork.com (where hostname would resolve to "production")
+  // 1. localStorage override — allows APP_ENV override to take effect on any hostname
   try {
     if (typeof localStorage !== 'undefined' && localStorage.getItem) {
       const stored = localStorage.getItem('upwork_buddy_env');
@@ -88,9 +103,11 @@ export function detectEnvironment(): EnvironmentName {
     // localStorage not available (e.g. SSR) — continue
   }
 
+  const runtimeGlobal = globalThis as unknown as GlobalRuntimeLike;
+
   // 2. Chrome extension manifest override
   try {
-    const manifest = (globalThis as any).chrome?.runtime?.getManifest?.();
+    const manifest = runtimeGlobal.chrome?.runtime?.getManifest?.();
     if (manifest && typeof manifest.upwork_buddy_env === 'string') {
       const env = normalizeEnvName(manifest.upwork_buddy_env);
       if (env) return env;
@@ -99,17 +116,30 @@ export function detectEnvironment(): EnvironmentName {
     // Not in extension context — continue to next strategy
   }
 
-  // 3. Hostname-based detection
+  // 3. Hostname / extension runtime detection
   try {
-    const hostname = (globalThis as any).location?.hostname ?? '';
-    if (hostname === 'localhost' || hostname === '127.0.0.1' || hostname.endsWith('.local')) {
+    const hostname = runtimeGlobal.location?.hostname ?? '';
+    if (
+      hostname === 'localhost' ||
+      hostname === '127.0.0.1' ||
+      hostname.endsWith('.local') ||
+      hostname === 'www.upwork.com' ||
+      hostname.endsWith('.upwork.com')
+    ) {
       return 'development';
     }
-    if (hostname.includes('staging') || hostname.includes('preprod') || hostname.endsWith('.staging')) {
+    if (
+      hostname.includes('staging') ||
+      hostname.includes('preprod') ||
+      hostname.endsWith('.staging')
+    ) {
       return 'staging';
     }
+    if (runtimeGlobal.chrome?.runtime?.id) {
+      return 'development';
+    }
     if (hostname !== '') {
-      // Any non-empty hostname that isn't localhost or staging is likely production
+      // Any other non-empty hostname that isn't localhost, upwork.com, or staging
       return 'production';
     }
   } catch {
@@ -212,6 +242,9 @@ export interface ProfileApiResponse {
   skills?: string;
   portfolio_items?: PortfolioItem[];
   portfolioItems?: PortfolioItem[];
+  updated_at?: string;
+  last_synced_at?: string;
+  lastSyncedAt?: string;
 }
 
 export interface AnalysisResponse {

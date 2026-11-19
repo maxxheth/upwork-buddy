@@ -3,7 +3,7 @@ package templates
 import (
 	"os"
 
-	"gopkg.in/yaml.v3"
+	"go.yaml.in/yaml/v3"
 )
 
 // DocRef is a documentation URL with a label

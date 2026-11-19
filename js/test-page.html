@@ -109,7 +109,7 @@
             <li>Click the button below to activate the AI assistant</li>
             <li>Click "Analyze This Job" on any job card below</li>
         </ol>
-        <button class="test-btn" onclick="loadScript()">🚀 Activate AI Assistant</button>
+        <button class="test-btn" id="activate-assistant-btn" type="button">🚀 Activate AI Assistant</button>
     </div>
     
     <!-- Sample Job Cards -->
@@ -212,11 +212,11 @@
     </div>
     
     <script>
-        function loadScript() {
+        document.getElementById('activate-assistant-btn')?.addEventListener('click', () => {
             const script = document.createElement('script');
-            script.src = 'upwork-buddy-snippet.js';
+            script.src = 'dist/content.js';
             document.body.appendChild(script);
-        }
+        });
     </script>
 </body>
 </html>

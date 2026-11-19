@@ -37,3 +37,8 @@ build-errors.log
 .DS_Store
 
 logs
+
+# Editor swap and backup files
+*.swp
+*.swo
+*~

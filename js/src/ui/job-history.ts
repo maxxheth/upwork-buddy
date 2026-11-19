@@ -13,7 +13,7 @@ export class JobHistoryPanel {
   constructor(
     container: HTMLElement,
     onJobSelect?: (job: SavedJob) => void,
-    onJobDelete?: (id: number) => Promise<void>
+    onJobDelete?: (id: number) => Promise<void>,
   ) {
     this.container = container;
     this.onJobSelect = onJobSelect;
@@ -31,7 +31,7 @@ export class JobHistoryPanel {
       return;
     }
 
-    const jobCards = jobs.map(job => this.renderJobCard(job)).join('');
+    const jobCards = jobs.map((job) => this.renderJobCard(job)).join('');
     this.container.innerHTML = `
       <div class="upwork-buddy-job-history">
         <h3>📋 Job History (${jobs.length})</h3>
@@ -42,24 +42,28 @@ export class JobHistoryPanel {
     `;
 
     // Wire up event handlers after rendering
-    this.container.querySelectorAll('[data-job-id]').forEach(card => {
-      const jobId = parseInt(card.getAttribute('data-job-id')!, 10);
+    this.container.querySelectorAll('[data-job-id]').forEach((card) => {
+      const rawId = card.getAttribute('data-job-id');
+      if (!rawId) return;
+      const jobId = Number.parseInt(rawId, 10);
       const viewBtn = card.querySelector('.upwork-buddy-view-job');
       const deleteBtn = card.querySelector('.upwork-buddy-delete-job');
-      const job = jobs.find(j => j.id === jobId);
+      const job = jobs.find((j) => j.id === jobId);
 
       if (viewBtn && job && this.onJobSelect) {
+        const onSelect = this.onJobSelect;
         viewBtn.addEventListener('click', (e) => {
           e.stopPropagation();
-          this.onJobSelect!(job);
+          onSelect(job);
         });
       }
 
       if (deleteBtn && this.onJobDelete) {
+        const onDelete = this.onJobDelete;
         deleteBtn.addEventListener('click', async (e) => {
           e.stopPropagation();
           if (confirm('Delete this saved job?')) {
-            await this.onJobDelete!(jobId);
+            await onDelete(jobId);
           }
         });
       }

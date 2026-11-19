@@ -1,32 +1,32 @@
 services:
   app_db:
-    image: postgres:15-alpine
+    image: postgres:17-alpine
     restart: unless-stopped
     environment:
-      POSTGRES_DB: ${APP_DB_DATABASE}
-      POSTGRES_USER: ${APP_DB_USERNAME}
-      POSTGRES_PASSWORD: ${APP_DB_PASSWORD}
+      POSTGRES_DB: ${APP_DB_DATABASE:-upwork_buddy}
+      POSTGRES_USER: ${APP_DB_USERNAME:-postgres}
+      POSTGRES_PASSWORD: ${APP_DB_PASSWORD:-password}
     ports:
-      - "5443:5432"
+      - "${DOCKER_DB_PORT:-5443}:5432"
     volumes:
       - app_db_volume:/var/lib/postgresql/data
     healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U ${APP_DB_USERNAME} -d ${APP_DB_DATABASE}"]
+      test: ["CMD-SHELL", "pg_isready -U \"$$POSTGRES_USER\" -d \"$$POSTGRES_DB\""]
       interval: 5s
       timeout: 5s
-      retries: 5
+      retries: 10
 
   migrate_app_db:
-    image: arigaio/atlas:latest
+    image: arigaio/atlas:1.4.0-community-alpine
     command: >
       migrate apply
-      --url "postgres://${APP_DB_USERNAME}:${APP_DB_PASSWORD}@app_db:5432/${APP_DB_DATABASE}?sslmode=disable"
+      --url "postgres://${APP_DB_USERNAME:-postgres}:${APP_DB_PASSWORD:-password}@app_db:5432/${APP_DB_DATABASE:-upwork_buddy}?sslmode=disable"
       --dir "file:///migrations/app"
     depends_on:
       app_db:
         condition: service_healthy
     volumes:
-      - ./internal/database/migrations/:/migrations
+      - ./internal/database/migrations:/migrations:ro
 
 volumes:
   app_db_volume:

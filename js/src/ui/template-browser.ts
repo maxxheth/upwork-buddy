@@ -2,9 +2,9 @@
  * Template Browser UI — browse template categories, generate agents, and download
  */
 
-import { ApiClient } from '../api';
+import type { ApiClient } from '../api';
+import type { GeneratedAgent, TemplateCategory } from '../types';
 import { escapeHtml } from '../utils';
-import type { TemplateCategory, GeneratedAgent } from '../types';
 
 const FORMAT_OPTIONS = [
   { value: 'claude', label: 'Claude Code Agent', icon: '🤖', ext: '.claude/agents/' },
@@ -13,7 +13,7 @@ const FORMAT_OPTIONS = [
   { value: 'copilot', label: 'GitHub Copilot', icon: '✨', ext: '.github/' },
 ] as const;
 
-type AgentFormat = typeof FORMAT_OPTIONS[number]['value'];
+type AgentFormat = (typeof FORMAT_OPTIONS)[number]['value'];
 
 export class TemplateBrowser {
   private selectedCategory: string | null = null;
@@ -25,7 +25,7 @@ export class TemplateBrowser {
 
   constructor(
     private apiClient: ApiClient,
-    private container: HTMLElement
+    private container: HTMLElement,
   ) {}
 
   render(): void {
@@ -55,20 +55,25 @@ export class TemplateBrowser {
       const templates = response.templates || [];
 
       if (templates.length === 0) {
-        grid.innerHTML = '<div style="text-align:center; padding:24px; color:#999;">No templates available. Make sure the backend is running.</div>';
+        grid.innerHTML =
+          '<div style="text-align:center; padding:24px; color:#999;">No templates available. Make sure the backend is running.</div>';
         return;
       }
 
-      grid.innerHTML = templates.map(t => `
+      grid.innerHTML = templates
+        .map(
+          (t) => `
         <div class="upwork-buddy-template-card" data-category="${escapeHtml(t.name)}" title="${escapeHtml(t.description)}">
-          <div class="upwork-buddy-template-card-icon">${t.icon}</div>
+          <div class="upwork-buddy-template-card-icon">${escapeHtml(t.icon)}</div>
           <div class="upwork-buddy-template-card-name">${escapeHtml(t.display_name)}</div>
           <div style="font-size:11px; color:#888; margin-top:4px;">${t.agent_count} agents</div>
         </div>
-      `).join('');
+      `,
+        )
+        .join('');
 
       // Bind click handlers
-      grid.querySelectorAll('.upwork-buddy-template-card').forEach(card => {
+      grid.querySelectorAll('.upwork-buddy-template-card').forEach((card) => {
         card.addEventListener('click', () => {
           const name = (card as HTMLElement).dataset.category || '';
           this.selectCategory(name);
@@ -115,7 +120,9 @@ export class TemplateBrowser {
   }
 
   private renderCategoryDetail(category: TemplateCategory, container: HTMLElement): void {
-    const blueprintsHtml = category.agent_blueprints.map(bp => `
+    const blueprintsHtml = category.agent_blueprints
+      .map(
+        (bp) => `
       <div class="upwork-buddy-agent-item">
         <label>
           <input type="checkbox" data-agent-name="${escapeHtml(bp.name)}" class="ub-agent-checkbox" checked />
@@ -123,33 +130,46 @@ export class TemplateBrowser {
           <div class="upwork-buddy-agent-item-desc">${escapeHtml(bp.description)}</div>
         </label>
       </div>
-    `).join('');
+    `,
+      )
+      .join('');
 
-    const formatOptionsHtml = FORMAT_OPTIONS.map(opt => `
+    const formatOptionsHtml = FORMAT_OPTIONS.map(
+      (opt) => `
       <option value="${opt.value}" ${opt.value === this.selectedFormat ? 'selected' : ''}>${opt.icon} ${opt.label}</option>
-    `).join('');
+    `,
+    ).join('');
 
     container.innerHTML = `
-      <h3 style="margin-top:0; color:#14a800;">${category.icon} ${escapeHtml(category.display_name)}</h3>
+      <h3 style="margin-top:0; color:#14a800;">${escapeHtml(category.icon)} ${escapeHtml(category.display_name)}</h3>
       <p style="color:#666; font-size:13px; margin-bottom:16px;">${escapeHtml(category.description)}</p>
-      ${category.docs.length > 0 ? `
+      ${
+        category.docs.length > 0
+          ? `
         <div style="margin-bottom:16px;">
           <h4 style="margin-bottom:4px; font-size:13px; color:#555;">📚 Documentation Sources</h4>
           <div style="font-size:12px; color:#888;">
-            ${category.docs.map(d => `<span style="margin-right:8px;">${escapeHtml(d.label)}</span>`).join(' · ')}
+            ${category.docs.map((d) => `<span style="margin-right:8px;">${escapeHtml(d.label)}</span>`).join(' · ')}
           </div>
         </div>
-      ` : ''}
+      `
+          : ''
+      }
       <div style="margin-bottom:16px;">
         <h4 style="margin-bottom:4px; font-size:13px; color:#555;">🔧 Output Format</h4>
         <select id="ub-format-select" style="width:100%; padding:8px; border:1px solid #ccc; border-radius:4px; font-size:14px;">
           ${formatOptionsHtml}
         </select>
         <p style="font-size:11px; color:#888; margin:4px 0 0 0;">
-          ${this.selectedFormat === 'claude' ? 'Generates .claude/agents/*.md files with YAML frontmatter' :
-            this.selectedFormat === 'goose' ? 'Generates .goose/recipes/*.yaml files' :
-            this.selectedFormat === 'codex' ? 'Generates .codex/agents/*.md instruction files' :
-            'Generates .github/copilot-instructions.md'}
+          ${
+            this.selectedFormat === 'claude'
+              ? 'Generates .claude/agents/*.md files with YAML frontmatter'
+              : this.selectedFormat === 'goose'
+                ? 'Generates .goose/recipes/*.yaml files'
+                : this.selectedFormat === 'codex'
+                  ? 'Generates .codex/agents/*.md instruction files'
+                  : 'Generates .github/copilot-instructions.md'
+          }
         </p>
       </div>
       <h4 style="margin-bottom:8px; font-size:14px; color:#333;">Available Agents</h4>
@@ -184,7 +204,7 @@ export class TemplateBrowser {
     }
 
     // Bind checkboxes
-    container.querySelectorAll('.ub-agent-checkbox').forEach(cb => {
+    container.querySelectorAll('.ub-agent-checkbox').forEach((cb) => {
       cb.addEventListener('change', () => {
         this.updateSelectedAgents(container);
         this.updateGenerateButton(container);
@@ -202,12 +222,15 @@ export class TemplateBrowser {
     });
 
     this.updateSelectedAgents(container);
-    this.log('Template detail rendered', { category: category.name, agents: category.agent_blueprints.length });
+    this.log('Template detail rendered', {
+      category: category.name,
+      agents: category.agent_blueprints.length,
+    });
   }
 
   private updateSelectedAgents(container: HTMLElement): void {
     this.selectedAgents.clear();
-    container.querySelectorAll('.ub-agent-checkbox:checked').forEach(cb => {
+    container.querySelectorAll('.ub-agent-checkbox:checked').forEach((cb) => {
       const name = (cb as HTMLInputElement).dataset.agentName;
       if (name) this.selectedAgents.add(name);
     });
@@ -228,7 +251,8 @@ export class TemplateBrowser {
     const statusText = container.querySelector('#ub-status-text') as HTMLElement;
 
     if (generateBtn) generateBtn.disabled = true;
-    if (statusText) statusText.innerHTML = '<span class="upwork-buddy-loading"></span> Generating agents...';
+    if (statusText)
+      statusText.innerHTML = '<span class="upwork-buddy-loading"></span> Generating agents...';
 
     try {
       const response = await this.apiClient.generateAgents({
@@ -244,13 +268,19 @@ export class TemplateBrowser {
       // Show generated agent previews
       const previewContainer = container.querySelector('#ub-generated-agents');
       if (previewContainer) {
-        previewContainer.innerHTML = this.generatedAgents.map(r => this.renderGeneratedAgent(r)).join('');
+        previewContainer.innerHTML = this.generatedAgents
+          .map((r) => this.renderGeneratedAgent(r))
+          .join('');
 
         // Add toggle handlers for expand/collapse
-        previewContainer.querySelectorAll('.ub-content-toggle').forEach(btn => {
+        previewContainer.querySelectorAll('.ub-content-toggle').forEach((btn) => {
           btn.addEventListener('click', () => {
             const targetId = (btn as HTMLElement).dataset.target;
-            const target = targetId ? document.getElementById(targetId) : null;
+            const target = targetId
+              ? previewContainer.querySelector<HTMLElement>(
+                  `[id="${targetId.replace(/"/g, '\\"')}"]`,
+                )
+              : null;
             if (target) {
               target.style.display = target.style.display === 'none' ? 'block' : 'none';
             }
@@ -264,7 +294,10 @@ export class TemplateBrowser {
         downloadBtn.style.display = 'inline-block';
       }
 
-      this.log('Agents generated', { count: this.generatedAgents.length, format: this.selectedFormat });
+      this.log('Agents generated', {
+        count: this.generatedAgents.length,
+        format: this.selectedFormat,
+      });
     } catch (error) {
       const msg = error instanceof Error ? error.message : String(error);
       if (statusText) statusText.innerHTML = `❌ ${escapeHtml(msg)}`;
@@ -280,7 +313,7 @@ export class TemplateBrowser {
 
     try {
       // Use agent names (without extension) as the download key
-      const agentNames = this.generatedAgents.map(r => r.file_name.replace(/\.(yaml|md)$/, ''));
+      const agentNames = this.generatedAgents.map((r) => r.file_name.replace(/\.(yaml|md)$/, ''));
       const blob = await this.apiClient.downloadAgents(agentNames);
 
       // Trigger browser download
@@ -289,10 +322,14 @@ export class TemplateBrowser {
       a.href = url;
 
       // Name the zip based on format
-      const zipName = this.selectedFormat === 'goose' ? 'goose-recipes.zip' :
-                       this.selectedFormat === 'claude' ? 'claude-agents.zip' :
-                       this.selectedFormat === 'codex' ? 'codex-agents.zip' :
-                       'copilot-instructions.zip';
+      const zipName =
+        this.selectedFormat === 'goose'
+          ? 'goose-recipes.zip'
+          : this.selectedFormat === 'claude'
+            ? 'claude-agents.zip'
+            : this.selectedFormat === 'codex'
+              ? 'codex-agents.zip'
+              : 'copilot-instructions.zip';
       a.download = zipName;
 
       document.body.appendChild(a);
@@ -308,12 +345,13 @@ export class TemplateBrowser {
 
   private renderGeneratedAgent(agent: GeneratedAgent): string {
     const contentId = `ub-content-${escapeHtml(agent.file_name).replace(/[^a-zA-Z0-9]/g, '_')}`;
-    const truncatedContent = agent.content.length > 500
-      ? agent.content.substring(0, 500) + '\n... (click to expand)'
-      : agent.content;
+    const truncatedContent =
+      agent.content.length > 500
+        ? `${agent.content.substring(0, 500)}\n... (click to expand)`
+        : agent.content;
     const fullContent = agent.content;
 
-    const formatLabel = FORMAT_OPTIONS.find(f => f.value === agent.format)?.label || agent.format;
+    const formatLabel = FORMAT_OPTIONS.find((f) => f.value === agent.format)?.label || agent.format;
 
     return `
       <div style="margin: 12px 0; border: 1px solid #e0e0e0; border-radius: 6px; overflow: hidden;">

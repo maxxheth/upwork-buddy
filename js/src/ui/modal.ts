@@ -46,7 +46,7 @@ export class Modal {
         <span>AI Proposal Assistant</span>
       </div>
       <div class="upwork-buddy-modal-controls">
-        <button class="upwork-buddy-modal-btn" id="upwork-buddy-close" title="Close">×</button>
+        <button type="button" class="upwork-buddy-modal-btn" id="upwork-buddy-close" title="Close">×</button>
       </div>
     `;
     return header;
@@ -56,13 +56,14 @@ export class Modal {
     const body = document.createElement('div');
     body.className = 'upwork-buddy-modal-body';
     body.id = 'upwork-buddy-modal-body';
-    body.innerHTML = '<div class="upwork-buddy-loading" style="text-align:center;">Choose "Profile Settings" or hit the job-specific Analyze button to begin.</div>';
+    body.innerHTML =
+      '<div class="upwork-buddy-loading" style="text-align:center;">Choose "Profile Settings" or hit the job-specific Analyze button to begin.</div>';
     return body;
   }
 
   private setupEventListeners(): void {
-    // Close button handler
-    const closeBtn = document.getElementById('upwork-buddy-close');
+    // Close button handler (scoped to this.modal so it works before DOM insertion and in Shadow DOM)
+    const closeBtn = this.modal.querySelector<HTMLButtonElement>('#upwork-buddy-close');
     if (closeBtn) {
       closeBtn.addEventListener('click', (e) => {
         e.stopPropagation();
@@ -81,9 +82,13 @@ export class Modal {
   }
 
   private setupDraggable(): void {
-    const header = this.modal.querySelector('.upwork-buddy-modal-header') as HTMLElement;
+    const header = this.modal.querySelector<HTMLElement>('.upwork-buddy-modal-header');
+    if (!header) return;
     let isDragging = false;
-    let currentX: number, currentY: number, initialX: number, initialY: number;
+    let currentX = 0;
+    let currentY = 0;
+    let initialX = 0;
+    let initialY = 0;
 
     header.addEventListener('mousedown', (e) => {
       if ((e.target as HTMLElement).closest('.upwork-buddy-modal-btn')) return;
@@ -98,8 +103,8 @@ export class Modal {
       currentX = e.clientX - initialX;
       currentY = e.clientY - initialY;
       this.modal.style.position = 'fixed';
-      this.modal.style.left = currentX + 'px';
-      this.modal.style.top = currentY + 'px';
+      this.modal.style.left = `${currentX}px`;
+      this.modal.style.top = `${currentY}px`;
       this.modal.style.transform = 'none';
     });
 

@@ -21,7 +21,7 @@ You are adding a new API endpoint to the Upwork Buddy Go backend. Follow the pro
 
 ## Steps
 1. Read the existing handler files in `internal/server/` to absorb the current patterns.
-2. If a new GORM model is needed, add it to `internal/database/service/schema.go`, then update the Atlas loader in `internal/database/service/loader/main.go` to include the new model, then run `atlas migrate diff --env app` to generate a migration and `atlas migrate apply --env app` to apply it.
+2. If a new GORM model is needed, add it to `internal/database/service/schema.go`, then update the Atlas loader in `tools/atlas-loader/main.go` to include the new model, then run `atlas migrate diff --env app` to generate a migration and `atlas migrate apply --env app` to apply it.
 3. Add the handler method on `*Server` in the appropriate file following the existing pattern:
    - Validate HTTP method at the top (unless it handles multiple methods)
    - Decode JSON body for POST/PUT

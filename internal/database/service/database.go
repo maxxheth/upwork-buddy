@@ -5,8 +5,12 @@ import (
 	"database/sql"
 	"fmt"
 	"log"
+	"net"
+	"net/url"
 	"os"
 	"strconv"
+	"strings"
+	"sync"
 	"time"
 
 	_ "github.com/jackc/pgx/v5/stdlib"
@@ -16,7 +20,7 @@ import (
 	"gorm.io/gorm/schema"
 )
 
-// Service represents a service that interacts with a database.
+// DatabaseService represents a service that interacts with a database.
 type DatabaseService interface {
 	// Health returns a map of health status information.
 	// The keys and values in the map are service-specific.
@@ -34,55 +38,108 @@ type DatabaseService interface {
 }
 
 type service struct {
-	db   *sql.DB
-	gorm *gorm.DB
+	db     *sql.DB
+	gorm   *gorm.DB
+	dbName string
 }
 
 var (
-	database   = os.Getenv("APP_DB_DATABASE")
-	password   = os.Getenv("APP_DB_PASSWORD")
-	username   = os.Getenv("APP_DB_USERNAME")
-	port       = os.Getenv("APP_DB_PORT")
-	host       = os.Getenv("APP_DB_HOST")
+	mu         sync.Mutex
 	dbInstance *service
 )
 
+// New returns the singleton DatabaseService configured from environment variables.
 func New() DatabaseService {
-	// Reuse Connection
+	mu.Lock()
+	defer mu.Unlock()
+
 	if dbInstance != nil {
 		return dbInstance
 	}
 
-	connStr := fmt.Sprintf(
-		"postgres://%s:%s@%s:%s/%s?sslmode=disable&search_path=public",
-		username, password, host, port, database,
-	)
-
-	// Initialize SQL database
-	db, err := sql.Open("pgx", connStr)
+	connStr := buildConnStrFromEnv()
+	svc, err := newServiceWithDSN(connStr)
 	if err != nil {
 		log.Fatal(err)
+	}
+
+	dbInstance = svc
+	return dbInstance
+}
+
+// NewWithDSN creates a new DatabaseService using the given PostgreSQL DSN.
+// It shares a single *sql.DB connection pool between database/sql and GORM.
+func NewWithDSN(connStr string) (DatabaseService, error) {
+	return newServiceWithDSN(connStr)
+}
+
+func newServiceWithDSN(connStr string) (*service, error) {
+	if strings.TrimSpace(connStr) == "" {
+		return nil, fmt.Errorf("empty database connection string")
+	}
+
+	db, err := sql.Open("pgx", connStr)
+	if err != nil {
+		return nil, fmt.Errorf("open sql db: %w", err)
 	}
 
 	db.SetConnMaxLifetime(0)
 	db.SetMaxIdleConns(50)
 	db.SetMaxOpenConns(50)
 
-	// Initialize GORM with the same connection string
-	gormDB, err := gorm.Open(postgres.Open(connStr), &gorm.Config{
+	gormDB, err := gorm.Open(postgres.New(postgres.Config{
+		Conn: db,
+	}), &gorm.Config{
 		NamingStrategy: schema.NamingStrategy{
 			TablePrefix: "public.",
 		},
 	})
 	if err != nil {
-		log.Fatal("Failed to connect to database with GORM:", err)
+		_ = db.Close()
+		return nil, fmt.Errorf("open gorm db: %w", err)
 	}
 
-	dbInstance = &service{
-		db:   db,
-		gorm: gormDB,
+	return &service{
+		db:     db,
+		gorm:   gormDB,
+		dbName: extractDBName(connStr),
+	}, nil
+}
+
+func buildConnStrFromEnv() string {
+	if rawURL := strings.TrimSpace(os.Getenv("DATABASE_URL")); rawURL != "" {
+		return rawURL
 	}
-	return dbInstance
+
+	database := os.Getenv("APP_DB_DATABASE")
+	password := os.Getenv("APP_DB_PASSWORD")
+	username := os.Getenv("APP_DB_USERNAME")
+	port := os.Getenv("APP_DB_PORT")
+	host := os.Getenv("APP_DB_HOST")
+
+	hostPort := host
+	if host != "" && port != "" {
+		hostPort = net.JoinHostPort(host, port)
+	} else if port != "" {
+		hostPort = ":" + port
+	}
+
+	u := &url.URL{
+		Scheme:   "postgres",
+		User:     url.UserPassword(username, password),
+		Host:     hostPort,
+		Path:     "/" + strings.TrimPrefix(database, "/"),
+		RawQuery: "sslmode=disable&search_path=public",
+	}
+	return u.String()
+}
+
+func extractDBName(connStr string) string {
+	u, err := url.Parse(connStr)
+	if err != nil {
+		return ""
+	}
+	return strings.TrimPrefix(u.Path, "/")
 }
 
 // GetDB returns the raw SQL database connection
@@ -102,13 +159,18 @@ func (s *service) Health() map[string]string {
 	defer cancel()
 
 	stats := make(map[string]string)
+	if s == nil || s.db == nil {
+		stats["status"] = "down"
+		stats["error"] = "db down: database connection is nil"
+		return stats
+	}
 
 	// Ping the database
 	err := s.db.PingContext(ctx)
 	if err != nil {
 		stats["status"] = "down"
 		stats["error"] = fmt.Sprintf("db down: %v", err)
-		log.Fatalf("db down: %v", err)
+		log.Printf("db down: %v", err)
 		return stats
 	}
 
@@ -134,10 +196,10 @@ func (s *service) Health() map[string]string {
 		stats["message"] = "The database has a high number of wait events, indicating potential bottlenecks."
 	}
 
-	if dbStats.MaxIdleClosed > int64(dbStats.OpenConnections)/2 {
+	if dbStats.OpenConnections > 0 && dbStats.MaxIdleClosed > int64(dbStats.OpenConnections)/2 {
 		stats["message"] = "Many idle connections are being closed, consider revising the connection pool settings."
 	}
-	if dbStats.MaxLifetimeClosed > int64(dbStats.OpenConnections)/2 {
+	if dbStats.OpenConnections > 0 && dbStats.MaxLifetimeClosed > int64(dbStats.OpenConnections)/2 {
 		stats["message"] = "Many connections are being closed due to max lifetime, consider increasing max lifetime or revising the connection usage pattern."
 	}
 
@@ -149,6 +211,16 @@ func (s *service) Health() map[string]string {
 // If the connection is successfully closed, it returns nil.
 // If an error occurs while closing the connection, it returns the error.
 func (s *service) Close() error {
-	log.Printf("Disconnected from database: %s", database)
+	if s == nil || s.db == nil {
+		return nil
+	}
+
+	mu.Lock()
+	if dbInstance == s {
+		dbInstance = nil
+	}
+	mu.Unlock()
+
+	log.Printf("Disconnected from database: %s", s.dbName)
 	return s.db.Close()
 }

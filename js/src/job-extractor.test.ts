@@ -1,11 +1,11 @@
-import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { JobExtractor, SELECTOR_CHAINS } from './job-extractor';
 import type { JobInfo } from './types';
 
 function createElement(
   tag: string,
   textContent: string,
-  attributes: Record<string, string> = {}
+  attributes: Record<string, string> = {},
 ): HTMLElement {
   const el = document.createElement(tag);
   el.textContent = textContent;
@@ -29,11 +29,9 @@ function createHourlyJobDrawer(): HTMLElement {
   title.appendChild(titleSpan);
   container.appendChild(title);
 
-  const desc = createElement(
-    'div',
-    'We need a professional React dashboard with real-time data.',
-    { 'data-test': 'Description' }
-  );
+  const desc = createElement('div', 'We need a professional React dashboard with real-time data.', {
+    'data-test': 'Description',
+  });
   container.appendChild(desc);
 
   // Hourly rate row
@@ -97,11 +95,9 @@ function createFixedPriceJobDrawer(): HTMLElement {
   title.appendChild(titleSpan);
   container.appendChild(title);
 
-  const desc = createElement(
-    'div',
-    'We need a professional logo for our startup.',
-    { 'data-test': 'Description' }
-  );
+  const desc = createElement('div', 'We need a professional logo for our startup.', {
+    'data-test': 'Description',
+  });
   container.appendChild(desc);
 
   // Fixed-price row
@@ -164,9 +160,7 @@ describe('JobExtractor', () => {
     it('falls back to a secondary selector when primary fails', () => {
       const container = document.createElement('div');
       // No h4 span.flex-1, but there is an h2[itemprop="name"]
-      container.appendChild(
-        createElement('h2', 'Fallback Title', { itemprop: 'name' })
-      );
+      container.appendChild(createElement('h2', 'Fallback Title', { itemprop: 'name' }));
 
       const chain = SELECTOR_CHAINS.find((c) => c.field === 'title')!;
       const result = extractor.trySelectorChain(container, chain);
@@ -251,9 +245,7 @@ describe('JobExtractor', () => {
 
     it('applies the transform function when provided', () => {
       const container = document.createElement('div');
-      container.appendChild(
-        createElement('div', 'hello world', { 'data-test': 'budget' })
-      );
+      container.appendChild(createElement('div', 'hello world', { 'data-test': 'budget' }));
 
       const chain = {
         field: 'budget' as keyof JobInfo,
@@ -320,9 +312,7 @@ describe('JobExtractor', () => {
     it('extracts title using fallback h2[itemprop] selector', () => {
       const container = document.createElement('div');
       container.appendChild(createElement('h2', 'Simple Title', { itemprop: 'name' }));
-      container.appendChild(
-        createElement('div', 'Desc', { 'data-test': 'Description' })
-      );
+      container.appendChild(createElement('div', 'Desc', { 'data-test': 'Description' }));
 
       const result = extractor.extractJobInfo(container);
       expect(result.title).toBe('Simple Title');
@@ -331,9 +321,7 @@ describe('JobExtractor', () => {
     it('extracts title using h3 fallback', () => {
       const container = document.createElement('div');
       container.appendChild(createElement('h3', 'Fallback Title'));
-      container.appendChild(
-        createElement('div', 'A description', { 'data-test': 'Description' })
-      );
+      container.appendChild(createElement('div', 'A description', { 'data-test': 'Description' }));
 
       const result = extractor.extractJobInfo(container);
       expect(result.title).toBe('Fallback Title');
@@ -361,11 +349,9 @@ describe('JobExtractor', () => {
 
     it('handles partial extraction (only title and description)', () => {
       const container = document.createElement('div');
+      container.appendChild(createElement('h2', 'Partial Job', { itemprop: 'name' }));
       container.appendChild(
-        createElement('h2', 'Partial Job', { itemprop: 'name' })
-      );
-      container.appendChild(
-        createElement('div', 'Some description', { 'data-test': 'Description' })
+        createElement('div', 'Some description', { 'data-test': 'Description' }),
       );
 
       const result = extractor.extractJobInfo(container);
@@ -401,12 +387,8 @@ describe('JobExtractor', () => {
     it('extracts skills from air3-token fallback', () => {
       const container = document.createElement('div');
       container.appendChild(createElement('a', 'React', { class: 'air3-token' }));
-      container.appendChild(
-        createElement('a', 'Node.js', { class: 'air3-token' })
-      );
-      container.appendChild(
-        createElement('a', 'PostgreSQL', { class: 'air3-token' })
-      );
+      container.appendChild(createElement('a', 'Node.js', { class: 'air3-token' }));
+      container.appendChild(createElement('a', 'PostgreSQL', { class: 'air3-token' }));
 
       const result = extractor.extractJobInfo(container);
       expect(result.skills).toBe('React, Node.js, PostgreSQL');
@@ -423,13 +405,11 @@ describe('JobExtractor', () => {
 
     it('trims whitespace from extracted text', () => {
       const container = document.createElement('div');
-      container.appendChild(
-        createElement('h2', '  Spaced Title  ', { itemprop: 'name' })
-      );
+      container.appendChild(createElement('h2', '  Spaced Title  ', { itemprop: 'name' }));
       container.appendChild(
         createElement('div', '  Spaced Description  ', {
           'data-test': 'Description',
-        })
+        }),
       );
 
       const result = extractor.extractJobInfo(container);
@@ -482,7 +462,7 @@ describe('JobExtractor', () => {
       container.appendChild(
         createElement('div', 'Fixed Price: $3,000', {
           'data-test': 'is-fixed-price',
-        })
+        }),
       );
 
       const result = extractor.extractJobInfo(container);
@@ -531,9 +511,7 @@ describe('JobExtractor', () => {
       const drawer = document.createElement('div');
       drawer.classList.add('job-details-content');
       drawer.appendChild(createElement('h2', 'Via H2 Fallback'));
-      drawer.appendChild(
-        createElement('div', 'Desc', { 'data-test': 'Description' })
-      );
+      drawer.appendChild(createElement('div', 'Desc', { 'data-test': 'Description' }));
       document.body.appendChild(drawer);
 
       const results = extractor.healthCheck();
@@ -556,6 +534,28 @@ describe('JobExtractor', () => {
       const results = extractor.healthCheck();
       expect(results.length).toBe(SELECTOR_CHAINS.length);
     });
+
+    it('every selector in SELECTOR_CHAINS is valid standard CSS (no :contains)', () => {
+      const probe = document.createElement('div');
+      for (const chain of SELECTOR_CHAINS) {
+        for (const selector of chain.selectors) {
+          expect(selector).not.toContain(':contains(');
+          expect(() => probe.querySelector(selector)).not.toThrow();
+        }
+      }
+    });
+
+    it('extractExperienceLevelFallback detects Expert, Intermediate, and Entry without :contains()', () => {
+      for (const level of ['Expert', 'Intermediate', 'Entry'] as const) {
+        const container = document.createElement('div');
+        container.appendChild(createElement('strong', `${level} level required`));
+        const info = extractor.extractJobInfo(container);
+        expect(info.experienceLevel).toBe(level);
+
+        const health = extractor.healthCheck(container);
+        expect(health.find((r) => r.field === 'experienceLevel')?.status).toBe('fallback');
+      }
+    });
   });
 
   // ── logFallback ───────────────────────────────────────────────────────
@@ -569,9 +569,7 @@ describe('JobExtractor', () => {
 
       extractor.extractJobInfo(container);
 
-      expect(warnSpy).toHaveBeenCalledWith(
-        expect.stringContaining('Selector fallback for title')
-      );
+      expect(warnSpy).toHaveBeenCalledWith(expect.stringContaining('Selector fallback for title'));
 
       warnSpy.mockRestore();
     });

@@ -18,11 +18,25 @@ import (
 
 // GeneratedAgent stores a generated agent in memory
 type GeneratedAgent struct {
-	FileName     string    `json:"file_name"`
-	Content      string    `json:"content"`
-	TemplateName string    `json:"template_name"`
-	Format       string    `json:"format"`
-	GeneratedAt  time.Time `json:"generated_at"`
+	FileName      string    `json:"file_name"`
+	BlueprintName string    `json:"blueprint_name,omitempty"`
+	Content       string    `json:"content"`
+	TemplateName  string    `json:"template_name"`
+	Format        string    `json:"format"`
+	GeneratedAt   time.Time `json:"generated_at"`
+}
+
+func agentStoreKey(templateName, blueprintName, format string) string {
+	return fmt.Sprintf("%s::%s::%s", templateName, blueprintName, format)
+}
+
+func normalizeAgentFormat(raw string) string {
+	switch strings.ToLower(strings.TrimSpace(raw)) {
+	case "goose", "claude", "codex", "copilot":
+		return strings.ToLower(strings.TrimSpace(raw))
+	default:
+		return "claude"
+	}
 }
 
 // listTemplatesResponse is the response for listing template categories
@@ -73,7 +87,9 @@ type generateAgentsResponse struct {
 
 // downloadAgentsRequest is the request body for POST /api/agents/download
 type downloadAgentsRequest struct {
-	AgentNames []string `json:"agent_names"`
+	TemplateName string   `json:"template_name,omitempty"`
+	Format       string   `json:"format,omitempty"`
+	AgentNames   []string `json:"agent_names"`
 }
 
 // listTemplatesHandler returns all template categories with summary info
@@ -173,13 +189,7 @@ func (s *Server) generateAgentsHandler(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// Normalize format, default to "claude"
-	format := strings.ToLower(req.Format)
-	switch format {
-	case "goose", "claude", "codex", "copilot":
-		// valid
-	default:
-		format = "claude"
-	}
+	format := normalizeAgentFormat(req.Format)
 
 	// Load templates to find the matching category
 	cfg, err := templates.Load(s.templatesPath)
@@ -219,7 +229,11 @@ func (s *Server) generateAgentsHandler(w http.ResponseWriter, r *http.Request) {
 		respondWithError(w, http.StatusServiceUnavailable, "AI service unavailable")
 		return
 	}
-	defer ollamaService.Close()
+	defer func() {
+		if err := ollamaService.Close(); err != nil {
+			log.Printf("⚠️ Failed to close Ollama service: %v", err)
+		}
+	}()
 
 	// Generate agents
 	generatedAgents := make([]GeneratedAgent, 0, len(req.AgentNames))
@@ -246,15 +260,16 @@ func (s *Server) generateAgentsHandler(w http.ResponseWriter, r *http.Request) {
 		}
 
 		agent := GeneratedAgent{
-			FileName:     resp.FileName,
-			Content:      resp.Content,
-			TemplateName: req.TemplateName,
-			Format:       format,
-			GeneratedAt:  time.Now(),
+			FileName:      resp.FileName,
+			BlueprintName: bp.Name,
+			Content:       resp.Content,
+			TemplateName:  req.TemplateName,
+			Format:        format,
+			GeneratedAt:   time.Now(),
 		}
 
-		// Store in the in-memory map
-		s.generatedAgents.Store(agentName, agent)
+		// Store in the in-memory map keyed by composite (TemplateName, BlueprintName, Format)
+		s.generatedAgents.Store(agentStoreKey(req.TemplateName, bp.Name, format), agent)
 		generatedAgents = append(generatedAgents, agent)
 
 		log.Printf("✅ Agent generated: %s", agentName)
@@ -301,17 +316,50 @@ func (s *Server) downloadAgentsHandler(w http.ResponseWriter, r *http.Request) {
 
 	// Collect agents to include in the zip
 	var agents []GeneratedAgent
+	requestedFormat := ""
+	if strings.TrimSpace(req.Format) != "" {
+		requestedFormat = normalizeAgentFormat(req.Format)
+	}
+
 	for _, name := range req.AgentNames {
-		val, ok := s.generatedAgents.Load(name)
-		if !ok {
+		var matched *GeneratedAgent
+		if strings.TrimSpace(req.TemplateName) != "" && requestedFormat != "" {
+			if val, ok := s.generatedAgents.Load(agentStoreKey(req.TemplateName, name, requestedFormat)); ok {
+				if agent, ok := val.(GeneratedAgent); ok {
+					matched = &agent
+				}
+			}
+		}
+
+		if matched == nil {
+			// Backward-compatible lookup by agent name (selecting newest GeneratedAt if multiple exist)
+			s.generatedAgents.Range(func(_, value interface{}) bool {
+				agent, ok := value.(GeneratedAgent)
+				if !ok {
+					return true
+				}
+				if strings.TrimSpace(req.TemplateName) != "" && agent.TemplateName != req.TemplateName {
+					return true
+				}
+				if requestedFormat != "" && agent.Format != requestedFormat {
+					return true
+				}
+				baseFileName := strings.TrimSuffix(strings.TrimSuffix(agent.FileName, ".md"), ".yaml")
+				if agent.BlueprintName == name || baseFileName == name || agent.FileName == name {
+					if matched == nil || agent.GeneratedAt.After(matched.GeneratedAt) {
+						agentCopy := agent
+						matched = &agentCopy
+					}
+				}
+				return true
+			})
+		}
+
+		if matched == nil {
 			log.Printf("⚠️ Agent not found in store: %q, skipping", name)
 			continue
 		}
-		agent, ok := val.(GeneratedAgent)
-		if !ok {
-			continue
-		}
-		agents = append(agents, agent)
+		agents = append(agents, *matched)
 	}
 
 	if len(agents) == 0 {
@@ -319,9 +367,17 @@ func (s *Server) downloadAgentsHandler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	copilotCount := 0
+	for _, agent := range agents {
+		if agent.Format == "copilot" {
+			copilotCount++
+		}
+	}
+
 	// Create zip in memory
 	buf := new(bytes.Buffer)
 	zipWriter := zip.NewWriter(buf)
+	seenPaths := make(map[string]bool)
 
 	for _, agent := range agents {
 		// Use format-specific directory structure in the zip
@@ -332,10 +388,32 @@ func (s *Server) downloadAgentsHandler(w http.ResponseWriter, r *http.Request) {
 		case "codex":
 			path = fmt.Sprintf(".codex/agents/%s", agent.FileName)
 		case "copilot":
-			path = ".github/copilot-instructions.md"
+			if copilotCount > 1 {
+				path = fmt.Sprintf(".github/instructions/%s", agent.FileName)
+			} else {
+				path = ".github/copilot-instructions.md"
+			}
 		default: // goose
 			path = fmt.Sprintf(".goose/recipes/%s", agent.FileName)
 		}
+
+		if seenPaths[path] {
+			switch agent.Format {
+			case "claude":
+				path = fmt.Sprintf(".claude/agents/%s-%s", agent.TemplateName, agent.FileName)
+			case "codex":
+				path = fmt.Sprintf(".codex/agents/%s-%s", agent.TemplateName, agent.FileName)
+			case "copilot":
+				path = fmt.Sprintf(".github/instructions/%s-%s", agent.TemplateName, agent.FileName)
+			default:
+				path = fmt.Sprintf(".goose/recipes/%s-%s", agent.TemplateName, agent.FileName)
+			}
+		}
+		for idx := 2; seenPaths[path]; idx++ {
+			path = fmt.Sprintf("%s.%d", path, idx)
+		}
+		seenPaths[path] = true
+
 		f, err := zipWriter.Create(path)
 		if err != nil {
 			log.Printf("❌ Failed to create zip entry %q: %v", path, err)
@@ -376,7 +454,7 @@ func scrapeDocs(docs []templates.DocRef) string {
 			continue
 		}
 		body, err := io.ReadAll(resp.Body)
-		resp.Body.Close()
+		_ = resp.Body.Close()
 		if err != nil {
 			log.Printf("⚠️ Failed to read %s: %v", doc.URL, err)
 			continue
@@ -389,7 +467,7 @@ func scrapeDocs(docs []templates.DocRef) string {
 			text = text[:5000] + "\n... (truncated)"
 		}
 
-		content.WriteString(fmt.Sprintf("\n=== %s (%s) ===\n%s\n", doc.Label, doc.URL, text))
+		fmt.Fprintf(&content, "\n=== %s (%s) ===\n%s\n", doc.Label, doc.URL, text)
 	}
 
 	return content.String()

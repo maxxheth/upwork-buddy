@@ -44,12 +44,13 @@ func (s *Server) corsMiddleware(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		// Use configured CORS allowed origins instead of hardcoded "*"
 		allowedOrigins := s.corsAllowedOrigins
-		if allowedOrigins == "" {
+		switch allowedOrigins {
+		case "":
 			// No origins configured — deny cross-origin by default
 			w.Header().Set("Access-Control-Allow-Origin", "")
-		} else if allowedOrigins == "*" {
+		case "*":
 			w.Header().Set("Access-Control-Allow-Origin", "*")
-		} else {
+		default:
 			// Multiple origins: check if the request origin matches
 			origin := r.Header.Get("Origin")
 			allowed := false

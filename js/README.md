@@ -19,22 +19,26 @@ js/
 ## Setup
 
 1. Install dependencies:
+
    ```bash
    cd js
    npm install
    ```
 
 2. Build the extension bundle:
+
    ```bash
    npm run build
    ```
 
    For development with source maps:
+
    ```bash
    npm run build:dev
    ```
 
    For auto-rebuild on file changes:
+
    ```bash
    npm run watch
    ```
@@ -53,6 +57,7 @@ The TypeScript codebase is organized into logical modules:
 ### Type Checking
 
 Run TypeScript type checking without emitting files:
+
 ```bash
 npm run type-check
 ```

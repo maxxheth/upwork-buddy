@@ -20,5 +20,8 @@ func main() {
 		fmt.Fprintf(os.Stderr, "failed to load gorm schema: %v\n", err)
 		os.Exit(1)
 	}
-	io.WriteString(os.Stdout, stmts)
+	if _, err := io.WriteString(os.Stdout, stmts); err != nil {
+		fmt.Fprintf(os.Stderr, "failed to write schema output: %v\n", err)
+		os.Exit(1)
+	}
 }

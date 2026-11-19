@@ -36,7 +36,7 @@
  *                <p class="text-body-sm multiline-text">…</p>
  */
 
-import type { JobInfo, ContractType } from './types';
+import type { ContractType, JobInfo } from './types';
 
 /**
  * Defines a chain of CSS selectors to try in order for a given field.
@@ -132,10 +132,6 @@ const SELECTOR_CHAINS: SelectorChain[] = [
       // June 2025: <li> with data-cy="expertise" icon → <strong>Level</strong>
       'li:has([data-cy="expertise"]) strong:first-of-type',
       '[data-cy="expertise"] + strong',
-      // Fallback text patterns
-      'strong:contains("Expert")',
-      'strong:contains("Intermediate")',
-      'strong:contains("Entry")',
     ],
   },
 ];
@@ -169,13 +165,22 @@ export class JobExtractor {
       const { value, usedIndex } = this.trySelectorChain(container, chain);
 
       if (value !== null) {
-        (result as any)[chain.field] = value;
+        this.assignChainField(result, chain.field, value);
         fieldStatus[chain.field] = usedIndex === 0 ? 'ok' : 'fallback';
         if (usedIndex > 0) {
           this.logFallback(chain, usedIndex);
         }
+      } else if (chain.field === 'experienceLevel') {
+        const fallbackExp = this.extractExperienceLevelFallback(container);
+        if (fallbackExp !== null) {
+          result.experienceLevel = fallbackExp;
+          fieldStatus[chain.field] = 'fallback';
+        } else {
+          result.experienceLevel = '';
+          fieldStatus[chain.field] = 'broken';
+        }
       } else {
-        (result as any)[chain.field] = chain.isMulti ? 'Not specified' : '';
+        this.assignChainField(result, chain.field, chain.isMulti ? 'Not specified' : '');
         fieldStatus[chain.field] = 'broken';
       }
     }
@@ -202,7 +207,7 @@ export class JobExtractor {
     const fallback = Object.values(fieldStatus).filter((s) => s === 'fallback').length;
     const broken = Object.values(fieldStatus).filter((s) => s === 'broken').length;
     console.log(
-      `📊 Extraction summary: ${ok} ok, ${fallback} fallback, ${broken} broken — contract=${result.contractType || 'unknown'}`
+      `📊 Extraction summary: ${ok} ok, ${fallback} fallback, ${broken} broken — contract=${result.contractType || 'unknown'}`,
     );
 
     return result as JobInfo;
@@ -232,7 +237,7 @@ export class JobExtractor {
         const prices: string[] = [];
         strongs.forEach((s) => {
           const t = s.textContent?.trim() ?? '';
-          if (/[\$€£]/.test(t) || /^\d+[\d,.]*$/.test(t)) {
+          if (/[$€£]/.test(t) || /^\d+[\d,.]*$/.test(t)) {
             prices.push(t);
           }
         });
@@ -266,8 +271,7 @@ export class JobExtractor {
       if (li) {
         // BudgetAmount data-test or a strong with a dollar amount
         const budgetEl =
-          li.querySelector('[data-test="BudgetAmount"] strong') ??
-          li.querySelector('strong');
+          li.querySelector('[data-test="BudgetAmount"] strong') ?? li.querySelector('strong');
         const amount = budgetEl?.textContent?.trim() ?? '';
         if (amount) {
           return {
@@ -317,9 +321,7 @@ export class JobExtractor {
     const budgetChain = SELECTOR_CHAINS.find((c) => c.field === 'budgetRow');
     if (budgetChain) {
       // Skip the :has() selectors in jsdom/test env — they may not be supported
-      const fallbackSelectors = budgetChain.selectors.filter(
-        (s) => !s.startsWith('li:has(')
-      );
+      const fallbackSelectors = budgetChain.selectors.filter((s) => !s.startsWith('li:has('));
       for (const sel of fallbackSelectors) {
         try {
           const el = container.querySelector(sel);
@@ -351,7 +353,7 @@ export class JobExtractor {
    */
   trySelectorChain(
     container: Element,
-    chain: SelectorChain
+    chain: SelectorChain,
   ): { value: string | null; usedIndex: number } {
     if (chain.isMulti) {
       for (let i = 0; i < chain.selectors.length; i++) {
@@ -366,16 +368,13 @@ export class JobExtractor {
               const raw = texts.join(', ');
               const value = chain.transform ? chain.transform(raw) : raw;
               console.log(
-                `🔍 [${chain.field}] selector "${selector}" matched ${texts.length} items (index ${i})`
+                `🔍 [${chain.field}] selector "${selector}" matched ${texts.length} items (index ${i})`,
               );
               return { value, usedIndex: i };
             }
           }
         } catch (err) {
-          console.debug(
-            `🔍 [${chain.field}] selector "${selector}" threw:`,
-            err
-          );
+          console.debug(`🔍 [${chain.field}] selector "${selector}" threw:`, err);
         }
       }
       return { value: null, usedIndex: -1 };
@@ -390,17 +389,12 @@ export class JobExtractor {
           const raw = this.extractValue(el, chain);
           if (raw.length > 0) {
             const value = chain.transform ? chain.transform(raw) : raw;
-            console.log(
-              `🔍 [${chain.field}] selector "${selector}" matched (index ${i})`
-            );
+            console.log(`🔍 [${chain.field}] selector "${selector}" matched (index ${i})`);
             return { value, usedIndex: i };
           }
         }
       } catch (err) {
-        console.debug(
-          `🔍 [${chain.field}] selector "${selector}" threw:`,
-          err
-        );
+        console.debug(`🔍 [${chain.field}] selector "${selector}" threw:`, err);
       }
     }
 
@@ -414,23 +408,71 @@ export class JobExtractor {
     const primary = chain.selectors[0];
     const fallback = chain.selectors[usedIndex];
     console.warn(
-      `⚠️ Selector fallback for ${chain.field}: primary selector "${primary}" failed, using fallback "${fallback}"`
+      `⚠️ Selector fallback for ${chain.field}: primary selector "${primary}" failed, using fallback "${fallback}"`,
     );
+  }
+
+  /**
+   * Assign an extracted selector value to a known JobInfo field without `any`.
+   */
+  private assignChainField(target: Partial<JobInfo>, field: string, value: string): void {
+    switch (field) {
+      case 'title':
+        target.title = value;
+        break;
+      case 'description':
+        target.description = value;
+        break;
+      case 'skills':
+        target.skills = value;
+        break;
+      case 'experienceLevel':
+        target.experienceLevel = value;
+        break;
+      default:
+        break;
+    }
+  }
+
+  /**
+   * Fallback DOM scan for experience level without non-standard :contains() CSS selectors.
+   */
+  private extractExperienceLevelFallback(container: Element): string | null {
+    const levels = ['Expert', 'Intermediate', 'Entry'] as const;
+    const strongs = container.querySelectorAll('strong');
+    for (const el of strongs) {
+      const text = el.textContent?.trim() ?? '';
+      const lower = text.toLowerCase();
+      for (const level of levels) {
+        if (text === level || lower.includes(level.toLowerCase())) {
+          return level;
+        }
+      }
+    }
+    return null;
   }
 
   /**
    * Check the health of all selector chains against the current page DOM.
    */
-  healthCheck(): { field: string; status: 'ok' | 'fallback' | 'broken' }[] {
-    const container =
-      this.findJobDrawer() ?? document.body;
+  healthCheck(
+    targetContainer?: Element,
+  ): { field: string; status: 'ok' | 'fallback' | 'broken' }[] {
+    const container = targetContainer ?? this.findJobDrawer() ?? document.body;
 
     return SELECTOR_CHAINS.map((chain) => {
       const { usedIndex } = this.trySelectorChain(container, chain);
 
       let status: 'ok' | 'fallback' | 'broken';
       if (usedIndex === -1) {
-        status = 'broken';
+        if (
+          chain.field === 'experienceLevel' &&
+          this.extractExperienceLevelFallback(container) !== null
+        ) {
+          status = 'fallback';
+        } else {
+          status = 'broken';
+        }
       } else if (usedIndex === 0) {
         status = 'ok';
       } else {

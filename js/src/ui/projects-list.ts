@@ -3,12 +3,12 @@
  */
 
 import type { StateManager } from '../state';
-import { escapeHtml, getTimeAgo, renderAnalysis } from '../utils';
+import { attachCollapsibleListeners, escapeHtml, getTimeAgo, renderAnalysis } from '../utils';
 
 export class ProjectsListUI {
   constructor(
     private stateManager: StateManager,
-    private modalBody: HTMLDivElement
+    private modalBody: HTMLDivElement,
   ) {
     this.log('Initialized ProjectsListUI');
   }
@@ -26,12 +26,16 @@ export class ProjectsListUI {
    */
   render(): void {
     const projects = this.stateManager.getAllCachedJobs();
-    this.log('Rendering projects list', { total: projects.length, keys: projects.map(p => p.cacheKey) });
+    this.log('Rendering projects list', {
+      total: projects.length,
+      keys: projects.map((p) => p.cacheKey),
+    });
 
     let html = '<h3 style="margin-top: 0; color: #14a800;">📋 Analyzed Projects</h3>';
 
     if (projects.length === 0) {
-      html += '<p style="text-align: center; color: #999; padding: 40px;">No projects analyzed yet. Click "Analyze Job" on a job posting to get started.</p>';
+      html +=
+        '<p style="text-align: center; color: #999; padding: 40px;">No projects analyzed yet. Click "Analyze Job" on a job posting to get started.</p>';
       html += `
         <div class="upwork-buddy-cache-actions">
           <button class="upwork-buddy-secondary-btn js-upwork-buddy-import">⬆️ Import JSON</button>
@@ -46,13 +50,13 @@ export class ProjectsListUI {
         const timeAgo = getTimeAgo(date);
 
         html += `
-          <li class="upwork-buddy-project-item js-upwork-buddy-project" data-cache-key="${cacheKey}">
+          <li class="upwork-buddy-project-item js-upwork-buddy-project" data-cache-key="${escapeHtml(cacheKey)}">
             <h4 class="upwork-buddy-project-title">${escapeHtml(jobInfo.title)}</h4>
             <div class="upwork-buddy-project-meta">
               <span>💰 ${escapeHtml(jobInfo.budget)}</span>
               <span>🔧 ${escapeHtml(jobInfo.skills.split(',').slice(0, 3).join(','))}</span>
             </div>
-            <div class="upwork-buddy-project-timestamp">Analyzed ${timeAgo}</div>
+            <div class="upwork-buddy-project-timestamp">Analyzed ${escapeHtml(timeAgo)}</div>
           </li>
         `;
       });
@@ -94,6 +98,7 @@ export class ProjectsListUI {
       ${renderAnalysis(analysis, true)}
     `;
 
+    attachCollapsibleListeners(this.modalBody);
     const backBtn = this.modalBody.querySelector<HTMLButtonElement>('.js-upwork-buddy-back');
     backBtn?.addEventListener('click', () => this.render());
   }
@@ -110,7 +115,7 @@ export class ProjectsListUI {
 
   private attachProjectHandlers(): void {
     const projectItems = this.modalBody.querySelectorAll<HTMLLIElement>('.js-upwork-buddy-project');
-    projectItems.forEach(item => {
+    projectItems.forEach((item) => {
       item.addEventListener('click', () => {
         const cacheKey = item.getAttribute('data-cache-key');
         if (cacheKey) {
@@ -144,7 +149,7 @@ export class ProjectsListUI {
     const payload = {
       version: 1,
       exportedAt: new Date().toISOString(),
-      items: snapshot
+      items: snapshot,
     };
 
     const blob = new Blob([JSON.stringify(payload, null, 2)], { type: 'application/json' });
@@ -164,37 +169,43 @@ export class ProjectsListUI {
     const input = document.createElement('input');
     input.type = 'file';
     input.accept = 'application/json';
-    input.addEventListener('change', () => {
-      const file = input.files?.[0];
-      if (!file) {
-        this.log('Import cancelled (no file selected)');
-        return;
-      }
-
-      const reader = new FileReader();
-      reader.onload = async () => {
-        try {
-          const text = typeof reader.result === 'string' ? reader.result : '';
-          if (!text) {
-            throw new Error('File was empty or unreadable');
-          }
-          const parsed = JSON.parse(text);
-          const count = await this.stateManager.importCacheFromJson(parsed);
-          this.log('Import completed', { count });
-          if (count > 0) {
-            this.render();
-            this.updateBadge();
-            alert(`Imported ${count} cached analyses.`);
-          } else {
-            alert('No valid cached analyses found in the selected file.');
-          }
-        } catch (error) {
-          console.error('[UpworkBuddy][ProjectsListUI] ❌ Failed to import cache', error);
-          alert(`Failed to import cache: ${error instanceof Error ? error.message : String(error)}`);
+    input.addEventListener(
+      'change',
+      () => {
+        const file = input.files?.[0];
+        if (!file) {
+          this.log('Import cancelled (no file selected)');
+          return;
         }
-      };
-      reader.readAsText(file);
-    }, { once: true });
+
+        const reader = new FileReader();
+        reader.onload = async () => {
+          try {
+            const text = typeof reader.result === 'string' ? reader.result : '';
+            if (!text) {
+              throw new Error('File was empty or unreadable');
+            }
+            const parsed = JSON.parse(text);
+            const count = await this.stateManager.importCacheFromJson(parsed);
+            this.log('Import completed', { count });
+            if (count > 0) {
+              this.render();
+              this.updateBadge();
+              alert(`Imported ${count} cached analyses.`);
+            } else {
+              alert('No valid cached analyses found in the selected file.');
+            }
+          } catch (error) {
+            console.error('[UpworkBuddy][ProjectsListUI] ❌ Failed to import cache', error);
+            alert(
+              `Failed to import cache: ${error instanceof Error ? error.message : String(error)}`,
+            );
+          }
+        };
+        reader.readAsText(file);
+      },
+      { once: true },
+    );
 
     input.click();
   }

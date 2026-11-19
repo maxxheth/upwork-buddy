@@ -172,7 +172,7 @@ func (s *Service) GenerateAgent(ctx context.Context, req GenerateAgentRequest) (
 
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
 		log.Printf("🤖 Ollama agent generation failed: status=%d body=%s", resp.StatusCode, truncateForLog(string(respBody), 500))
-		return nil, fmt.Errorf("Ollama API returned %s", resp.Status)
+		return nil, fmt.Errorf("ollama API returned %s", resp.Status)
 	}
 
 	var chatResp chatResponse
@@ -180,7 +180,7 @@ func (s *Service) GenerateAgent(ctx context.Context, req GenerateAgentRequest) (
 		return nil, fmt.Errorf("failed to decode Ollama response: %w", err)
 	}
 	if chatResp.Error != "" {
-		return nil, fmt.Errorf("Ollama API error: %s", chatResp.Error)
+		return nil, fmt.Errorf("ollama API error: %s", chatResp.Error)
 	}
 
 	content := chatResp.Message.Content

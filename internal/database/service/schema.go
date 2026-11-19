@@ -2,8 +2,6 @@ package service
 
 import (
 	"time"
-
-	_ "ariga.io/atlas-provider-gorm/gormschema"
 )
 
 // Example model - User represents a user in the system
@@ -30,10 +28,13 @@ type Job struct {
 	BudgetAmount    string     `gorm:"type:text"`
 	ExperienceLevel string     `gorm:"type:text"`
 	Skills          string     `gorm:"type:text"`
-	Proposal        string     `gorm:"type:text"`
-	TimeEstimate    string     `gorm:"type:text"`
-	ExecutionPrompt  string     `gorm:"type:text"`
-	ToneAnalysis    string     `gorm:"type:text"`
+	Proposal           string     `gorm:"type:text"`
+	TimeEstimate       string     `gorm:"type:text"`
+	WorkloadDivision   string     `gorm:"type:text"`
+	QuestionsForClient string     `gorm:"type:text"`
+	TipsAndAdvice      string     `gorm:"type:text"`
+	ExecutionPrompt    string     `gorm:"type:text"`
+	ToneAnalysis       string     `gorm:"type:text"`
 	Status          string     `gorm:"type:text"` // e.g., "new", "applied", "rejected", etc.
 	UserID          *uint      `gorm:"index"`
 	User            *User      `gorm:"foreignKey:UserID"`

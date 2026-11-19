@@ -2,16 +2,143 @@
  * API layer for communicating with Upwork Buddy backend
  */
 
-import type { ProfileState, ProfileApiResponse, JobInfo, AnalysisResponse, SaveJobRequest, SavedJob, SavedJobsResponse, TemplatesListResponse, TemplateCategory, GenerateAgentsRequest, GenerateAgentsResponse, GeneratedAgent } from './types';
+import { browser } from 'wxt/browser';
+import type {
+  AnalysisResponse,
+  GenerateAgentsRequest,
+  GenerateAgentsResponse,
+  GeneratedAgent,
+  JobInfo,
+  ProfileApiResponse,
+  ProfileState,
+  SavedJob,
+  SavedJobsResponse,
+  SaveJobRequest,
+  SyncedProfile,
+  TemplateCategory,
+  TemplatesListResponse,
+} from './types';
 import { CONFIG } from './types';
 
+export type ApiTransport = (url: string, init?: RequestInit) => Promise<Response>;
+
+export interface ApiProxyRequestMessage {
+  type: 'API_PROXY_REQUEST';
+  url: string;
+  method: string;
+  headers?: Record<string, string>;
+  body?: string;
+}
+
+export interface ApiProxyResponseMessage {
+  ok: boolean;
+  status: number;
+  statusText: string;
+  contentType?: string;
+  bodyBase64?: string;
+  error?: string;
+}
+
+function isContentScriptRuntime(): boolean {
+  try {
+    return (
+      typeof window !== 'undefined' &&
+      window.location?.protocol === 'https:' &&
+      typeof browser?.runtime?.sendMessage === 'function'
+    );
+  } catch {
+    return false;
+  }
+}
+
+function normalizeHeaders(headers?: HeadersInit): Record<string, string> | undefined {
+  if (!headers) return undefined;
+  const result: Record<string, string> = {};
+  if (headers instanceof Headers) {
+    headers.forEach((value, key) => {
+      result[key] = value;
+    });
+    return result;
+  }
+  if (Array.isArray(headers)) {
+    for (const [key, value] of headers) {
+      result[key] = value;
+    }
+    return result;
+  }
+  return { ...headers };
+}
+
+function decodeBase64ToBytes(base64: string): Uint8Array<ArrayBuffer> {
+  const binary = atob(base64);
+  const buffer = new ArrayBuffer(binary.length);
+  const bytes = new Uint8Array(buffer);
+  for (let i = 0; i < binary.length; i++) {
+    bytes[i] = binary.charCodeAt(i);
+  }
+  return bytes;
+}
+
+export function createExtensionProxyTransport(): ApiTransport {
+  return async (url: string, init?: RequestInit): Promise<Response> => {
+    const message: ApiProxyRequestMessage = {
+      type: 'API_PROXY_REQUEST',
+      url,
+      method: init?.method ?? 'GET',
+      headers: normalizeHeaders(init?.headers),
+      body: typeof init?.body === 'string' ? init.body : undefined,
+    };
+
+    const reply = (await browser.runtime.sendMessage(message)) as
+      | ApiProxyResponseMessage
+      | undefined;
+    if (!reply) {
+      throw new Error('Background API proxy returned empty response');
+    }
+    if (reply.error) {
+      throw new Error(reply.error);
+    }
+
+    const status = reply.status || 500;
+    const statusText = reply.statusText ?? '';
+    const responseHeaders = reply.contentType ? { 'Content-Type': reply.contentType } : undefined;
+
+    if (status === 204 || status === 205 || status === 304) {
+      return new Response(null, { status, statusText, headers: responseHeaders });
+    }
+
+    const bodyBytes = reply.bodyBase64 ? decodeBase64ToBytes(reply.bodyBase64) : new Uint8Array(0);
+    return new Response(bodyBytes, {
+      status,
+      statusText,
+      headers: responseHeaders,
+    });
+  };
+}
+
 export class ApiClient {
+  private readonly customTransport?: ApiTransport;
+
+  constructor(transport?: ApiTransport) {
+    this.customTransport = transport;
+  }
+
+  private async request(url: string, init?: RequestInit): Promise<Response> {
+    if (this.customTransport) {
+      return this.customTransport(url, init);
+    }
+    if (isContentScriptRuntime()) {
+      return createExtensionProxyTransport()(url, init);
+    }
+    return fetch(url, init);
+  }
+
   /**
    * Load profile from API
    */
   async loadProfile(): Promise<ProfileState | null> {
     try {
-      const response = await fetch(CONFIG.profileApiEndpoint, { method: 'GET' });
+      const response = await this.request(CONFIG.profileApiEndpoint, { method: 'GET' });
       if (response.ok) {
         const payload: ProfileApiResponse = await response.json();
         return this.mapProfileResponse(payload);
@@ -28,16 +155,16 @@ export class ApiClient {
    * Save profile to API
    */
   async saveProfile(profile: ProfileState): Promise<ProfileState> {
-    const response = await fetch(CONFIG.profileApiEndpoint, {
+    const response = await this.request(CONFIG.profileApiEndpoint, {
       method: 'POST',
       headers: {
-        'Content-Type': 'application/json'
+        'Content-Type': 'application/json',
       },
       body: JSON.stringify({
         description: profile.description,
         skills: profile.skills,
-        portfolio_items: profile.portfolioItems
-      })
+        portfolio_items: profile.portfolioItems,
+      }),
     });
 
     if (!response.ok) {
@@ -51,7 +178,11 @@ export class ApiClient {
   /**
    * Analyze a job posting
    */
-  async analyzeJob(jobInfo: JobInfo, userProfile: string, userSkills: string): Promise<AnalysisResponse> {
+  async analyzeJob(
+    jobInfo: JobInfo,
+    userProfile: string,
+    userSkills: string,
+  ): Promise<AnalysisResponse> {
     console.log('🚀 API: Sending analyze request', {
       title: jobInfo.title,
       descriptionLength: jobInfo.description.length,
@@ -62,10 +193,10 @@ export class ApiClient {
       skills: jobInfo.skills,
       experienceLevel: jobInfo.experienceLevel,
       profileLength: userProfile.length,
-      userSkillsLength: userSkills.length
+      userSkillsLength: userSkills.length,
     });
 
-    const response = await fetch(`${CONFIG.apiBaseUrl}/api/analyze-job`, {
+    const response = await this.request(`${CONFIG.apiBaseUrl}/api/analyze-job`, {
       method: 'POST',
       headers: {
         'Content-Type': 'application/json',
@@ -82,8 +213,8 @@ export class ApiClient {
         skills: jobInfo.skills,
         experience_level: jobInfo.experienceLevel,
         user_profile: userProfile,
-        user_skills: userSkills
-      })
+        user_skills: userSkills,
+      }),
     });
 
     console.log('📡 API: Response status', response.status, response.statusText);
@@ -101,7 +232,7 @@ export class ApiClient {
       tipsCount: data.tips_and_advice?.length || 0,
       hasTimeEstimate: !!data.time_estimate,
       hasWorkloadDivision: !!data.workload_division,
-      hasToneAnalysis: !!data.tone_analysis
+      hasToneAnalysis: !!data.tone_analysis,
     });
 
     return data;
@@ -110,11 +241,13 @@ export class ApiClient {
   /**
    * Save a job analysis to the backend
    */
-  async saveJob(job: SaveJobRequest): Promise<{ id: number; job_title: string; created_at: string }> {
-    const response = await fetch(CONFIG.jobsApiEndpoint, {
+  async saveJob(
+    job: SaveJobRequest,
+  ): Promise<{ id: number; job_title: string; created_at: string }> {
+    const response = await this.request(CONFIG.jobsApiEndpoint, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify(job)
+      body: JSON.stringify(job),
     });
     if (!response.ok) {
       throw new Error(`Save job failed: ${response.status} ${response.statusText}`);
@@ -127,7 +260,7 @@ export class ApiClient {
    */
   async loadJobs(): Promise<SavedJob[]> {
     try {
-      const response = await fetch(CONFIG.jobsApiEndpoint, { method: 'GET' });
+      const response = await this.request(CONFIG.jobsApiEndpoint, { method: 'GET' });
       if (!response.ok) {
         console.warn('Load jobs returned status', response.status);
         return [];
@@ -144,7 +277,7 @@ export class ApiClient {
    * Delete a saved job
    */
   async deleteJob(id: number): Promise<void> {
-    const response = await fetch(`${CONFIG.jobsApiEndpoint}/${id}`, { method: 'DELETE' });
+    const response = await this.request(`${CONFIG.jobsApiEndpoint}/${id}`, { method: 'DELETE' });
     if (!response.ok && response.status !== 204) {
       throw new Error(`Delete job failed: ${response.status} ${response.statusText}`);
     }
@@ -154,7 +287,7 @@ export class ApiClient {
    * List available template categories
    */
   async listTemplates(): Promise<TemplatesListResponse> {
-    const response = await fetch(`${CONFIG.apiBaseUrl}/api/templates`, { method: 'GET' });
+    const response = await this.request(`${CONFIG.apiBaseUrl}/api/templates`, { method: 'GET' });
     if (!response.ok) {
       throw new Error(`List templates failed: ${response.status} ${response.statusText}`);
     }
@@ -165,7 +298,10 @@ export class ApiClient {
    * Get full details for a template category
    */
   async getTemplate(name: string): Promise<TemplateCategory> {
-    const response = await fetch(`${CONFIG.apiBaseUrl}/api/templates/${encodeURIComponent(name)}`, { method: 'GET' });
+    const response = await this.request(
+      `${CONFIG.apiBaseUrl}/api/templates/${encodeURIComponent(name)}`,
+      { method: 'GET' },
+    );
     if (!response.ok) {
       throw new Error(`Get template failed: ${response.status} ${response.statusText}`);
     }
@@ -176,10 +312,10 @@ export class ApiClient {
    * Generate agents from a template category
    */
   async generateAgents(request: GenerateAgentsRequest): Promise<GenerateAgentsResponse> {
-    const response = await fetch(`${CONFIG.apiBaseUrl}/api/agents/generate`, {
+    const response = await this.request(`${CONFIG.apiBaseUrl}/api/agents/generate`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify(request)
+      body: JSON.stringify(request),
     });
     if (!response.ok) {
       throw new Error(`Generate agents failed: ${response.status} ${response.statusText}`);
@@ -191,7 +327,7 @@ export class ApiClient {
    * List all generated agents
    */
   async listAgents(): Promise<{ agents: GeneratedAgent[] }> {
-    const response = await fetch(`${CONFIG.apiBaseUrl}/api/agents`, { method: 'GET' });
+    const response = await this.request(`${CONFIG.apiBaseUrl}/api/agents`, { method: 'GET' });
     if (!response.ok) {
       throw new Error(`List agents failed: ${response.status} ${response.statusText}`);
     }
@@ -202,10 +338,10 @@ export class ApiClient {
    * Download selected agents as a zip file
    */
   async downloadAgents(agentNames: string[]): Promise<Blob> {
-    const response = await fetch(`${CONFIG.apiBaseUrl}/api/agents/download`, {
+    const response = await this.request(`${CONFIG.apiBaseUrl}/api/agents/download`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ agent_names: agentNames })
+      body: JSON.stringify({ agent_names: agentNames }),
     });
     if (!response.ok) {
       throw new Error(`Download agents failed: ${response.status} ${response.statusText}`);
@@ -214,9 +350,9 @@ export class ApiClient {
   }
 
   /**
-   * Map API response to ProfileState
+   * Map API response to ProfileState (preserving server sync timestamp when present)
    */
-  private mapProfileResponse(payload: ProfileApiResponse): ProfileState {
+  private mapProfileResponse(payload: ProfileApiResponse): ProfileState | SyncedProfile {
     if (!payload || typeof payload !== 'object') {
       return { description: '', skills: '', portfolioItems: [] };
     }
@@ -227,14 +363,25 @@ export class ApiClient {
         ? payload.portfolioItems
         : [];
 
-    return {
+    const mapped: ProfileState = {
       description: payload.description || '',
       skills: payload.skills || '',
-      portfolioItems: items.map(item => ({
+      portfolioItems: items.map((item) => ({
         title: item.title || '',
         link: item.link || '',
-        description: item.description || ''
-      }))
+        description: item.description || '',
+      })),
     };
+
+    const syncTimestamp = payload.lastSyncedAt ?? payload.last_synced_at ?? payload.updated_at;
+    if (typeof syncTimestamp === 'string' && syncTimestamp.length > 0) {
+      return {
+        ...mapped,
+        lastSyncedAt: syncTimestamp,
+        isDirty: false,
+      };
+    }
+
+    return mapped;
   }
 }

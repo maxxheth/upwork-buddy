@@ -3,22 +3,22 @@
  * Initializes all modules and wires up the application
  */
 
-import { injectStyles } from './styles';
-import { StateManager } from './state';
 import { ApiClient } from './api';
 import { JobExtractor } from './job-extractor';
-import { Modal } from './ui/modal';
+import { StateManager } from './state';
+import { StorageAdapter } from './storage';
+import { injectStyles } from './styles';
+import type { SavedJob } from './types';
+import { CONFIG, detectEnvironment, loadConfig } from './types';
 import { ButtonManager } from './ui/buttons';
+import { JobHistoryPanel } from './ui/job-history';
+import { Modal } from './ui/modal';
 import { ProfileConfigUI } from './ui/profile-config';
 import { ProjectsListUI } from './ui/projects-list';
-import { JobHistoryPanel } from './ui/job-history';
 import { TemplateBrowser } from './ui/template-browser';
-import { renderAnalysis, escapeHtml } from './utils';
-import { detectEnvironment, loadConfig, CONFIG } from './types';
-import type { SavedJob } from './types';
-import { StorageAdapter } from './storage';
+import { attachCollapsibleListeners, escapeHtml, renderAnalysis } from './utils';
 
-class UpworkBuddy {
+export class UpworkBuddy {
   private stateManager: StateManager;
   private apiClient: ApiClient;
   private jobExtractor: JobExtractor;
@@ -28,13 +28,15 @@ class UpworkBuddy {
   private projectsListUI: ProjectsListUI | null = null;
   private jobHistoryPanel: JobHistoryPanel | null = null;
   private templateBrowser: TemplateBrowser | null = null;
+  private drawerOpen = false;
+  private healthChecked = false;
   private logPrefix = '[UpworkBuddy][Main]';
 
   constructor() {
     this.stateManager = new StateManager();
     this.apiClient = new ApiClient();
     this.jobExtractor = new JobExtractor();
-    
+
     // Inject styles first
     injectStyles();
 
@@ -47,7 +49,7 @@ class UpworkBuddy {
       () => this.openProfileConfig(),
       () => this.showProjectsList(),
       () => this.showJobHistory(),
-      () => this.showTemplateBrowser()
+      () => this.showTemplateBrowser(),
     );
 
     // Initialize
@@ -74,7 +76,9 @@ class UpworkBuddy {
     // requiring constructor injection.
     Object.assign(CONFIG, resolvedConfig);
 
-    console.log(`🌍 Upwork Buddy starting in "${resolvedConfig.env}" environment (detected: "${detectedEnv}"${envOverride ? `, override: "${envOverride}"` : ''})`);
+    console.log(
+      `🌍 Upwork Buddy starting in "${resolvedConfig.env}" environment (detected: "${detectedEnv}"${envOverride ? `, override: "${envOverride}"` : ''})`,
+    );
     if (customOverrides) {
       console.log('🔧 Custom config overrides applied:', customOverrides);
     }
@@ -94,8 +98,19 @@ class UpworkBuddy {
       this.log('ProjectsListUI ready with initial badge update');
     }
 
-    // Run selector health check and show warning if needed
-    this.runHealthCheck();
+    // Only run health check if a job drawer or standalone job detail page is already present
+    const initialDrawer = this.jobExtractor.findJobDrawer();
+    if (initialDrawer) {
+      this.drawerOpen = true;
+      this.buttonManager.showContainer();
+      initialDrawer.setAttribute('data-upwork-buddy', 'true');
+      this.runHealthCheck(initialDrawer);
+      this.healthChecked = true;
+    } else if (this.isStandaloneJobDetailView()) {
+      const detailContainer = document.querySelector('.job-details-card') ?? document.body;
+      this.runHealthCheck(detailContainer);
+      this.healthChecked = true;
+    }
 
     // Watch for job drawer to appear
     this.watchForDrawer();
@@ -103,11 +118,19 @@ class UpworkBuddy {
     console.log('✅ Upwork Buddy activated! Open a job to see the Analyze button.');
   }
 
+  private isStandaloneJobDetailView(): boolean {
+    try {
+      return /^\/jobs\/~[a-zA-Z0-9]+/.test(window.location.pathname);
+    } catch {
+      return false;
+    }
+  }
+
   /**
    * Run the selector health check and show a warning banner if any fields are broken.
    */
-  private runHealthCheck(): void {
-    const results = this.jobExtractor.healthCheck();
+  private runHealthCheck(targetContainer?: Element): void {
+    const results = this.jobExtractor.healthCheck(targetContainer);
     const brokenFields = results.filter((r) => r.status === 'broken');
 
     if (brokenFields.length > 0) {
@@ -158,14 +181,20 @@ class UpworkBuddy {
     console.log('👀 Watching for job details drawer...');
 
     const observer = new MutationObserver(() => {
-      const drawer = document.querySelector('.job-details-content');
+      const drawer = this.jobExtractor.findJobDrawer();
 
       if (drawer && !drawer.hasAttribute('data-upwork-buddy')) {
         console.log('✅ Job details drawer found!');
+        this.drawerOpen = true;
         this.buttonManager.showContainer();
         drawer.setAttribute('data-upwork-buddy', 'true');
-      } else if (!drawer) {
+        if (!this.healthChecked) {
+          this.runHealthCheck(drawer);
+          this.healthChecked = true;
+        }
+      } else if (!drawer && this.drawerOpen) {
         // Drawer was closed or removed
+        this.drawerOpen = false;
         console.log('👋 Job details drawer closed');
         this.buttonManager.hideContainer();
       }
@@ -173,7 +202,7 @@ class UpworkBuddy {
 
     observer.observe(document.body, {
       childList: true,
-      subtree: true
+      subtree: true,
     });
 
     console.log('✅ Drawer observer activated');
@@ -196,7 +225,8 @@ class UpworkBuddy {
       return;
     }
 
-    modalBody.innerHTML = '<div class="upwork-buddy-loading">🤖 Analyzing job posting with AI...</div>';
+    modalBody.innerHTML =
+      '<div class="upwork-buddy-loading">🤖 Analyzing job posting with AI...</div>';
 
     try {
       const jobInfo = this.jobExtractor.extractJobInfo(drawer);
@@ -229,7 +259,7 @@ class UpworkBuddy {
           proposal: analysis.proposal || '',
           time_estimate: analysis.time_estimate || '',
           execution_prompt: analysis.execution_prompt || '',
-          tone_analysis: analysis.tone_analysis || ''
+          tone_analysis: analysis.tone_analysis || '',
         });
         this.log('Job auto-saved to history');
       } catch (saveError) {
@@ -248,11 +278,12 @@ class UpworkBuddy {
       }
 
       modalBody.innerHTML = renderAnalysis(analysis, false);
+      attachCollapsibleListeners(modalBody);
     } catch (error) {
       console.error('❌ Analysis error:', error);
       const errorMessage = error instanceof Error ? error.message : String(error);
       const errorStack = error instanceof Error && error.stack ? error.stack : String(error);
-      
+
       modalBody.innerHTML = `
         <div class="upwork-buddy-error">
           ❌ Error: ${escapeHtml(errorMessage)}
@@ -317,7 +348,7 @@ class UpworkBuddy {
       this.jobHistoryPanel = new JobHistoryPanel(
         modalBody,
         (job: SavedJob) => this.viewSavedJob(job),
-        (id: number) => this.deleteSavedJob(id)
+        (id: number) => this.deleteSavedJob(id),
       );
 
       this.jobHistoryPanel.render(jobs);
@@ -341,7 +372,7 @@ class UpworkBuddy {
       proposal: job.proposal,
       time_estimate: job.time_estimate,
       execution_prompt: job.execution_prompt,
-      tone_analysis: job.tone_analysis
+      tone_analysis: job.tone_analysis,
     };
 
     modalBody.innerHTML = `
@@ -356,6 +387,7 @@ class UpworkBuddy {
       ${renderAnalysis(analysis, true)}
     `;
 
+    attachCollapsibleListeners(modalBody);
     const backBtn = modalBody.querySelector('#upwork-buddy-back-to-history');
     backBtn?.addEventListener('click', () => this.showJobHistory());
   }
@@ -396,9 +428,3 @@ class UpworkBuddy {
     console.log(this.logPrefix, message);
   }
 }
-
-// Initialize the application when the script loads
-(function() {
-  'use strict';
-  new UpworkBuddy();
-})();

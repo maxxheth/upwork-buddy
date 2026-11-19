@@ -1,7 +1,7 @@
 # Simple Makefile for a Go project
 
 # Build the application
-all: build test
+all: build vet test
 
 build:
 	@echo "Building Go backend..."
@@ -9,18 +9,10 @@ build:
 	@chmod +x ./dist/upwork-buddy
 	@echo "Build completed: ./dist/upwork-buddy"
 
-# Build the TypeScript bookmarklet
-build-js:
-	@echo "Building TypeScript bookmarklet..."
-	@cd js && npm install && npm run build
-	@echo "Bookmarklet build completed: js/dist/upwork-buddy-snippet.js"
-
-# Build both backend and bookmarklet
-build-all: build build-js
-
 # Run the application
 run:
 	@go run cmd/api/main.go
+
 # Create DB container
 docker-run:
 	@if docker compose up --build 2>/dev/null; then \
@@ -42,11 +34,22 @@ docker-down:
 # Test the application
 test:
 	@echo "Testing..."
-	@go test ./... -v
-# Integrations Tests for the application
-itest:
-	@echo "Running integration tests..."
-	@go test ./internal/database -v
+	@go test -race ./...
+
+# Vet the application
+vet:
+	@echo "Vetting..."
+	@go vet ./...
+
+# Lint the application
+lint:
+	@echo "Linting..."
+	@golangci-lint run ./...
+
+# Vulnerability scan
+vuln:
+	@echo "Scanning for vulnerabilities..."
+	@govulncheck ./...
 
 # Clean the binary
 clean:
@@ -89,4 +92,29 @@ diff:
 	@echo "Diffing schema..."
 	@atlas migrate diff --env app
 
-.PHONY: all build run test clean watch docker-run docker-down itest apply diff start stop
+atlas-apply: apply
+
+atlas-diff: diff
+
+atlas-status:
+	@atlas migrate status --env app
+
+atlas-hash:
+	@atlas migrate hash --dir "file://internal/database/migrations/app"
+
+atlas-validate:
+	@atlas migrate validate --dir "file://internal/database/migrations/app"
+
+# Isolated Postgres 17 + Atlas clean-DB migration & test verification
+verify-db:
+	@bash -euo pipefail -c '\
+		export DOCKER_DB_PORT=5444 APP_DB_USERNAME=verify_user APP_DB_PASSWORD=verify_pass APP_DB_DATABASE=upwork_buddy_verify; \
+		cleanup() { docker compose --env-file /dev/null -p upwork_buddy_verify down -v --remove-orphans; }; \
+		trap cleanup EXIT; \
+		cleanup; \
+		docker compose --env-file /dev/null -p upwork_buddy_verify up -d --wait app_db; \
+		docker compose --env-file /dev/null -p upwork_buddy_verify run --rm migrate_app_db; \
+		TEST_DATABASE_URL="postgres://verify_user:verify_pass@127.0.0.1:5444/upwork_buddy_verify?sslmode=disable" go test -race -v ./internal/database/service/... ./internal/server/...; \
+	'
+
+.PHONY: all build run test vet lint vuln clean watch docker-run docker-down apply diff atlas-apply atlas-diff atlas-status atlas-hash atlas-validate verify-db start stop

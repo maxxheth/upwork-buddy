@@ -2,18 +2,18 @@
  * Profile configuration UI component
  */
 
-import type { ProfileState, PortfolioItem, EnvironmentName } from '../types';
-import { StateManager } from '../state';
+import type { StateManager } from '../state';
 import { StorageAdapter } from '../storage';
-import { CONFIG, loadConfig, detectEnvironment } from '../types';
-import { escapeHtml } from '../utils';
+import type { EnvironmentName, PortfolioItem, ProfileState } from '../types';
+import { CONFIG, detectEnvironment, loadConfig } from '../types';
+import { attachCollapsibleListeners, escapeHtml, sanitizeHttpUrl } from '../utils';
 
 export class ProfileConfigUI {
   private storage = new StorageAdapter();
 
   constructor(
     private stateManager: StateManager,
-    private modalBody: HTMLDivElement
+    private modalBody: HTMLDivElement,
   ) {}
 
   /**
@@ -21,19 +21,29 @@ export class ProfileConfigUI {
    */
   render(): void {
     const profile = this.stateManager.getProfile();
-    const portfolioItemsHTML = profile.portfolioItems?.length 
-      ? profile.portfolioItems.map(item => `
+    const portfolioItemsHTML = profile.portfolioItems?.length
+      ? profile.portfolioItems
+          .map((item) => {
+            const safeUrl = item.link ? sanitizeHttpUrl(item.link) : null;
+            const linkHtml = item.link
+              ? safeUrl
+                ? `<a href="${escapeHtml(safeUrl)}" target="_blank" rel="noopener noreferrer" style="color: #108ee9; text-decoration: none;">${escapeHtml(item.link)}</a><br>`
+                : `<span style="color: #666;">${escapeHtml(item.link)}</span><br>`
+              : '';
+            return `
           <div style="margin-bottom: 12px; padding: 12px; background: #f9f9f9; border-radius: 6px;">
             <strong>${escapeHtml(item.title || 'Untitled')}</strong><br>
-            ${item.link ? `<a href="${escapeHtml(item.link)}" target="_blank" style="color: #108ee9; text-decoration: none;">${escapeHtml(item.link)}</a><br>` : ''}
+            ${linkHtml}
             ${item.description ? `<span style="color: #666; font-size: 13px;">${escapeHtml(item.description)}</span>` : ''}
           </div>
-        `).join('')
+        `;
+          })
+          .join('')
       : '<p style="color: #999; font-style: italic;">No portfolio items added yet.</p>';
 
     this.modalBody.innerHTML = `
       <div class="upwork-buddy-section">
-        <div class="upwork-buddy-section-header" onclick="this.parentElement.querySelector('.upwork-buddy-section-content').classList.toggle('open'); this.querySelector('.upwork-buddy-section-toggle').classList.toggle('open');">
+        <div class="upwork-buddy-section-header" data-collapsible="true">
           <h4>📋 View Current Profile</h4>
           <span class="upwork-buddy-section-toggle">▼</span>
         </div>
@@ -75,7 +85,7 @@ export class ProfileConfigUI {
       </div>
       <div id="upwork-buddy-profile-status" class="upwork-buddy-profile-status" aria-live="polite"></div>
       <div class="upwork-buddy-section">
-        <div class="upwork-buddy-section-header" onclick="this.parentElement.querySelector('.upwork-buddy-section-content').classList.toggle('open'); this.querySelector('.upwork-buddy-section-toggle').classList.toggle('open');">
+        <div class="upwork-buddy-section-header" data-collapsible="true">
           <h4>⚙️ API Environment</h4>
           <span class="upwork-buddy-section-toggle">▼</span>
         </div>
@@ -87,7 +97,7 @@ export class ProfileConfigUI {
             <label for="upwork-buddy-env-select">Environment:</label>
             <select id="upwork-buddy-env-select" style="width: 100%; padding: 8px; border: 1px solid #ccc; border-radius: 4px; font-size: 14px;">
               <option value="">Auto-detect (from hostname)</option>
-              <option value="development">Development / Local (localhost:9090)</option>
+              <option value="development">Development / Local (127.0.0.1:9090)</option>
               <option value="staging">Staging</option>
               <option value="production">Production</option>
             </select>
@@ -102,13 +112,14 @@ export class ProfileConfigUI {
       </div>
     `;
 
+    attachCollapsibleListeners(this.modalBody);
     this.attachEventListeners();
     this.populateFields();
     this.renderPortfolioItems();
   }
 
   private attachEventListeners(): void {
-    const addBtn = document.getElementById('upwork-buddy-add-portfolio-item');
+    const addBtn = this.modalBody.querySelector('#upwork-buddy-add-portfolio-item');
     if (addBtn) {
       addBtn.addEventListener('click', () => {
         this.addPortfolioItem();
@@ -121,17 +132,17 @@ export class ProfileConfigUI {
       saveBtn.addEventListener('click', () => this.handleSave());
     }
 
-    const portfolioList = document.getElementById('upwork-buddy-portfolio-items-list');
+    const portfolioList = this.modalBody.querySelector('#upwork-buddy-portfolio-items-list');
     if (portfolioList) {
       portfolioList.addEventListener('click', (e) => {
         if ((e.target as HTMLElement).matches('.upwork-buddy-remove-portfolio-item')) {
           const parent = (e.target as HTMLElement).closest('.upwork-buddy-portfolio-item');
-          if (parent) parent.remove();
+          parent?.remove();
         }
       });
     }
 
-    const envSelect = document.getElementById('upwork-buddy-env-select') as HTMLSelectElement;
+    const envSelect = this.modalBody.querySelector<HTMLSelectElement>('#upwork-buddy-env-select');
     if (envSelect) {
       // Load current override
       this.storage.getEnvOverride().then((envOverride) => {
@@ -146,15 +157,19 @@ export class ProfileConfigUI {
 
   private populateFields(): void {
     const profile = this.stateManager.getProfile();
-    const descField = document.getElementById('upwork-buddy-profile-description') as HTMLTextAreaElement;
-    const skillsField = document.getElementById('upwork-buddy-profile-skills') as HTMLInputElement;
+    const descField = this.modalBody.querySelector<HTMLTextAreaElement>(
+      '#upwork-buddy-profile-description',
+    );
+    const skillsField = this.modalBody.querySelector<HTMLInputElement>(
+      '#upwork-buddy-profile-skills',
+    );
 
     if (descField) descField.value = profile.description || '';
     if (skillsField) skillsField.value = profile.skills || '';
   }
 
   private renderPortfolioItems(): void {
-    const container = document.getElementById('upwork-buddy-portfolio-items-list');
+    const container = this.modalBody.querySelector('#upwork-buddy-portfolio-items-list');
     if (!container) return;
 
     container.innerHTML = '';
@@ -169,11 +184,13 @@ export class ProfileConfigUI {
       return;
     }
 
-    items.forEach(item => this.addPortfolioItem(item));
+    for (const item of items) {
+      this.addPortfolioItem(item);
+    }
   }
 
   private addPortfolioItem(item: PortfolioItem = { title: '', link: '', description: '' }): void {
-    const container = document.getElementById('upwork-buddy-portfolio-items-list');
+    const container = this.modalBody.querySelector('#upwork-buddy-portfolio-items-list');
     if (!container) return;
 
     const hint = container.querySelector('.upwork-buddy-portfolio-hint');
@@ -195,15 +212,26 @@ export class ProfileConfigUI {
   }
 
   private gatherProfile(): ProfileState {
-    const descField = document.getElementById('upwork-buddy-profile-description') as HTMLTextAreaElement;
-    const skillsField = document.getElementById('upwork-buddy-profile-skills') as HTMLInputElement;
-    const portfolioNodes = document.querySelectorAll('.upwork-buddy-portfolio-item');
+    const descField = this.modalBody.querySelector<HTMLTextAreaElement>(
+      '#upwork-buddy-profile-description',
+    );
+    const skillsField = this.modalBody.querySelector<HTMLInputElement>(
+      '#upwork-buddy-profile-skills',
+    );
+    const portfolioNodes = this.modalBody.querySelectorAll('.upwork-buddy-portfolio-item');
 
     const items: PortfolioItem[] = [];
     portfolioNodes.forEach((node) => {
-      const title = (node.querySelector('.upwork-buddy-portfolio-title') as HTMLInputElement)?.value.trim() || '';
-      const link = (node.querySelector('.upwork-buddy-portfolio-link') as HTMLInputElement)?.value.trim() || '';
-      const description = (node.querySelector('.upwork-buddy-portfolio-description') as HTMLTextAreaElement)?.value.trim() || '';
+      const title =
+        (node.querySelector('.upwork-buddy-portfolio-title') as HTMLInputElement)?.value.trim() ||
+        '';
+      const link =
+        (node.querySelector('.upwork-buddy-portfolio-link') as HTMLInputElement)?.value.trim() ||
+        '';
+      const description =
+        (
+          node.querySelector('.upwork-buddy-portfolio-description') as HTMLTextAreaElement
+        )?.value.trim() || '';
 
       if (title || link || description) {
         items.push({ title, link, description });
@@ -213,7 +241,7 @@ export class ProfileConfigUI {
     return {
       description: descField?.value || '',
       skills: skillsField?.value || '',
-      portfolioItems: items
+      portfolioItems: items,
     };
   }
 
@@ -247,24 +275,30 @@ export class ProfileConfigUI {
       const detectedEnv = detectEnvironment();
       Object.assign(CONFIG, loadConfig(detectedEnv));
       this.updateEnvDisplay(CONFIG.env, CONFIG.apiBaseUrl);
-      this.setStatus(`Environment set to auto-detect (${detectedEnv}). Reload the page for full effect.`, false);
+      this.setStatus(
+        `Environment set to auto-detect (${detectedEnv}). Reload the page for full effect.`,
+        false,
+      );
     } else {
       await this.storage.saveEnvOverride(envOverride);
       Object.assign(CONFIG, loadConfig(envOverride));
       this.updateEnvDisplay(envOverride, CONFIG.apiBaseUrl);
-      this.setStatus(`Environment overridden to "${envOverride}" (${CONFIG.apiBaseUrl}). Reload the page for full effect.`, false);
+      this.setStatus(
+        `Environment overridden to "${envOverride}" (${CONFIG.apiBaseUrl}). Reload the page for full effect.`,
+        false,
+      );
     }
   }
 
   private updateEnvDisplay(env: string, url: string): void {
-    const current = document.getElementById('upwork-buddy-env-current');
-    const urlEl = document.getElementById('upwork-buddy-env-url');
+    const current = this.modalBody.querySelector('#upwork-buddy-env-current');
+    const urlEl = this.modalBody.querySelector('#upwork-buddy-env-url');
     if (current) current.textContent = env;
     if (urlEl) urlEl.textContent = url;
   }
 
   private setStatus(message: string, isError = false): void {
-    const status = document.getElementById('upwork-buddy-profile-status');
+    const status = this.modalBody.querySelector<HTMLElement>('#upwork-buddy-profile-status');
     if (!status) return;
     status.textContent = message;
     status.style.color = isError ? '#c82333' : '#14a800';

@@ -1,12 +1,20 @@
-import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
-import { ApiClient } from './api';
-import type { ProfileState, JobInfo, AnalysisResponse, ProfileApiResponse } from './types';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { fakeBrowser } from 'wxt/testing/fake-browser';
+import { ApiClient, type ApiProxyRequestMessage, type ApiProxyResponseMessage } from './api';
+import type {
+  AnalysisResponse,
+  JobInfo,
+  ProfileApiResponse,
+  ProfileState,
+  SyncedProfile,
+} from './types';
 
 describe('ApiClient', () => {
   let client: ApiClient;
   const originalFetch = globalThis.fetch;
 
   beforeEach(() => {
+    fakeBrowser.reset();
     client = new ApiClient();
     vi.clearAllMocks();
   });
@@ -16,7 +24,10 @@ describe('ApiClient', () => {
   });
 
   // Helper to mock fetch
-  function mockFetch(response: { ok: boolean; status: number; statusText?: string; json?: () => Promise<any> }, rejectWith?: Error) {
+  function mockFetch(
+    response: { ok: boolean; status: number; statusText?: string; json?: () => Promise<unknown> },
+    rejectWith?: Error,
+  ) {
     if (rejectWith) {
       globalThis.fetch = vi.fn().mockRejectedValue(rejectWith);
     } else {
@@ -35,7 +46,7 @@ describe('ApiClient', () => {
       budgetAmount: '$3000',
       experienceLevel: '',
       budget: '$3000 fixed',
-      skills: 'React, TypeScript'
+      skills: 'React, TypeScript',
     };
 
     const successResponse: AnalysisResponse = {
@@ -45,14 +56,14 @@ describe('ApiClient', () => {
       workload_division: 'Split into components',
       questions_for_client: 'Do you have design files?',
       tips_and_advice: 'Use Next.js for SSR',
-      tone_analysis: 'Professional'
+      tone_analysis: 'Professional',
     };
 
     it('should return analysis on success', async () => {
       mockFetch({
         ok: true,
         status: 200,
-        json: () => Promise.resolve(successResponse)
+        json: () => Promise.resolve(successResponse),
       });
 
       const result = await client.analyzeJob(jobInfo, 'senior dev', 'React, TypeScript');
@@ -65,7 +76,7 @@ describe('ApiClient', () => {
       const fetchSpy = vi.fn().mockResolvedValue({
         ok: true,
         status: 200,
-        json: () => Promise.resolve(successResponse)
+        json: () => Promise.resolve(successResponse),
       });
       globalThis.fetch = fetchSpy;
 
@@ -92,10 +103,12 @@ describe('ApiClient', () => {
         ok: false,
         status: 500,
         statusText: 'Internal Server Error',
-        json: () => Promise.resolve({})
+        json: () => Promise.resolve({}),
       });
 
-      await expect(client.analyzeJob(jobInfo, 'senior dev', 'React')).rejects.toThrow('API error: 500 Internal Server Error');
+      await expect(client.analyzeJob(jobInfo, 'senior dev', 'React')).rejects.toThrow(
+        'API error: 500 Internal Server Error',
+      );
     });
 
     it('should throw on 401 response', async () => {
@@ -103,16 +116,20 @@ describe('ApiClient', () => {
         ok: false,
         status: 401,
         statusText: 'Unauthorized',
-        json: () => Promise.resolve({})
+        json: () => Promise.resolve({}),
       });
 
-      await expect(client.analyzeJob(jobInfo, 'senior dev', 'React')).rejects.toThrow('API error: 401 Unauthorized');
+      await expect(client.analyzeJob(jobInfo, 'senior dev', 'React')).rejects.toThrow(
+        'API error: 401 Unauthorized',
+      );
     });
 
     it('should throw on network error', async () => {
       mockFetch({ ok: false, status: 0 }, new Error('Network error'));
 
-      await expect(client.analyzeJob(jobInfo, 'senior dev', 'React')).rejects.toThrow('Network error');
+      await expect(client.analyzeJob(jobInfo, 'senior dev', 'React')).rejects.toThrow(
+        'Network error',
+      );
     });
   });
 
@@ -122,14 +139,14 @@ describe('ApiClient', () => {
         description: 'Senior developer',
         skills: 'React, Go',
         portfolio_items: [
-          { title: 'Project 1', link: 'https://example.com', description: 'A great project' }
-        ]
+          { title: 'Project 1', link: 'https://example.com', description: 'A great project' },
+        ],
       };
 
       mockFetch({
         ok: true,
         status: 200,
-        json: () => Promise.resolve(apiResponse)
+        json: () => Promise.resolve(apiResponse),
       });
 
       const result = await client.loadProfile();
@@ -144,15 +161,13 @@ describe('ApiClient', () => {
       const apiResponse: ProfileApiResponse = {
         description: 'Dev',
         skills: 'Python',
-        portfolioItems: [
-          { title: 'Proj', link: 'https://x.com', description: 'Desc' }
-        ]
+        portfolioItems: [{ title: 'Proj', link: 'https://x.com', description: 'Desc' }],
       };
 
       mockFetch({
         ok: true,
         status: 200,
-        json: () => Promise.resolve(apiResponse)
+        json: () => Promise.resolve(apiResponse),
       });
 
       const result = await client.loadProfile();
@@ -163,7 +178,7 @@ describe('ApiClient', () => {
       mockFetch({
         ok: false,
         status: 404,
-        json: () => Promise.resolve({})
+        json: () => Promise.resolve({}),
       });
 
       const result = await client.loadProfile();
@@ -181,7 +196,7 @@ describe('ApiClient', () => {
       mockFetch({
         ok: true,
         status: 200,
-        json: () => Promise.resolve({})
+        json: () => Promise.resolve({}),
       });
 
       const result = await client.loadProfile();
@@ -195,7 +210,7 @@ describe('ApiClient', () => {
       mockFetch({
         ok: true,
         status: 200,
-        json: () => Promise.resolve({ description: 'No portfolio' })
+        json: () => Promise.resolve({ description: 'No portfolio' }),
       });
 
       const result = await client.loadProfile();
@@ -207,20 +222,24 @@ describe('ApiClient', () => {
     const profile: ProfileState = {
       description: 'Full-stack developer',
       skills: 'Go, React',
-      portfolioItems: [{ title: 'My Project', link: 'https://example.com', description: 'Great project' }]
+      portfolioItems: [
+        { title: 'My Project', link: 'https://example.com', description: 'Great project' },
+      ],
     };
 
     it('should save and return mapped profile on success', async () => {
       const apiResponse: ProfileApiResponse = {
         description: 'Full-stack developer',
         skills: 'Go, React',
-        portfolio_items: [{ title: 'My Project', link: 'https://example.com', description: 'Great project' }]
+        portfolio_items: [
+          { title: 'My Project', link: 'https://example.com', description: 'Great project' },
+        ],
       };
 
       mockFetch({
         ok: true,
         status: 200,
-        json: () => Promise.resolve(apiResponse)
+        json: () => Promise.resolve(apiResponse),
       });
 
       const result = await client.saveProfile(profile);
@@ -233,11 +252,12 @@ describe('ApiClient', () => {
       const fetchSpy = vi.fn().mockResolvedValue({
         ok: true,
         status: 200,
-        json: () => Promise.resolve({
-          description: 'Full-stack developer',
-          skills: 'Go, React',
-          portfolio_items: []
-        })
+        json: () =>
+          Promise.resolve({
+            description: 'Full-stack developer',
+            skills: 'Go, React',
+            portfolio_items: [],
+          }),
       });
       globalThis.fetch = fetchSpy;
 
@@ -256,10 +276,12 @@ describe('ApiClient', () => {
         ok: false,
         status: 400,
         statusText: 'Bad Request',
-        json: () => Promise.resolve({})
+        json: () => Promise.resolve({}),
       });
 
-      await expect(client.saveProfile(profile)).rejects.toThrow('Profile save failed: 400 Bad Request');
+      await expect(client.saveProfile(profile)).rejects.toThrow(
+        'Profile save failed: 400 Bad Request',
+      );
     });
 
     it('should throw on 500 response', async () => {
@@ -267,10 +289,93 @@ describe('ApiClient', () => {
         ok: false,
         status: 500,
         statusText: 'Internal Server Error',
-        json: () => Promise.resolve({})
+        json: () => Promise.resolve({}),
       });
 
-      await expect(client.saveProfile(profile)).rejects.toThrow('Profile save failed: 500 Internal Server Error');
+      await expect(client.saveProfile(profile)).rejects.toThrow(
+        'Profile save failed: 500 Internal Server Error',
+      );
+    });
+  });
+
+  describe('M1 Bug 9 & MV3 background proxy transport', () => {
+    it('maps last_synced_at and updated_at into lastSyncedAt on loadProfile', async () => {
+      const apiResponse: ProfileApiResponse = {
+        description: 'Synced dev',
+        skills: 'Go',
+        portfolio_items: [],
+        updated_at: '2026-11-19T12:00:00Z',
+        last_synced_at: '2026-11-19T12:05:00Z',
+      };
+
+      mockFetch({
+        ok: true,
+        status: 200,
+        json: () => Promise.resolve(apiResponse),
+      });
+
+      const result = (await client.loadProfile()) as SyncedProfile | null;
+      expect(result).not.toBeNull();
+      expect(result?.lastSyncedAt).toBe('2026-11-19T12:05:00Z');
+      expect(result?.isDirty).toBe(false);
+    });
+
+    it('proxies API requests through browser.runtime.sendMessage when on https://www.upwork.com', async () => {
+      const originalLocation = globalThis.location;
+      Object.defineProperty(globalThis, 'location', {
+        value: { protocol: 'https:', hostname: 'www.upwork.com' },
+        writable: true,
+        configurable: true,
+      });
+
+      const sendSpy = vi
+        .spyOn(fakeBrowser.runtime, 'sendMessage')
+        .mockImplementation(async (msg) => {
+          const req = msg as unknown as ApiProxyRequestMessage;
+          expect(req.type).toBe('API_PROXY_REQUEST');
+          expect(req.method).toBe('GET');
+          const payload = JSON.stringify({
+            description: 'Proxied',
+            skills: 'WXT',
+            portfolio_items: [],
+            lastSyncedAt: '2026-11-19T12:10:00Z',
+          });
+          const reply: ApiProxyResponseMessage = {
+            ok: true,
+            status: 200,
+            statusText: 'OK',
+            contentType: 'application/json',
+            bodyBase64: Buffer.from(payload, 'utf8').toString('base64'),
+          };
+          return reply;
+        });
+
+      try {
+        const loaded = (await client.loadProfile()) as SyncedProfile | null;
+        expect(sendSpy).toHaveBeenCalledTimes(1);
+        expect(loaded?.description).toBe('Proxied');
+        expect(loaded?.lastSyncedAt).toBe('2026-11-19T12:10:00Z');
+      } finally {
+        Object.defineProperty(globalThis, 'location', {
+          value: originalLocation,
+          writable: true,
+          configurable: true,
+        });
+      }
+    });
+
+    it('downloadAgents returns a Blob on success', async () => {
+      const zipBytes = new Uint8Array([80, 75, 3, 4]);
+      globalThis.fetch = vi.fn().mockResolvedValue(
+        new Response(zipBytes, {
+          status: 200,
+          headers: { 'Content-Type': 'application/zip' },
+        }),
+      );
+
+      const blob = await client.downloadAgents(['eloquent-model-agent']);
+      expect(blob).toBeInstanceOf(Blob);
+      expect(blob.size).toBe(4);
     });
   });
 });

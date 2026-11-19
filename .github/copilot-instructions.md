@@ -27,7 +27,7 @@
 ## Key conventions
 
 - Keep backend/frontend API shapes aligned exactly. The backend request/response structs in Go use snake_case JSON fields, and the frontend API layer in `js/src/api.ts` sends `portfolio_items` on write while tolerating both `portfolio_items` and `portfolioItems` on read.
-- When changing persistence models, update both `internal/database/service/schema.go` and `internal/database/service/loader/main.go` before running `make diff`; Atlas migration generation only sees models loaded by the schema loader.
+- When changing persistence models, update both `internal/database/service/schema.go` and `tools/atlas-loader/main.go` before running `make diff`; Atlas migration generation only sees models loaded by the schema loader.
 - Profile saves are replace-style updates: `saveProfile` rewrites the parent profile and deletes/recreates all portfolio items inside one transaction instead of patching individual child rows.
 - The extension should read URLs/default profile text from `CONFIG` in `js/src/types.ts`; avoid hardcoding API endpoints elsewhere.
 - Cached analyses are keyed by `title + first 100 chars of description` in `StateManager.generateCacheKey()`. Preserve that behavior unless you intentionally migrate stored cache data.

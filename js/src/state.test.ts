@@ -1,16 +1,19 @@
-import { describe, it, expect, vi } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 import { StateManager } from './state';
-import type { ProfileState, AnalysisResponse, JobInfo } from './types';
+import type { AnalysisResponse, JobInfo, ProfileState } from './types';
 
 const defaultProfile: ProfileState = {
-  description: 'Experienced full-stack developer with 10+ years in web development, specializing in Go, React, and PostgreSQL. Strong background in building scalable APIs and database-driven applications.',
-  skills: 'Go, JavaScript, TypeScript, React, Node.js, PostgreSQL, MySQL, Docker, Git, RESTful APIs, GraphQL, AWS, CI/CD',
-  portfolioItems: []
+  description:
+    'Experienced full-stack developer with 10+ years in web development, specializing in Go, React, and PostgreSQL. Strong background in building scalable APIs and database-driven applications.',
+  skills:
+    'Go, JavaScript, TypeScript, React, Node.js, PostgreSQL, MySQL, Docker, Git, RESTful APIs, GraphQL, AWS, CI/CD',
+  portfolioItems: [],
 };
 
 const sampleJobInfo: JobInfo = {
   title: 'Build a Website',
-  description: 'We need a responsive website built with React and TypeScript for our e-commerce platform. The site should include a product catalog, shopping cart, and checkout flow.',
+  description:
+    'We need a responsive website built with React and TypeScript for our e-commerce platform. The site should include a product catalog, shopping cart, and checkout flow.',
   contractType: '',
   rateRange: '',
   rateMin: '',
@@ -18,33 +21,36 @@ const sampleJobInfo: JobInfo = {
   budgetAmount: '',
   experienceLevel: '',
   budget: '$5000',
-  skills: 'React, TypeScript, Node.js'
+  skills: 'React, TypeScript, Node.js',
 };
 
 const sampleAnalysis: AnalysisResponse = {
   proposal: 'Dear Client, I am excited to apply...',
   time_estimate: '2-3 weeks',
-  execution_prompt: 'Build a responsive e-commerce website'
+  execution_prompt: 'Build a responsive e-commerce website',
 };
 
-function createMockApi(overrides: Record<string, unknown> = {}) {
+import type { ApiClient } from './api';
+import type { StorageAdapter } from './storage';
+
+function createMockApi(overrides: Record<string, unknown> = {}): ApiClient {
   return {
     loadProfile: vi.fn().mockResolvedValue(null),
     saveProfile: vi.fn().mockImplementation((p: ProfileState) => Promise.resolve(p)),
     analyzeJob: vi.fn(),
-    ...overrides
-  } as any;
+    ...overrides,
+  } as unknown as ApiClient;
 }
 
-function createMockStorage(overrides: Record<string, unknown> = {}) {
+function createMockStorage(overrides: Record<string, unknown> = {}): StorageAdapter {
   return {
     getProfile: vi.fn().mockResolvedValue(null),
     saveProfile: vi.fn().mockResolvedValue(undefined),
     getCache: vi.fn().mockResolvedValue(null),
     saveCache: vi.fn().mockResolvedValue(undefined),
     clearCache: vi.fn().mockResolvedValue(undefined),
-    ...overrides
-  } as any;
+    ...overrides,
+  } as unknown as StorageAdapter;
 }
 
 describe('StateManager', () => {
@@ -77,7 +83,9 @@ describe('StateManager', () => {
       const newProfile: ProfileState = {
         description: 'New description',
         skills: 'Python, Django',
-        portfolioItems: [{ title: 'Project1', link: 'https://example.com', description: 'A project' }]
+        portfolioItems: [
+          { title: 'Project1', link: 'https://example.com', description: 'A project' },
+        ],
       };
       sm.setProfile(newProfile);
       expect(sm.getProfile()).toEqual(newProfile);
@@ -87,7 +95,7 @@ describe('StateManager', () => {
       const apiProfile: ProfileState = {
         description: 'API profile',
         skills: 'Rust, WASM',
-        portfolioItems: []
+        portfolioItems: [],
       };
       const mockApi = createMockApi({ loadProfile: vi.fn().mockResolvedValue(apiProfile) });
       const sm = new StateManager({ apiClient: mockApi, storage: createMockStorage() });
@@ -99,9 +107,11 @@ describe('StateManager', () => {
       const storedProfile: ProfileState = {
         description: 'Stored profile',
         skills: 'Java, Spring',
-        portfolioItems: []
+        portfolioItems: [],
       };
-      const mockStorage = createMockStorage({ getProfile: vi.fn().mockResolvedValue(storedProfile) });
+      const mockStorage = createMockStorage({
+        getProfile: vi.fn().mockResolvedValue(storedProfile),
+      });
       const sm = new StateManager({ apiClient: createMockApi(), storage: mockStorage });
       await sm.loadProfile();
       expect(sm.getProfile().description).toBe('Stored profile');
@@ -111,7 +121,7 @@ describe('StateManager', () => {
       const newProfile: ProfileState = {
         description: 'Saved profile',
         skills: 'Go, Kubernetes',
-        portfolioItems: []
+        portfolioItems: [],
       };
       const mockApi = createMockApi();
       const mockStorage = createMockStorage();
@@ -166,7 +176,7 @@ describe('StateManager', () => {
       const job1: JobInfo = { ...sampleJobInfo, title: 'Job 1' };
       const job2: JobInfo = { ...sampleJobInfo, title: 'Job 2' };
       await sm.cacheAnalysis(job1, sampleAnalysis);
-      await new Promise(r => setTimeout(r, 10));
+      await new Promise((r) => setTimeout(r, 10));
       await sm.cacheAnalysis(job2, sampleAnalysis);
       const all = sm.getAllCachedJobs();
       expect(all.length).toBe(2);
@@ -193,12 +203,15 @@ describe('StateManager', () => {
   describe('Import/Export', () => {
     it('should import cache from JSON array', async () => {
       const sm = new StateManager({ apiClient: createMockApi(), storage: createMockStorage() });
-      const importData = [{
-        jobInfo: sampleJobInfo,
-        analysis: sampleAnalysis,
-        timestamp: new Date().toISOString(),
-        cacheKey: 'Build a Website||We need a responsive website built with React and TypeScript for our e-commerce platfor'
-      }];
+      const importData = [
+        {
+          jobInfo: sampleJobInfo,
+          analysis: sampleAnalysis,
+          timestamp: new Date().toISOString(),
+          cacheKey:
+            'Build a Website||We need a responsive website built with React and TypeScript for our e-commerce platfor',
+        },
+      ];
       const count = await sm.importCacheFromJson(importData);
       expect(count).toBe(1);
       expect(sm.getCacheSize()).toBe(1);
@@ -207,12 +220,14 @@ describe('StateManager', () => {
     it('should import cache from object with items array', async () => {
       const sm = new StateManager({ apiClient: createMockApi(), storage: createMockStorage() });
       const importData = {
-        items: [{
-          jobInfo: sampleJobInfo,
-          analysis: sampleAnalysis,
-          timestamp: new Date().toISOString(),
-          cacheKey: 'some-key'
-        }]
+        items: [
+          {
+            jobInfo: sampleJobInfo,
+            analysis: sampleAnalysis,
+            timestamp: new Date().toISOString(),
+            cacheKey: 'some-key',
+          },
+        ],
       };
       const count = await sm.importCacheFromJson(importData);
       expect(count).toBe(1);
@@ -238,12 +253,14 @@ describe('StateManager', () => {
 
     it('should handle entries with missing fields by providing defaults', async () => {
       const sm = new StateManager({ apiClient: createMockApi(), storage: createMockStorage() });
-      const importData = [{
-        jobInfo: { title: 'Only Title' },
-        analysis: { proposal: 'test' },
-        timestamp: '2026-01-01T00:00:00Z',
-        cacheKey: 'my-key'
-      }];
+      const importData = [
+        {
+          jobInfo: { title: 'Only Title' },
+          analysis: { proposal: 'test' },
+          timestamp: '2026-01-01T00:00:00Z',
+          cacheKey: 'my-key',
+        },
+      ];
       const count = await sm.importCacheFromJson(importData);
       expect(count).toBe(1);
       const cached = sm.getCachedJobByKey('my-key');
@@ -255,11 +272,18 @@ describe('StateManager', () => {
 
     it('should generate cacheKey when missing', async () => {
       const sm = new StateManager({ apiClient: createMockApi(), storage: createMockStorage() });
-      const importData = [{
-        jobInfo: { title: 'My Job', description: 'A job description that is here', budget: '100', skills: 'React' },
-        analysis: { proposal: 'test' },
-        timestamp: '2026-01-01T00:00:00Z'
-      }];
+      const importData = [
+        {
+          jobInfo: {
+            title: 'My Job',
+            description: 'A job description that is here',
+            budget: '100',
+            skills: 'React',
+          },
+          analysis: { proposal: 'test' },
+          timestamp: '2026-01-01T00:00:00Z',
+        },
+      ];
       const count = await sm.importCacheFromJson(importData);
       expect(count).toBe(1);
       expect(sm.getCacheSize()).toBe(1);
@@ -269,7 +293,12 @@ describe('StateManager', () => {
       const sm = new StateManager({ apiClient: createMockApi(), storage: createMockStorage() });
       const importData = [
         { analysis: { proposal: 'test' }, timestamp: '2026-01-01T00:00:00Z', cacheKey: 'key1' },
-        { jobInfo: { title: 'Valid' }, analysis: { proposal: 'test' }, timestamp: '2026-01-01T00:00:00Z', cacheKey: 'key2' }
+        {
+          jobInfo: { title: 'Valid' },
+          analysis: { proposal: 'test' },
+          timestamp: '2026-01-01T00:00:00Z',
+          cacheKey: 'key2',
+        },
       ];
       const count = await sm.importCacheFromJson(importData);
       expect(count).toBe(1);
@@ -279,12 +308,19 @@ describe('StateManager', () => {
       const sm = new StateManager({ apiClient: createMockApi(), storage: createMockStorage() });
       await sm.cacheAnalysis(sampleJobInfo, sampleAnalysis);
       expect(sm.getCacheSize()).toBe(1);
-      const importData = [{
-        jobInfo: { title: 'New Job', description: 'New description', budget: '$1000', skills: 'Vue' },
-        analysis: { proposal: 'new proposal' },
-        timestamp: new Date().toISOString(),
-        cacheKey: 'new-key'
-      }];
+      const importData = [
+        {
+          jobInfo: {
+            title: 'New Job',
+            description: 'New description',
+            budget: '$1000',
+            skills: 'Vue',
+          },
+          analysis: { proposal: 'new proposal' },
+          timestamp: new Date().toISOString(),
+          cacheKey: 'new-key',
+        },
+      ];
       await sm.importCacheFromJson(importData);
       expect(sm.getCacheSize()).toBe(1);
       expect(sm.getCachedJobByKey('new-key')).toBeTruthy();
@@ -305,11 +341,11 @@ describe('StateManager', () => {
       const storedProfile: ProfileState = {
         description: 'Stored',
         skills: 'Skills',
-        portfolioItems: []
+        portfolioItems: [],
       };
       const mockStorage = createMockStorage({
         getProfile: vi.fn().mockResolvedValue(storedProfile),
-        getCache: vi.fn().mockResolvedValue([])
+        getCache: vi.fn().mockResolvedValue([]),
       });
       const sm = new StateManager({ apiClient: createMockApi(), storage: mockStorage });
       await sm.initializeStorage();
@@ -319,7 +355,7 @@ describe('StateManager', () => {
     it('should keep defaults when storage is empty', async () => {
       const mockStorage = createMockStorage({
         getProfile: vi.fn().mockResolvedValue(null),
-        getCache: vi.fn().mockResolvedValue(null)
+        getCache: vi.fn().mockResolvedValue(null),
       });
       const sm = new StateManager({ apiClient: createMockApi(), storage: mockStorage });
       await sm.initializeStorage();
@@ -365,18 +401,31 @@ describe('StateManager', () => {
     });
 
     it('should keep isDirty when loadProfile falls back to storage', async () => {
-      const storedProfile = { description: 'Stored', skills: 'Skills', portfolioItems: [], lastSyncedAt: '2026-01-01T00:00:00Z', isDirty: true };
-      const mockStorage = createMockStorage({ getProfile: vi.fn().mockResolvedValue(storedProfile) });
+      const storedProfile = {
+        description: 'Stored',
+        skills: 'Skills',
+        portfolioItems: [],
+        lastSyncedAt: '2026-01-01T00:00:00Z',
+        isDirty: true,
+      };
+      const mockStorage = createMockStorage({
+        getProfile: vi.fn().mockResolvedValue(storedProfile),
+      });
       const sm = new StateManager({ apiClient: createMockApi(), storage: mockStorage });
       await sm.loadProfile();
       expect(sm.isProfileDirty()).toBe(true);
     });
 
     it('syncProfile should push local changes when dirty and server is older', async () => {
-      const serverProfile = { description: 'Old Server', skills: 'Old Skills', portfolioItems: [], lastSyncedAt: '2025-01-01T00:00:00Z' };
+      const serverProfile = {
+        description: 'Old Server',
+        skills: 'Old Skills',
+        portfolioItems: [],
+        lastSyncedAt: '2025-01-01T00:00:00Z',
+      };
       const mockApi = createMockApi({
         loadProfile: vi.fn().mockResolvedValue(serverProfile),
-        saveProfile: vi.fn().mockImplementation((p: ProfileState) => Promise.resolve(p))
+        saveProfile: vi.fn().mockImplementation((p: ProfileState) => Promise.resolve(p)),
       });
       const sm = new StateManager({ apiClient: mockApi, storage: createMockStorage() });
       // Set local as dirty with a later sync time
@@ -388,7 +437,12 @@ describe('StateManager', () => {
     });
 
     it('syncProfile should pull from server when server is newer', async () => {
-      const serverProfile = { description: 'New Server', skills: 'New Skills', portfolioItems: [], lastSyncedAt: '2026-06-01T00:00:00Z' };
+      const serverProfile = {
+        description: 'New Server',
+        skills: 'New Skills',
+        portfolioItems: [],
+        lastSyncedAt: '2026-06-01T00:00:00Z',
+      };
       const mockApi = createMockApi({ loadProfile: vi.fn().mockResolvedValue(serverProfile) });
       const sm = new StateManager({ apiClient: mockApi, storage: createMockStorage() });
       sm.setProfile({ description: 'Old Local', skills: 'Old', portfolioItems: [] });
@@ -399,7 +453,12 @@ describe('StateManager', () => {
     });
 
     it('syncProfile should return no-change when neither side changed', async () => {
-      const serverProfile = { description: 'Same', skills: 'Same', portfolioItems: [], lastSyncedAt: '2026-01-01T00:00:00Z' };
+      const serverProfile = {
+        description: 'Same',
+        skills: 'Same',
+        portfolioItems: [],
+        lastSyncedAt: '2026-01-01T00:00:00Z',
+      };
       const mockApi = createMockApi({ loadProfile: vi.fn().mockResolvedValue(serverProfile) });
       const sm = new StateManager({ apiClient: mockApi, storage: createMockStorage() });
       // Not dirty, same sync time
@@ -418,7 +477,12 @@ describe('StateManager', () => {
     });
 
     it('syncProfile should pull when local is clean but server updated', async () => {
-      const serverProfile = { description: 'Updated Server', skills: 'Skills', portfolioItems: [], lastSyncedAt: '2026-03-01T00:00:00Z' };
+      const serverProfile = {
+        description: 'Updated Server',
+        skills: 'Skills',
+        portfolioItems: [],
+        lastSyncedAt: '2026-03-01T00:00:00Z',
+      };
       const mockApi = createMockApi({ loadProfile: vi.fn().mockResolvedValue(serverProfile) });
       const sm = new StateManager({ apiClient: mockApi, storage: createMockStorage() });
       (sm as any).profileWithSync.lastSyncedAt = '2026-01-01T00:00:00Z';
@@ -444,25 +508,32 @@ describe('StateManager', () => {
     });
 
     it('initializeStorage should attempt background sync when profile is dirty', async () => {
-      const storedProfile = { description: 'Stored', skills: 'Skills', portfolioItems: [], lastSyncedAt: '2026-01-01T00:00:00Z', isDirty: true };
+      const storedProfile = {
+        description: 'Stored',
+        skills: 'Skills',
+        portfolioItems: [],
+        lastSyncedAt: '2026-01-01T00:00:00Z',
+        isDirty: true,
+      };
       const mockApi = createMockApi({ loadProfile: vi.fn().mockResolvedValue(null) });
       const mockStorage = createMockStorage({
         getProfile: vi.fn().mockResolvedValue(storedProfile),
-        getCache: vi.fn().mockResolvedValue([])
+        getCache: vi.fn().mockResolvedValue([]),
       });
       const sm = new StateManager({ apiClient: mockApi, storage: mockStorage });
       await sm.initializeStorage();
       // Give the background sync a moment
-      await new Promise(r => setTimeout(r, 50));
+      await new Promise((r) => setTimeout(r, 50));
       expect(mockApi.loadProfile).toHaveBeenCalled();
     });
 
     it('should persist sync metadata alongside profile', async () => {
-      const mockStorage = createMockStorage();
+      const saveProfileMock = vi.fn().mockResolvedValue(undefined);
+      const mockStorage = createMockStorage({ saveProfile: saveProfileMock });
       const mockApi = createMockApi();
       const sm = new StateManager({ apiClient: mockApi, storage: mockStorage });
       await sm.saveProfile({ description: 'Test', skills: 'Skills', portfolioItems: [] });
-      const savedCall = mockStorage.saveProfile.mock.calls[0];
+      const savedCall = saveProfileMock.mock.calls[0];
       const savedData = savedCall[0];
       expect(savedData.lastSyncedAt).toBeDefined();
       expect(savedData.isDirty).toBe(false);

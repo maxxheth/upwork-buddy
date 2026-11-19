@@ -4,28 +4,28 @@
 
 ### Core Modules
 
-| Module | Purpose | Key Exports |
-|--------|---------|-------------|
-| `types.ts` | Type definitions, interfaces, config | `JobInfo`, `ProfileState`, `AnalysisResponse`, `CONFIG` |
-| `api.ts` | Backend API communication | `ApiClient` class |
-| `state.ts` | State & cache management | `StateManager` class |
-| `job-extractor.ts` | Extract job info from DOM | `JobExtractor` class |
-| `utils.ts` | Shared utilities | `escapeHtml()`, `renderValue()`, `renderAnalysis()`, `getTimeAgo()` |
-| `styles.ts` | CSS styles | `STYLES` constant, `injectStyles()` |
+| Module             | Purpose                              | Key Exports                                                         |
+| ------------------ | ------------------------------------ | ------------------------------------------------------------------- |
+| `types.ts`         | Type definitions, interfaces, config | `JobInfo`, `ProfileState`, `AnalysisResponse`, `CONFIG`             |
+| `api.ts`           | Backend API communication            | `ApiClient` class                                                   |
+| `state.ts`         | State & cache management             | `StateManager` class                                                |
+| `job-extractor.ts` | Extract job info from DOM            | `JobExtractor` class                                                |
+| `utils.ts`         | Shared utilities                     | `escapeHtml()`, `renderValue()`, `renderAnalysis()`, `getTimeAgo()` |
+| `styles.ts`        | CSS styles                           | `STYLES` constant, `injectStyles()`                                 |
 
 ### UI Components
 
-| Component | Purpose | Key Methods |
-|-----------|---------|-------------|
-| `ui/modal.ts` | Modal dialog | `Modal.open()`, `Modal.close()`, `Modal.setContent()` |
-| `ui/buttons.ts` | Floating action buttons | `ButtonManager.showAnalyzeButton()` |
-| `ui/profile-config.ts` | Profile configuration form | `ProfileConfigUI.render()` |
-| `ui/projects-list.ts` | Cached projects list | `ProjectsListUI.render()`, `ProjectsListUI.updateBadge()` |
+| Component              | Purpose                    | Key Methods                                               |
+| ---------------------- | -------------------------- | --------------------------------------------------------- |
+| `ui/modal.ts`          | Modal dialog               | `Modal.open()`, `Modal.close()`, `Modal.setContent()`     |
+| `ui/buttons.ts`        | Floating action buttons    | `ButtonManager.showAnalyzeButton()`                       |
+| `ui/profile-config.ts` | Profile configuration form | `ProfileConfigUI.render()`                                |
+| `ui/projects-list.ts`  | Cached projects list       | `ProjectsListUI.render()`, `ProjectsListUI.updateBadge()` |
 
 ### Main Entry Point
 
-| Module | Purpose |
-|--------|---------|
+| Module    | Purpose                                                 |
+| --------- | ------------------------------------------------------- |
 | `main.ts` | Initialize app, wire up components, handle user actions |
 
 ## Common Tasks
@@ -114,11 +114,13 @@ import { escapeHtml, renderAnalysis } from './utils';
 ## Debugging
 
 ### Type Errors
+
 ```bash
 npm run type-check
 ```
 
 ### Runtime Errors
+
 ```bash
 # Build with source maps
 npm run build:dev
@@ -127,6 +129,7 @@ npm run build:dev
 ```
 
 ### Build Errors
+
 - Check `tsconfig.json` for compiler options
 - Verify all imports are correct
 - Ensure esbuild can resolve all modules

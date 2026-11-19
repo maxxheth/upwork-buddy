@@ -6,6 +6,7 @@ import (
 	"log"
 	"net/http"
 	"strings"
+	"time"
 
 	dbservice "upwork-buddy/internal/database/service"
 	"upwork-buddy/internal/ollama"
@@ -38,7 +39,11 @@ func (s *Server) analyzeJobHandler(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "Service unavailable", http.StatusServiceUnavailable)
 		return
 	}
-	defer ollamaService.Close()
+	defer func() {
+		if err := ollamaService.Close(); err != nil {
+			log.Printf("⚠️ Failed to close Ollama service: %v", err)
+		}
+	}()
 
 	// Analyze the job
 	result, err := ollamaService.AnalyzeJob(r.Context(), req)
@@ -75,9 +80,12 @@ type portfolioItemRequest struct {
 }
 
 type profileResponse struct {
-	Description    string                  `json:"description"`
-	Skills         string                  `json:"skills"`
-	PortfolioItems []portfolioItemResponse `json:"portfolio_items"`
+	Description       string                  `json:"description"`
+	Skills            string                  `json:"skills"`
+	PortfolioItems    []portfolioItemResponse `json:"portfolio_items"`
+	UpdatedAt         string                  `json:"updated_at,omitempty"`
+	LastSyncedAt      string                  `json:"last_synced_at,omitempty"`
+	LastSyncedAtCamel string                  `json:"lastSyncedAt,omitempty"`
 }
 
 type portfolioItemResponse struct {
@@ -103,7 +111,7 @@ func (s *Server) getProfile(w http.ResponseWriter) {
 	var profile dbservice.Profile
 	if err := db.Preload("PortfolioItems").Order("id asc").First(&profile).Error; err != nil {
 		if errors.Is(err, gorm.ErrRecordNotFound) {
-			respondWithJSON(w, profileResponse{})
+			respondWithJSON(w, profileResponse{PortfolioItems: []portfolioItemResponse{}})
 			return
 		}
 		http.Error(w, "Failed to load profile", http.StatusInternalServerError)
@@ -193,11 +201,22 @@ func (s *Server) saveProfile(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	updatedAt := formatProfileTimestamp(profile.UpdatedAt)
 	respondWithJSON(w, profileResponse{
-		Description:    profile.Description,
-		Skills:         profile.Skills,
-		PortfolioItems: createdItems,
+		Description:       profile.Description,
+		Skills:            profile.Skills,
+		PortfolioItems:    createdItems,
+		UpdatedAt:         updatedAt,
+		LastSyncedAt:      updatedAt,
+		LastSyncedAtCamel: updatedAt,
 	})
+}
+
+func formatProfileTimestamp(t time.Time) string {
+	if t.IsZero() {
+		return ""
+	}
+	return t.UTC().Format(time.RFC3339)
 }
 
 func profileResponseFromModel(profile *dbservice.Profile) profileResponse {
@@ -210,10 +229,14 @@ func profileResponseFromModel(profile *dbservice.Profile) profileResponse {
 			Description: item.Description,
 		})
 	}
+	updatedAt := formatProfileTimestamp(profile.UpdatedAt)
 	return profileResponse{
-		Description:    profile.Description,
-		Skills:         profile.Skills,
-		PortfolioItems: items,
+		Description:       profile.Description,
+		Skills:            profile.Skills,
+		PortfolioItems:    items,
+		UpdatedAt:         updatedAt,
+		LastSyncedAt:      updatedAt,
+		LastSyncedAtCamel: updatedAt,
 	}
 }
 

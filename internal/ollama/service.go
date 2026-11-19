@@ -146,7 +146,7 @@ func (s *Service) AnalyzeJob(ctx context.Context, req JobAnalysisRequest) (*JobA
 
 	if resp.StatusCode < http.StatusOK || resp.StatusCode >= http.StatusMultipleChoices {
 		log.Printf("Ollama chat failed: status=%d body=%s", resp.StatusCode, truncateForLog(string(respBody), 500))
-		return nil, fmt.Errorf("Ollama Cloud API returned %s", resp.Status)
+		return nil, fmt.Errorf("ollama Cloud API returned %s", resp.Status)
 	}
 
 	var chatResp chatResponse
@@ -156,7 +156,7 @@ func (s *Service) AnalyzeJob(ctx context.Context, req JobAnalysisRequest) (*JobA
 	}
 	if chatResp.Error != "" {
 		log.Printf("Ollama response error: %s", chatResp.Error)
-		return nil, fmt.Errorf("Ollama Cloud API error: %s", chatResp.Error)
+		return nil, fmt.Errorf("ollama Cloud API error: %s", chatResp.Error)
 	}
 
 	log.Printf("Ollama chat succeeded: model=%q created_at=%q content_length=%d", chatResp.Model, chatResp.CreatedAt, len(chatResp.Message.Content))

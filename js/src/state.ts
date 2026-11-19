@@ -2,10 +2,18 @@
  * State management for profile and analyzed jobs cache
  */
 
-import type { ProfileState, AnalysisCache, AnalysisResponse, JobInfo, SavedJob, SaveJobRequest, SyncedProfile } from './types';
-import { CONFIG } from './types';
 import { ApiClient } from './api';
 import { StorageAdapter } from './storage';
+import type {
+  AnalysisCache,
+  AnalysisResponse,
+  JobInfo,
+  ProfileState,
+  SavedJob,
+  SaveJobRequest,
+  SyncedProfile,
+} from './types';
+import { CONFIG } from './types';
 
 export interface StateManagerDependencies {
   apiClient?: ApiClient;
@@ -31,10 +39,10 @@ export class StateManager {
       profile: {
         description: CONFIG.defaultProfile,
         skills: CONFIG.defaultSkills,
-        portfolioItems: []
+        portfolioItems: [],
       },
       lastSyncedAt: null,
-      isDirty: false
+      isDirty: false,
     };
     this.analyzedJobs = new Map();
     this.savedJobs = [];
@@ -48,7 +56,7 @@ export class StateManager {
   async initializeStorage(): Promise<void> {
     await this.loadCacheFromStorage();
 
-    const storedProfile = await this.storage.getProfile() as SyncedProfile | null;
+    const storedProfile = (await this.storage.getProfile()) as SyncedProfile | null;
     if (storedProfile) {
       // Separate profile data from sync metadata
       const { lastSyncedAt, isDirty, ...profileData } = storedProfile;
@@ -60,7 +68,7 @@ export class StateManager {
     // If the profile is dirty (unsynced), attempt a background sync
     if (this.profileWithSync.isDirty) {
       console.log('🔄 Profile has unsynced changes — attempting background sync');
-      this.attemptSync().catch(err => {
+      this.attemptSync().catch((err) => {
         console.warn('⚠️ Background sync failed, will retry later', err);
       });
     }
@@ -109,20 +117,20 @@ export class StateManager {
       const { lastSyncedAt, isDirty, ...profileData } = apiProfile as SyncedProfile;
       this.profileWithSync = {
         profile: profileData,
-        lastSyncedAt: new Date().toISOString(),
-        isDirty: false
+        lastSyncedAt: lastSyncedAt ?? new Date().toISOString(),
+        isDirty: false,
       };
       await this.persistProfile(this.profileWithSync.profile);
       return;
     }
 
-    const storedProfile = await this.storage.getProfile() as SyncedProfile | null;
+    const storedProfile = (await this.storage.getProfile()) as SyncedProfile | null;
     if (storedProfile) {
       const { lastSyncedAt, isDirty, ...profileData } = storedProfile;
       this.profileWithSync = {
         profile: profileData,
         lastSyncedAt: lastSyncedAt ?? null,
-        isDirty: isDirty ?? false
+        isDirty: isDirty ?? false,
       };
     }
   }
@@ -136,7 +144,7 @@ export class StateManager {
     this.profileWithSync = {
       profile: saved,
       lastSyncedAt: new Date().toISOString(),
-      isDirty: false
+      isDirty: false,
     };
     await this.persistProfile(saved);
     return saved;
@@ -175,7 +183,7 @@ export class StateManager {
         this.profileWithSync = {
           profile: serverData,
           lastSyncedAt: serverSyncTime ?? new Date().toISOString(),
-          isDirty: false
+          isDirty: false,
         };
         await this.persistProfile(serverData);
         return 'pulled';
@@ -193,7 +201,7 @@ export class StateManager {
       this.profileWithSync = {
         profile: serverData,
         lastSyncedAt: serverSyncTime,
-        isDirty: false
+        isDirty: false,
       };
       await this.persistProfile(serverData);
       return 'conflict-server-wins';
@@ -227,7 +235,7 @@ export class StateManager {
       const synced: SyncedProfile = {
         ...profile,
         lastSyncedAt: this.profileWithSync.lastSyncedAt,
-        isDirty: this.profileWithSync.isDirty
+        isDirty: this.profileWithSync.isDirty,
       };
       await this.storage.saveProfile(synced as ProfileState);
     } catch (error) {
@@ -268,7 +276,7 @@ export class StateManager {
       jobInfo,
       analysis,
       timestamp: new Date().toISOString(),
-      cacheKey
+      cacheKey,
     });
 
     console.log('✅ Cached analysis. New cache size:', this.analyzedJobs.size);
@@ -279,8 +287,9 @@ export class StateManager {
    * Get all cached jobs
    */
   getAllCachedJobs(): AnalysisCache[] {
-    return Array.from(this.analyzedJobs.values())
-      .sort((a, b) => new Date(b.timestamp).getTime() - new Date(a.timestamp).getTime());
+    return Array.from(this.analyzedJobs.values()).sort(
+      (a, b) => new Date(b.timestamp).getTime() - new Date(a.timestamp).getTime(),
+    );
   }
 
   /**
@@ -341,7 +350,7 @@ export class StateManager {
       time_estimate: job.time_estimate,
       execution_prompt: job.execution_prompt,
       tone_analysis: job.tone_analysis,
-      created_at: result.created_at
+      created_at: result.created_at,
     };
     this.savedJobs.unshift(savedJob);
     return savedJob;
@@ -352,7 +361,7 @@ export class StateManager {
    */
   async deleteJobFromHistory(id: number): Promise<void> {
     await this.apiClient.deleteJob(id);
-    this.savedJobs = this.savedJobs.filter(j => j.id !== id);
+    this.savedJobs = this.savedJobs.filter((j) => j.id !== id);
   }
 
   /**
@@ -422,45 +431,68 @@ export class StateManager {
         continue;
       }
 
-      const candidate = row as Partial<AnalysisCache> & { jobInfo?: Partial<JobInfo>; analysis?: AnalysisResponse };
+      const candidate = row as Partial<AnalysisCache> & {
+        jobInfo?: Partial<JobInfo>;
+        analysis?: AnalysisResponse;
+      };
       const jobInfo = candidate.jobInfo;
       if (!jobInfo || typeof jobInfo !== 'object') {
         continue;
       }
 
-      const title = typeof jobInfo.title === 'string' ? jobInfo.title : 'Unknown Title';
-      const description = typeof jobInfo.description === 'string' ? jobInfo.description : 'No description available';
-      const contractType = typeof (jobInfo as any).contractType === 'string' ? (jobInfo as any).contractType : '';
-      const rateRange = typeof (jobInfo as any).rateRange === 'string' ? (jobInfo as any).rateRange : '';
-      const rateMin = typeof (jobInfo as any).rateMin === 'string' ? (jobInfo as any).rateMin : '';
-      const rateMax = typeof (jobInfo as any).rateMax === 'string' ? (jobInfo as any).rateMax : '';
-      const budgetAmount = typeof (jobInfo as any).budgetAmount === 'string' ? (jobInfo as any).budgetAmount : '';
-      const experienceLevel = typeof (jobInfo as any).experienceLevel === 'string' ? (jobInfo as any).experienceLevel : '';
-      const budget = typeof jobInfo.budget === 'string' ? jobInfo.budget : 'Not specified';
-      const skills = typeof jobInfo.skills === 'string' ? jobInfo.skills : 'Not specified';
+      const rawJob = jobInfo as unknown as Record<string, unknown>;
+      const title = typeof rawJob.title === 'string' ? rawJob.title : 'Unknown Title';
+      const description =
+        typeof rawJob.description === 'string' ? rawJob.description : 'No description available';
+      const contractType =
+        typeof rawJob.contractType === 'string'
+          ? (rawJob.contractType as JobInfo['contractType'])
+          : '';
+      const rateRange = typeof rawJob.rateRange === 'string' ? rawJob.rateRange : '';
+      const rateMin = typeof rawJob.rateMin === 'string' ? rawJob.rateMin : '';
+      const rateMax = typeof rawJob.rateMax === 'string' ? rawJob.rateMax : '';
+      const budgetAmount = typeof rawJob.budgetAmount === 'string' ? rawJob.budgetAmount : '';
+      const experienceLevel =
+        typeof rawJob.experienceLevel === 'string' ? rawJob.experienceLevel : '';
+      const budget = typeof rawJob.budget === 'string' ? rawJob.budget : 'Not specified';
+      const skills = typeof rawJob.skills === 'string' ? rawJob.skills : 'Not specified';
 
-      const fullJobInfo: JobInfo = { title, description, contractType, rateRange, rateMin, rateMax, budgetAmount, experienceLevel, budget, skills };
+      const fullJobInfo: JobInfo = {
+        title,
+        description,
+        contractType,
+        rateRange,
+        rateMin,
+        rateMax,
+        budgetAmount,
+        experienceLevel,
+        budget,
+        skills,
+      };
 
-      const cacheKey = typeof candidate.cacheKey === 'string' && candidate.cacheKey.trim().length > 0
-        ? candidate.cacheKey
-        : this.generateCacheKey(fullJobInfo);
-      const timestamp = typeof candidate.timestamp === 'string' ? candidate.timestamp : new Date().toISOString();
-      const analysis = candidate.analysis && typeof candidate.analysis === 'object'
-        ? candidate.analysis
-        : {};
+      const cacheKey =
+        typeof candidate.cacheKey === 'string' && candidate.cacheKey.trim().length > 0
+          ? candidate.cacheKey
+          : this.generateCacheKey(fullJobInfo);
+      const timestamp =
+        typeof candidate.timestamp === 'string' ? candidate.timestamp : new Date().toISOString();
+      const analysis =
+        candidate.analysis && typeof candidate.analysis === 'object' ? candidate.analysis : {};
 
       normalized.push({
         jobInfo: fullJobInfo,
         analysis: analysis as AnalysisResponse,
         timestamp,
-        cacheKey
+        cacheKey,
       });
     }
 
     return normalized;
   }
 
-  private extractEntriesArray(rawData: unknown): Array<AnalysisCache | Record<string, unknown>> | null {
+  private extractEntriesArray(
+    rawData: unknown,
+  ): Array<AnalysisCache | Record<string, unknown>> | null {
     if (Array.isArray(rawData)) {
       return rawData as Array<AnalysisCache | Record<string, unknown>>;
     }

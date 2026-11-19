@@ -15,7 +15,7 @@ export class ButtonManager {
     private onProfileConfig: () => void,
     private onViewProjects: () => void,
     private onJobHistory: () => void,
-    private onAgents: () => void
+    private onAgents: () => void,
   ) {
     this.container = this.createContainer();
     this.analyzeButton = this.createAnalyzeButton();

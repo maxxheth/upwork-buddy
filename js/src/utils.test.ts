@@ -1,11 +1,18 @@
-import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
-import { escapeHtml, getTimeAgo, renderAnalysis, renderValue } from './utils';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import type { AnalysisResponse } from './types';
+import {
+  attachCollapsibleListeners,
+  escapeHtml,
+  getTimeAgo,
+  renderAnalysis,
+  renderValue,
+  sanitizeHttpUrl,
+} from './utils';
 
 describe('escapeHtml', () => {
   it('should escape HTML special characters', () => {
     const result = escapeHtml('<script>alert("xss")</script>');
-    expect(result).toBe('&lt;script&gt;alert("xss")&lt;/script&gt;');
+    expect(result).toBe('&lt;script&gt;alert(&quot;xss&quot;)&lt;/script&gt;');
   });
 
   it('should escape ampersands', () => {
@@ -13,9 +20,9 @@ describe('escapeHtml', () => {
     expect(result).toBe('foo &amp; bar');
   });
 
-  it('should escape quotes', () => {
-    const result = escapeHtml('he said "hello"');
-    expect(result).toBe('he said "hello"');
+  it('should escape double and single quotes', () => {
+    expect(escapeHtml('he said "hello"')).toBe('he said &quot;hello&quot;');
+    expect(escapeHtml("it's safe")).toBe('it&#39;s safe');
   });
 
   it('should return empty string for empty input', () => {
@@ -171,7 +178,7 @@ describe('renderAnalysis', () => {
       workload_division: 'Split the work',
       questions_for_client: 'What is your budget?',
       tips_and_advice: 'Be professional',
-      tone_analysis: 'Professional tone'
+      tone_analysis: 'Professional tone',
     };
 
     const html = renderAnalysis(analysis);
@@ -188,7 +195,7 @@ describe('renderAnalysis', () => {
 
   it('should create collapsible sections', () => {
     const analysis: AnalysisResponse = {
-      proposal: 'test proposal'
+      proposal: 'test proposal',
     };
 
     const html = renderAnalysis(analysis);
@@ -202,7 +209,7 @@ describe('renderAnalysis', () => {
   it('should have default-open sections for proposal and time_estimate', () => {
     const analysis: AnalysisResponse = {
       proposal: 'test',
-      time_estimate: '1 day'
+      time_estimate: '1 day',
     };
 
     const html = renderAnalysis(analysis);
@@ -210,7 +217,7 @@ describe('renderAnalysis', () => {
     // Check that proposal and time_estimate sections have 'open' class on their content divs
     const openSections = html.match(/upwork-buddy-section-content open/g) || [];
     expect(openSections.length).toBe(2); // proposal + time_estimate
-    
+
     // Verify the open sections are for proposal and time_estimate by checking
     // that their toggle buttons also have the 'open' class
     const openToggles = html.match(/upwork-buddy-section-toggle open/g) || [];
@@ -219,7 +226,7 @@ describe('renderAnalysis', () => {
 
   it('should show icons for known sections', () => {
     const analysis: AnalysisResponse = {
-      proposal: 'test'
+      proposal: 'test',
     };
 
     const html = renderAnalysis(analysis);
@@ -229,7 +236,7 @@ describe('renderAnalysis', () => {
   it('should show cached indicator when flag is set and analysis is cached', () => {
     const analysis: AnalysisResponse = {
       _cached: true,
-      proposal: 'test'
+      proposal: 'test',
     };
 
     const html = renderAnalysis(analysis, true);
@@ -239,7 +246,7 @@ describe('renderAnalysis', () => {
   it('should not show cached indicator when flag is false', () => {
     const analysis: AnalysisResponse = {
       _cached: true,
-      proposal: 'test'
+      proposal: 'test',
     };
 
     const html = renderAnalysis(analysis, false);
@@ -249,7 +256,7 @@ describe('renderAnalysis', () => {
   it('should skip internal fields starting with underscore', () => {
     const analysis: AnalysisResponse = {
       _cached: true,
-      proposal: 'test'
+      proposal: 'test',
     };
 
     const html = renderAnalysis(analysis);
@@ -268,11 +275,66 @@ describe('renderAnalysis', () => {
   it('should handle analysis with non-standard fields', () => {
     const analysis: AnalysisResponse = {
       proposal: 'test',
-      custom_field: 'custom value'
+      custom_field: 'custom value',
     };
 
     const html = renderAnalysis(analysis);
     expect(html).toContain('Custom Field');
     expect(html).toContain('custom value');
+  });
+
+  it('should never emit inline onclick attributes', () => {
+    const analysis: AnalysisResponse = {
+      proposal: 'test',
+      time_estimate: JSON.stringify({ phase_1: '2 hours' }),
+    };
+
+    const html = renderAnalysis(analysis);
+    expect(html).not.toMatch(/on[a-z]+=/i);
+    expect(html).toContain('data-collapsible="true"');
+  });
+});
+
+describe('sanitizeHttpUrl', () => {
+  it('allows valid http and https URLs', () => {
+    expect(sanitizeHttpUrl('https://example.com/portfolio')).toBe('https://example.com/portfolio');
+    expect(sanitizeHttpUrl(' http://localhost:3000/demo ')).toBe('http://localhost:3000/demo');
+  });
+
+  it('rejects javascript:, data:, and malformed URLs', () => {
+    expect(sanitizeHttpUrl('javascript:alert(1)')).toBeNull();
+    expect(sanitizeHttpUrl('data:text/html,<script>alert(1)</script>')).toBeNull();
+    expect(sanitizeHttpUrl('not a valid url')).toBeNull();
+    expect(sanitizeHttpUrl('   ')).toBeNull();
+  });
+});
+
+describe('attachCollapsibleListeners', () => {
+  it('toggles flat and nested collapsible sections on click', () => {
+    const container = document.createElement('div');
+    container.innerHTML = renderAnalysis({
+      proposal: 'Cover letter',
+      time_estimate: JSON.stringify({ setup: '1 hour' }),
+    });
+
+    attachCollapsibleListeners(container);
+
+    const headers = container.querySelectorAll<HTMLElement>(
+      '.upwork-buddy-section-header[data-collapsible="true"]',
+    );
+    expect(headers.length).toBe(3);
+
+    const proposalHeader = headers[0];
+    const proposalContent = proposalHeader.nextElementSibling;
+    expect(proposalContent?.classList.contains('open')).toBe(true);
+
+    proposalHeader.click();
+    expect(proposalContent?.classList.contains('open')).toBe(false);
+
+    const nestedHeader = headers[2];
+    const nestedContent = nestedHeader.nextElementSibling;
+    expect(nestedContent?.classList.contains('open')).toBe(false);
+    nestedHeader.click();
+    expect(nestedContent?.classList.contains('open')).toBe(true);
   });
 });
