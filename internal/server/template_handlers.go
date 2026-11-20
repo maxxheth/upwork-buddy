@@ -3,31 +3,157 @@ package server
 import (
 	"archive/zip"
 	"bytes"
+	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"log"
 	"net/http"
+	"os"
 	"regexp"
 	"strings"
 	"time"
 
+	dbservice "upwork-buddy/internal/database/service"
 	"upwork-buddy/internal/ollama"
 	"upwork-buddy/internal/templates"
+
+	"gorm.io/gorm"
+	"gorm.io/gorm/clause"
 )
 
-// GeneratedAgent stores a generated agent in memory
+// GeneratedAgent is the API DTO for a generated project agent blueprint.
 type GeneratedAgent struct {
 	FileName      string    `json:"file_name"`
 	BlueprintName string    `json:"blueprint_name,omitempty"`
 	Content       string    `json:"content"`
 	TemplateName  string    `json:"template_name"`
 	Format        string    `json:"format"`
+	JobID         *uint     `json:"job_id,omitempty"`
 	GeneratedAt   time.Time `json:"generated_at"`
 }
 
-func agentStoreKey(templateName, blueprintName, format string) string {
-	return fmt.Sprintf("%s::%s::%s", templateName, blueprintName, format)
+type generatedAgentStore interface {
+	UpsertAgent(ctx context.Context, agent GeneratedAgent) error
+	ListAgents(ctx context.Context) ([]GeneratedAgent, error)
+	FindAgent(ctx context.Context, templateName, format, name string) (*GeneratedAgent, error)
+}
+
+type postgresAgentStore struct {
+	db *gorm.DB
+}
+
+func (p *postgresAgentStore) UpsertAgent(ctx context.Context, agent GeneratedAgent) error {
+	now := time.Now().UTC()
+	genAt := agent.GeneratedAt
+	if genAt.IsZero() {
+		genAt = now
+	}
+	model := dbservice.GeneratedAgent{
+		TemplateName:  agent.TemplateName,
+		BlueprintName: agent.BlueprintName,
+		Format:        agent.Format,
+		FileName:      agent.FileName,
+		JobID:         agent.JobID,
+		Content:       agent.Content,
+		GeneratedAt:   genAt,
+		UpdatedAt:     now,
+	}
+	updates := map[string]any{
+		"file_name":    model.FileName,
+		"content":      model.Content,
+		"generated_at": model.GeneratedAt,
+		"updated_at":   now,
+	}
+	if model.JobID != nil {
+		updates["job_id"] = model.JobID
+	}
+	return p.db.WithContext(ctx).Clauses(clause.OnConflict{
+		Columns: []clause.Column{
+			{Name: "template_name"},
+			{Name: "blueprint_name"},
+			{Name: "format"},
+		},
+		DoUpdates: clause.Assignments(updates),
+	}).Create(&model).Error
+}
+
+func (p *postgresAgentStore) ListAgents(ctx context.Context) ([]GeneratedAgent, error) {
+	var rows []dbservice.GeneratedAgent
+	if err := p.db.WithContext(ctx).Order("generated_at DESC, id DESC").Find(&rows).Error; err != nil {
+		return nil, err
+	}
+	out := make([]GeneratedAgent, 0, len(rows))
+	for _, r := range rows {
+		out = append(out, generatedAgentFromModel(r))
+	}
+	return out, nil
+}
+
+func (p *postgresAgentStore) FindAgent(ctx context.Context, templateName, format, name string) (*GeneratedAgent, error) {
+	if templateName != "" && format != "" {
+		var rows []dbservice.GeneratedAgent
+		err := p.db.WithContext(ctx).
+			Where("template_name = ? AND blueprint_name = ? AND format = ?", templateName, name, format).
+			Order("generated_at DESC, id DESC").
+			Limit(1).
+			Find(&rows).Error
+		if err != nil {
+			return nil, err
+		}
+		if len(rows) > 0 {
+			dto := generatedAgentFromModel(rows[0])
+			return &dto, nil
+		}
+	}
+
+	q := p.db.WithContext(ctx).Model(&dbservice.GeneratedAgent{})
+	if templateName != "" {
+		q = q.Where("template_name = ?", templateName)
+	}
+	if format != "" {
+		q = q.Where("format = ?", format)
+	}
+	q = q.Where(
+		"blueprint_name = ? OR file_name = ? OR file_name = ? OR file_name = ?",
+		name, name, name+".md", name+".yaml",
+	)
+
+	var candidates []dbservice.GeneratedAgent
+	if err := q.Order("generated_at DESC, id DESC").Find(&candidates).Error; err != nil {
+		return nil, err
+	}
+	for _, row := range candidates {
+		baseFileName := strings.TrimSuffix(strings.TrimSuffix(row.FileName, ".md"), ".yaml")
+		if row.BlueprintName == name || baseFileName == name || row.FileName == name {
+			dto := generatedAgentFromModel(row)
+			return &dto, nil
+		}
+	}
+	return nil, nil
+}
+
+func generatedAgentFromModel(m dbservice.GeneratedAgent) GeneratedAgent {
+	return GeneratedAgent{
+		FileName:      m.FileName,
+		BlueprintName: m.BlueprintName,
+		Content:       m.Content,
+		TemplateName:  m.TemplateName,
+		Format:        m.Format,
+		JobID:         m.JobID,
+		GeneratedAt:   m.GeneratedAt,
+	}
+}
+
+func (s *Server) getAgentStore() (generatedAgentStore, error) {
+	if s != nil && s.agentStore != nil {
+		return s.agentStore, nil
+	}
+	if s != nil && s.db != nil && s.db.GetGorm() != nil {
+		return &postgresAgentStore{db: s.db.GetGorm()}, nil
+	}
+	return nil, errors.New("database unavailable")
 }
 
 func normalizeAgentFormat(raw string) string {
@@ -39,27 +165,44 @@ func normalizeAgentFormat(raw string) string {
 	}
 }
 
+func validateAndNormalizeAgentFormat(raw string) (string, error) {
+	trimmed := strings.ToLower(strings.TrimSpace(raw))
+	if trimmed == "" {
+		return "claude", nil
+	}
+	switch trimmed {
+	case "goose", "claude", "codex", "copilot":
+		return trimmed, nil
+	default:
+		return "", &ServiceError{
+			Code:       "INVALID_PARAMS",
+			HTTPStatus: http.StatusBadRequest,
+			Message:    fmt.Sprintf("unsupported agent format %q; expected claude, goose, codex, or copilot", raw),
+		}
+	}
+}
+
 // listTemplatesResponse is the response for listing template categories
 type listTemplatesResponse struct {
 	Templates []templateSummary `json:"templates"`
 }
 
 type templateSummary struct {
-	Name         string `json:"name"`
-	DisplayName  string `json:"display_name"`
-	Description  string `json:"description"`
-	Icon         string `json:"icon"`
-	AgentCount   int    `json:"agent_count"`
+	Name        string `json:"name"`
+	DisplayName string `json:"display_name"`
+	Description string `json:"description"`
+	Icon        string `json:"icon"`
+	AgentCount  int    `json:"agent_count"`
 }
 
 // getTemplateResponse is the full template detail response
 type getTemplateResponse struct {
-	Name             string                       `json:"name"`
-	DisplayName      string                       `json:"display_name"`
-	Description      string                       `json:"description"`
-	Icon             string                       `json:"icon"`
-	Docs             []docRefResponse             `json:"docs"`
-	AgentBlueprints  []agentBlueprintResponse     `json:"agent_blueprints"`
+	Name            string                   `json:"name"`
+	DisplayName     string                   `json:"display_name"`
+	Description     string                   `json:"description"`
+	Icon            string                   `json:"icon"`
+	Docs            []docRefResponse         `json:"docs"`
+	AgentBlueprints []agentBlueprintResponse `json:"agent_blueprints"`
 }
 
 type docRefResponse struct {
@@ -73,16 +216,353 @@ type agentBlueprintResponse struct {
 	Description string `json:"description"`
 }
 
-// generateAgentsRequest is the request body for POST /api/agents/generate
-type generateAgentsRequest struct {
+// GenerateProjectAgentsRequest is the request DTO for generating agent blueprints via REST or MCP.
+type GenerateProjectAgentsRequest struct {
+	JobID        any      `json:"job_id,omitempty"`
 	TemplateName string   `json:"template_name"`
 	AgentNames   []string `json:"agent_names"`
 	Format       string   `json:"format"` // "goose", "claude", "codex", "copilot" — defaults to "claude"
 }
 
-// generateAgentsResponse is the response for agent generation
-type generateAgentsResponse struct {
+// GenerateAgentsResponse is the response DTO for agent generation.
+type GenerateAgentsResponse struct {
 	Agents []GeneratedAgent `json:"agents"`
+}
+
+func inferTemplateForJob(cfg *templates.Config, job *dbservice.Job) string {
+	if cfg == nil || len(cfg.Templates) == 0 {
+		return ""
+	}
+	if job == nil {
+		return cfg.Templates[0].Name
+	}
+	haystack := strings.ToLower(job.Title + " " + job.Skills + " " + job.Description)
+	hasGo := strings.Contains(haystack, "golang") || regexpMust(`\bgo\b`).MatchString(haystack)
+	hasReact := strings.Contains(haystack, "react")
+	hasVue := strings.Contains(haystack, "vue")
+	hasSvelte := strings.Contains(haystack, "svelte")
+	hasLaravel := strings.Contains(haystack, "laravel")
+	hasNext := strings.Contains(haystack, "next.js") || strings.Contains(haystack, "nextjs")
+
+	preferred := ""
+	switch {
+	case hasLaravel && hasReact:
+		preferred = "laravel-react-inertia"
+	case hasLaravel && hasSvelte:
+		preferred = "laravel-svelte-inertia"
+	case hasLaravel && hasVue:
+		preferred = "laravel-vue-inertia"
+	case hasReact && hasGo:
+		preferred = "react-go"
+	case hasSvelte && hasGo:
+		preferred = "svelte-go"
+	case hasVue && hasGo:
+		preferred = "vue-go"
+	case hasNext:
+		preferred = "nextjs"
+	case hasGo:
+		preferred = "golang"
+	case hasReact:
+		preferred = "tanstack-ts-node"
+	}
+	if preferred != "" {
+		for _, t := range cfg.Templates {
+			if t.Name == preferred {
+				return t.Name
+			}
+		}
+	}
+	for _, t := range cfg.Templates {
+		if t.Name == "golang" {
+			return t.Name
+		}
+	}
+	return cfg.Templates[0].Name
+}
+
+func renderDeterministicAgentBlueprint(
+	cat *templates.TemplateCategory,
+	bp templates.AgentBlueprint,
+	format string,
+	job *dbservice.Job,
+) (string, string) {
+	ext := ".md"
+	if format == "goose" {
+		ext = ".yaml"
+	}
+	fileName := bp.Name + ext
+
+	var jobSection strings.Builder
+	if job != nil {
+		fmt.Fprintf(&jobSection, "Job Title: %s\n", job.Title)
+		if job.UpworkJobID != nil && *job.UpworkJobID != "" {
+			fmt.Fprintf(&jobSection, "Upwork Job ID: %s\n", *job.UpworkJobID)
+		}
+		if strings.TrimSpace(job.Skills) != "" {
+			fmt.Fprintf(&jobSection, "Required Skills: %s\n", job.Skills)
+		}
+		if strings.TrimSpace(job.ExecutionPrompt) != "" {
+			fmt.Fprintf(&jobSection, "Execution Notes: %s\n", job.ExecutionPrompt)
+		} else if strings.TrimSpace(job.Description) != "" {
+			desc := strings.TrimSpace(job.Description)
+			if len(desc) > 500 {
+				desc = desc[:500] + "..."
+			}
+			fmt.Fprintf(&jobSection, "Job Scope: %s\n", desc)
+		}
+	}
+
+	var docLines strings.Builder
+	for _, d := range cat.Docs {
+		fmt.Fprintf(&docLines, "- %s: %s\n", d.Label, d.URL)
+	}
+
+	switch format {
+	case "goose":
+		var b strings.Builder
+		fmt.Fprintf(&b, "version: \"1.0.0\"\n")
+		fmt.Fprintf(&b, "title: %q\n", bp.Title)
+		fmt.Fprintf(&b, "description: %q\n", bp.Description)
+		b.WriteString("parameters:\n")
+		b.WriteString("  - key: target_path\n")
+		b.WriteString("    input_type: string\n")
+		b.WriteString("    requirement: optional\n")
+		b.WriteString("    description: \"Target module or directory\"\n")
+		b.WriteString("    default: \".\"\n")
+		b.WriteString("instructions: |\n")
+		fmt.Fprintf(&b, "  Role: %s (%s)\n", bp.Title, cat.DisplayName)
+		fmt.Fprintf(&b, "  Objective: %s\n", bp.Description)
+		if jobSection.Len() > 0 {
+			for _, line := range strings.Split(strings.TrimSpace(jobSection.String()), "\n") {
+				fmt.Fprintf(&b, "  %s\n", line)
+			}
+		}
+		b.WriteString("  Steps:\n")
+		b.WriteString("  1. Inspect existing project layout, conventions, and tests.\n")
+		b.WriteString("  2. Implement scoped changes adhering to framework patterns.\n")
+		b.WriteString("  3. Run unit/integration tests and linters to verify correctness.\n")
+		b.WriteString("activities:\n")
+		fmt.Fprintf(&b, "  - \"message: Ready to execute %s\"\n", bp.Title)
+		b.WriteString("extensions:\n")
+		b.WriteString("  - type: builtin\n")
+		b.WriteString("    name: developer\n")
+		b.WriteString("    timeout: 300\n")
+		b.WriteString("    bundled: true\n")
+		return fileName, b.String()
+
+	case "codex":
+		var b strings.Builder
+		fmt.Fprintf(&b, "# Codex Agent Instructions — %s\n\n", bp.Title)
+		fmt.Fprintf(&b, "## Overview\n%s\n\nStack: %s (%s)\n\n", bp.Description, cat.DisplayName, cat.Description)
+		if jobSection.Len() > 0 {
+			fmt.Fprintf(&b, "## Project Context\n%s\n", jobSection.String())
+		}
+		b.WriteString("## Architecture & Conventions\n- Follow repository structure, typed contracts, and explicit error handling.\n- Keep changes minimal and strictly scoped to requirements.\n\n")
+		b.WriteString("## Steps\n1. Inspect relevant modules and schemas.\n2. Implement the required feature or refactor.\n3. Add or update unit/integration tests.\n\n")
+		fmt.Fprintf(&b, "## Testing & Verification\nRun project build, vet/lint, and test commands before reporting completion.\n\n## References\n%s", docLines.String())
+		return fileName, b.String()
+
+	case "copilot":
+		var b strings.Builder
+		fmt.Fprintf(&b, "# GitHub Copilot Instructions — %s\n\n", bp.Title)
+		fmt.Fprintf(&b, "## Project Overview\n%s\n\nTemplate: %s — %s\n\n", bp.Description, cat.DisplayName, cat.Description)
+		if jobSection.Len() > 0 {
+			fmt.Fprintf(&b, "## Active Job Context\n%s\n", jobSection.String())
+		}
+		b.WriteString("## Architecture\nRespect package boundaries, existing database models, and API DTO contracts.\n\n")
+		b.WriteString("## Conventions\n- Write idiomatic, strongly-typed code with clear error propagation.\n- Avoid unrequested refactoring or silent fallbacks.\n\n")
+		b.WriteString("## Testing\nVerify every change with automated tests covering success and error paths.\n\n")
+		fmt.Fprintf(&b, "## Key Patterns & References\n%s", docLines.String())
+		return fileName, b.String()
+
+	default: // claude
+		var b strings.Builder
+		b.WriteString("---\n")
+		fmt.Fprintf(&b, "name: %s\n", bp.Name)
+		fmt.Fprintf(&b, "description: %s\n", bp.Description)
+		b.WriteString("tools: Read, Edit, Write, Bash, Grep, Glob\n")
+		b.WriteString("model: inherit\n")
+		b.WriteString("maxTurns: 20\n")
+		b.WriteString("---\n\n")
+		fmt.Fprintf(&b, "You are the **%s** for %s.\n\n", bp.Title, cat.DisplayName)
+		if jobSection.Len() > 0 {
+			fmt.Fprintf(&b, "## Project Context\n%s\n", jobSection.String())
+		}
+		fmt.Fprintf(&b, "## Architecture Context\n%s\n\n", cat.Description)
+		b.WriteString("## Steps\n1. Inspect existing code and conventions in target packages.\n2. Implement the required capability cleanly and minimally.\n3. Run build, lint, and test suites to verify.\n\n")
+		if docLines.Len() > 0 {
+			fmt.Fprintf(&b, "## Documentation References\n%s", docLines.String())
+		}
+		return fileName, b.String()
+	}
+}
+
+// GenerateProjectAgents generates and persists project agent blueprints for a template (and optional linked job).
+func (s *Server) GenerateProjectAgents(ctx context.Context, req GenerateProjectAgentsRequest) (*GenerateAgentsResponse, error) {
+	store, err := s.getAgentStore()
+	if err != nil {
+		return nil, &ServiceError{Code: "DB_UNAVAILABLE", HTTPStatus: http.StatusServiceUnavailable, Message: "Database unavailable"}
+	}
+
+	format, fmtErr := validateAndNormalizeAgentFormat(req.Format)
+	if fmtErr != nil {
+		return nil, fmtErr
+	}
+
+	var linkedJob *dbservice.Job
+	var jobIDPtr *uint
+	if req.JobID != nil {
+		if strID, isStr := req.JobID.(string); isStr && strings.TrimSpace(strID) == "" {
+			// Treat blank string job_id: "" as omitted when template_name is supplied (or let template_name check handle missing).
+		} else {
+			resolved, jErr := s.ResolveJobRef(ctx, req.JobID, "")
+			if jErr != nil {
+				return nil, jErr
+			}
+			linkedJob = resolved
+			idCopy := resolved.ID
+			jobIDPtr = &idCopy
+		}
+	}
+
+	cfg, err := templates.Load(s.TemplatesPath())
+	if err != nil {
+		log.Printf("❌ Failed to load templates: %v", err)
+		return nil, &ServiceError{Code: "TEMPLATES_LOAD_ERROR", HTTPStatus: http.StatusInternalServerError, Message: "Failed to load templates"}
+	}
+
+	templateName := strings.TrimSpace(req.TemplateName)
+	if templateName == "" {
+		if linkedJob != nil {
+			templateName = inferTemplateForJob(cfg, linkedJob)
+		}
+	}
+	if templateName == "" {
+		return nil, &ServiceError{Code: "INVALID_PARAMS", HTTPStatus: http.StatusBadRequest, Message: "template_name is required"}
+	}
+
+	var templateCat *templates.TemplateCategory
+	for i := range cfg.Templates {
+		if cfg.Templates[i].Name == templateName {
+			templateCat = &cfg.Templates[i]
+			break
+		}
+	}
+	if templateCat == nil {
+		return nil, &ServiceError{Code: "NOT_FOUND", HTTPStatus: http.StatusNotFound, Message: fmt.Sprintf("Template %q not found", templateName)}
+	}
+
+	blueprintMap := make(map[string]templates.AgentBlueprint, len(templateCat.AgentBlueprints))
+	for _, bp := range templateCat.AgentBlueprints {
+		blueprintMap[bp.Name] = bp
+	}
+
+	agentNames := req.AgentNames
+	if len(agentNames) == 0 {
+		agentNames = make([]string, 0, len(templateCat.AgentBlueprints))
+		for _, bp := range templateCat.AgentBlueprints {
+			agentNames = append(agentNames, bp.Name)
+		}
+	}
+	if len(agentNames) == 0 {
+		return nil, &ServiceError{Code: "INVALID_PARAMS", HTTPStatus: http.StatusBadRequest, Message: "agent_names is required"}
+	}
+
+	var ollamaService *ollama.Service
+	var docsContent string
+	if strings.TrimSpace(os.Getenv("OLLAMA_API_KEY")) != "" {
+		if svc, oErr := ollama.New(); oErr == nil {
+			ollamaService = svc
+			defer func() {
+				if cErr := ollamaService.Close(); cErr != nil {
+					log.Printf("⚠️ Failed to close Ollama service: %v", cErr)
+				}
+			}()
+			docsContent = scrapeDocs(templateCat.Docs)
+		}
+	}
+
+	generatedAgents := make([]GeneratedAgent, 0, len(agentNames))
+	for _, agentName := range agentNames {
+		bp, ok := blueprintMap[agentName]
+		if !ok {
+			log.Printf("⚠️ Agent blueprint not found: %q, skipping", agentName)
+			continue
+		}
+
+		var fileName, content string
+		if ollamaService != nil {
+			genReq := ollama.GenerateAgentRequest{
+				TemplateName: templateName,
+				AgentName:    bp.Name,
+				AgentTitle:   bp.Title,
+				AgentDesc:    bp.Description,
+				DocsContent:  docsContent,
+				Format:       format,
+			}
+			resp, gErr := ollamaService.GenerateAgent(ctx, genReq)
+			if gErr == nil && resp != nil {
+				fileName = resp.FileName
+				content = resp.Content
+			} else {
+				log.Printf("⚠️ Ollama GenerateAgent failed for %q (%v); falling back to template blueprint", agentName, gErr)
+			}
+		}
+		if content == "" {
+			fileName, content = renderDeterministicAgentBlueprint(templateCat, bp, format, linkedJob)
+		}
+
+		agent := GeneratedAgent{
+			FileName:      fileName,
+			BlueprintName: bp.Name,
+			Content:       content,
+			TemplateName:  templateName,
+			Format:        format,
+			JobID:         jobIDPtr,
+			GeneratedAt:   time.Now().UTC(),
+		}
+
+		if err := store.UpsertAgent(ctx, agent); err != nil {
+			log.Printf("❌ Failed to persist generated agent %q: %v", agentName, err)
+			return nil, &ServiceError{Code: "DB_ERROR", HTTPStatus: http.StatusInternalServerError, Message: "Failed to persist generated agent"}
+		}
+		generatedAgents = append(generatedAgents, agent)
+	}
+
+	if len(generatedAgents) == 0 {
+		return nil, &ServiceError{Code: "NOT_FOUND", HTTPStatus: http.StatusNotFound, Message: "No matching agent blueprints found for template"}
+	}
+
+	return &GenerateAgentsResponse{Agents: generatedAgents}, nil
+}
+
+// generateAgentsHandler scrapes docs, calls Ollama (or deterministic template fallback), and persists generated agents in PostgreSQL.
+func (s *Server) generateAgentsHandler(w http.ResponseWriter, r *http.Request) {
+	log.Printf("📥 Generate agents request")
+
+	var req GenerateProjectAgentsRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		log.Printf("❌ Invalid request body: %v", err)
+		respondWithError(w, http.StatusBadRequest, "Invalid request body")
+		return
+	}
+	if strings.TrimSpace(req.TemplateName) == "" && req.JobID == nil {
+		respondWithError(w, http.StatusBadRequest, "template_name is required")
+		return
+	}
+	if len(req.AgentNames) == 0 && req.JobID == nil {
+		respondWithError(w, http.StatusBadRequest, "agent_names is required")
+		return
+	}
+
+	resp, err := s.GenerateProjectAgents(r.Context(), req)
+	if err != nil {
+		respondBridgeError(w, err)
+		return
+	}
+
+	log.Printf("✅ Generated %d agents", len(resp.Agents))
+	respondWithJSON(w, resp)
 }
 
 // downloadAgentsRequest is the request body for POST /api/agents/download
@@ -153,11 +633,11 @@ func (s *Server) getTemplateHandler(w http.ResponseWriter, r *http.Request) {
 			}
 			log.Printf("✅ Template found: %q", name)
 			respondWithJSON(w, getTemplateResponse{
-				Name:             t.Name,
-				DisplayName:      t.DisplayName,
-				Description:      t.Description,
-				Icon:             t.Icon,
-				Docs:             docs,
+				Name:            t.Name,
+				DisplayName:     t.DisplayName,
+				Description:     t.Description,
+				Icon:            t.Icon,
+				Docs:            docs,
 				AgentBlueprints: blueprints,
 			})
 			return
@@ -168,129 +648,24 @@ func (s *Server) getTemplateHandler(w http.ResponseWriter, r *http.Request) {
 	respondWithError(w, http.StatusNotFound, "Template not found")
 }
 
-// generateAgentsHandler scrapes docs, calls Ollama, and stores generated agents
-func (s *Server) generateAgentsHandler(w http.ResponseWriter, r *http.Request) {
-	log.Printf("📥 Generate agents request")
 
-	var req generateAgentsRequest
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		log.Printf("❌ Invalid request body: %v", err)
-		respondWithError(w, http.StatusBadRequest, "Invalid request body")
-		return
-	}
 
-	if req.TemplateName == "" {
-		respondWithError(w, http.StatusBadRequest, "template_name is required")
-		return
-	}
-	if len(req.AgentNames) == 0 {
-		respondWithError(w, http.StatusBadRequest, "agent_names is required")
-		return
-	}
-
-	// Normalize format, default to "claude"
-	format := normalizeAgentFormat(req.Format)
-
-	// Load templates to find the matching category
-	cfg, err := templates.Load(s.templatesPath)
-	if err != nil {
-		log.Printf("❌ Failed to load templates: %v", err)
-		respondWithError(w, http.StatusInternalServerError, "Failed to load templates")
-		return
-	}
-
-	var templateCat *templates.TemplateCategory
-	for i := range cfg.Templates {
-		if cfg.Templates[i].Name == req.TemplateName {
-			templateCat = &cfg.Templates[i]
-			break
-		}
-	}
-	if templateCat == nil {
-		log.Printf("❌ Template not found: %q", req.TemplateName)
-		respondWithError(w, http.StatusNotFound, "Template not found")
-		return
-	}
-
-	// Build a map of agent names to blueprints
-	blueprintMap := make(map[string]templates.AgentBlueprint)
-	for _, bp := range templateCat.AgentBlueprints {
-		blueprintMap[bp.Name] = bp
-	}
-
-	// Scrape documentation content
-	log.Printf("📥 Scraping documentation for template %q (%d docs)", req.TemplateName, len(templateCat.Docs))
-	docsContent := scrapeDocs(templateCat.Docs)
-
-	// Create Ollama service
-	ollamaService, err := ollama.New()
-	if err != nil {
-		log.Printf("❌ Failed to create Ollama service: %v", err)
-		respondWithError(w, http.StatusServiceUnavailable, "AI service unavailable")
-		return
-	}
-	defer func() {
-		if err := ollamaService.Close(); err != nil {
-			log.Printf("⚠️ Failed to close Ollama service: %v", err)
-		}
-	}()
-
-	// Generate agents
-	generatedAgents := make([]GeneratedAgent, 0, len(req.AgentNames))
-	for _, agentName := range req.AgentNames {
-		bp, ok := blueprintMap[agentName]
-		if !ok {
-			log.Printf("⚠️ Agent blueprint not found: %q, skipping", agentName)
-			continue
-		}
-
-		genReq := ollama.GenerateAgentRequest{
-			TemplateName: req.TemplateName,
-			AgentName:    bp.Name,
-			AgentTitle:   bp.Title,
-			AgentDesc:    bp.Description,
-			DocsContent:  docsContent,
-			Format:       format,
-		}
-
-		resp, err := ollamaService.GenerateAgent(r.Context(), genReq)
-		if err != nil {
-			log.Printf("❌ Failed to generate agent %q: %v", agentName, err)
-			continue
-		}
-
-		agent := GeneratedAgent{
-			FileName:      resp.FileName,
-			BlueprintName: bp.Name,
-			Content:       resp.Content,
-			TemplateName:  req.TemplateName,
-			Format:        format,
-			GeneratedAt:   time.Now(),
-		}
-
-		// Store in the in-memory map keyed by composite (TemplateName, BlueprintName, Format)
-		s.generatedAgents.Store(agentStoreKey(req.TemplateName, bp.Name, format), agent)
-		generatedAgents = append(generatedAgents, agent)
-
-		log.Printf("✅ Agent generated: %s", agentName)
-	}
-
-	log.Printf("✅ Generated %d agents for template %q", len(generatedAgents), req.TemplateName)
-	respondWithJSON(w, generateAgentsResponse{Agents: generatedAgents})
-}
-
-// listAgentsHandler returns all generated agents from the in-memory store
+// listAgentsHandler returns all persisted generated agents
 func (s *Server) listAgentsHandler(w http.ResponseWriter, r *http.Request) {
 	log.Printf("📥 List agents request")
 
-	agents := make([]GeneratedAgent, 0)
-	s.generatedAgents.Range(func(key, value interface{}) bool {
-		agent, ok := value.(GeneratedAgent)
-		if ok {
-			agents = append(agents, agent)
-		}
-		return true
-	})
+	store, err := s.getAgentStore()
+	if err != nil {
+		respondWithError(w, http.StatusServiceUnavailable, "Database unavailable")
+		return
+	}
+
+	agents, err := store.ListAgents(r.Context())
+	if err != nil {
+		log.Printf("❌ Failed to list generated agents: %v", err)
+		respondWithError(w, http.StatusInternalServerError, "Failed to list generated agents")
+		return
+	}
 
 	log.Printf("✅ Listed %d generated agents", len(agents))
 	respondWithJSON(w, map[string]interface{}{
@@ -301,6 +676,12 @@ func (s *Server) listAgentsHandler(w http.ResponseWriter, r *http.Request) {
 // downloadAgentsHandler creates a zip of selected agent files
 func (s *Server) downloadAgentsHandler(w http.ResponseWriter, r *http.Request) {
 	log.Printf("📥 Download agents request")
+
+	store, err := s.getAgentStore()
+	if err != nil {
+		respondWithError(w, http.StatusServiceUnavailable, "Database unavailable")
+		return
+	}
 
 	var req downloadAgentsRequest
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
@@ -320,41 +701,15 @@ func (s *Server) downloadAgentsHandler(w http.ResponseWriter, r *http.Request) {
 	if strings.TrimSpace(req.Format) != "" {
 		requestedFormat = normalizeAgentFormat(req.Format)
 	}
+	templateName := strings.TrimSpace(req.TemplateName)
 
 	for _, name := range req.AgentNames {
-		var matched *GeneratedAgent
-		if strings.TrimSpace(req.TemplateName) != "" && requestedFormat != "" {
-			if val, ok := s.generatedAgents.Load(agentStoreKey(req.TemplateName, name, requestedFormat)); ok {
-				if agent, ok := val.(GeneratedAgent); ok {
-					matched = &agent
-				}
-			}
+		matched, err := store.FindAgent(r.Context(), templateName, requestedFormat, name)
+		if err != nil {
+			log.Printf("❌ Failed to look up agent %q: %v", name, err)
+			respondWithError(w, http.StatusInternalServerError, "Failed to query generated agents")
+			return
 		}
-
-		if matched == nil {
-			// Backward-compatible lookup by agent name (selecting newest GeneratedAt if multiple exist)
-			s.generatedAgents.Range(func(_, value interface{}) bool {
-				agent, ok := value.(GeneratedAgent)
-				if !ok {
-					return true
-				}
-				if strings.TrimSpace(req.TemplateName) != "" && agent.TemplateName != req.TemplateName {
-					return true
-				}
-				if requestedFormat != "" && agent.Format != requestedFormat {
-					return true
-				}
-				baseFileName := strings.TrimSuffix(strings.TrimSuffix(agent.FileName, ".md"), ".yaml")
-				if agent.BlueprintName == name || baseFileName == name || agent.FileName == name {
-					if matched == nil || agent.GeneratedAt.After(matched.GeneratedAt) {
-						agentCopy := agent
-						matched = &agentCopy
-					}
-				}
-				return true
-			})
-		}
-
 		if matched == nil {
 			log.Printf("⚠️ Agent not found in store: %q, skipping", name)
 			continue
