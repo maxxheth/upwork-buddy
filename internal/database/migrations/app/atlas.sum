@@ -1,4 +1,7 @@
-h1:Oy8BNSBJiVDtYQJ+WAgXGvwYNnNYv0X6b/0TwYpDFGs=
+h1:xdXBU7bokQjUjCXUjow+QbHsxTjA7Jd3wf+s2EcfogY=
 20251114190124_initial_schema.sql h1:k8n3qEW4DjCPAt2Gcx+yLfAomMWKNRVGyfSPEXdJbeY=
 20260409002751.sql h1:6lFnr+qi5I8Q4QGiFEZT7z/At7+Zhp6/8/3HFkJsoMg=
 20260409100000.sql h1:g5s/Mo2xu+vQsHUCBiQcka0z1qy4vKMcVfTIGQ5HWyo=
+20261119202149_v2_expanded_schema.sql h1:2C3q/6weUzSU5UWz6yaG7My/M3BIfIaB1S4W5XBMYtE=
+20261120030419_policy_and_tokens.sql h1:6nWlYFsEpNbNQwpilzqfn0Hwdg7P0Kwjyz1b7LyGq3Q=
+20261120034138_message_thread_upwork_job_id.sql h1:d9eGwZZUYTTu5uIeba7Ot1AO4OLeAbhEzTeb9cMkKTw=
