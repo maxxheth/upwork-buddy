@@ -1,0 +1,101 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <meta name="manifest.open_in_tab" content="true" />
+    <title>Upwork Buddy — Options &amp; Pairing</title>
+    <link rel="stylesheet" href="./style.css" />
+  </head>
+  <body>
+    <main class="options-shell">
+      <header class="options-header">
+        <h1>Upwork Buddy Pairing &amp; Safety Options</h1>
+        <p>Configure local daemon connection, Bearer pairing token, and automation pacing.</p>
+      </header>
+
+      <div
+        id="connection-status"
+        class="status-banner"
+        data-testid="connection-status"
+        role="status"
+        data-level="neutral"
+      >
+        Loading settings...
+      </div>
+
+      <form id="options-form" class="options-form">
+        <label for="daemon-url">
+          Daemon / API Base URL
+          <input
+            id="daemon-url"
+            name="apiBaseUrl"
+            type="url"
+            data-testid="daemon-url-input"
+            placeholder="http://127.0.0.1:9090"
+            required
+          />
+        </label>
+
+        <label for="api-token">
+          Bearer API Token
+          <input
+            id="api-token"
+            name="apiToken"
+            type="password"
+            data-testid="api-token-input"
+            placeholder="Paste token from ~/.config/upwork-buddy/token"
+            autocomplete="off"
+          />
+        </label>
+
+        <div class="row-2">
+          <label for="pacing-seconds">
+            Base Pacing Delay (seconds)
+            <input
+              id="pacing-seconds"
+              name="pacingSeconds"
+              type="number"
+              step="0.1"
+              min="0"
+              max="120"
+              data-testid="pacing-seconds-input"
+            />
+          </label>
+
+          <label for="jitter-ratio">
+            Jitter Ratio (0.0 – 0.9)
+            <input
+              id="jitter-ratio"
+              name="jitterRatio"
+              type="number"
+              step="0.05"
+              min="0"
+              max="0.9"
+            />
+          </label>
+        </div>
+
+        <div class="actions">
+          <button type="button" id="test-connection-btn" data-testid="test-connection-btn" class="btn-secondary">
+            Test Connection
+          </button>
+          <button type="submit" id="save-options-btn" data-testid="save-options-btn" class="btn-primary">
+            Save &amp; Connect
+          </button>
+        </div>
+      </form>
+
+      <section class="native-box">
+        <h2>Optional Chrome Native Messaging Host</h2>
+        <p data-testid="native-host-status" id="native-host-status">
+          Not checked yet. See <code>docs/mcp-setup.md</code> for optional setup.
+        </p>
+        <button type="button" id="native-bootstrap-btn" data-testid="native-bootstrap-btn" class="btn-secondary">
+          Bootstrap Token via Native Host
+        </button>
+      </section>
+    </main>
+    <script type="module" src="./main.ts"></script>
+  </body>
+</html>

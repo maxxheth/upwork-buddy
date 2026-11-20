@@ -28,9 +28,9 @@ export class TemplateBrowser {
     private container: HTMLElement,
   ) {}
 
-  render(): void {
+  render(): Promise<void> {
     this.container.innerHTML = '';
-    this.renderCategoryList();
+    return this.renderCategoryList();
   }
 
   private async renderCategoryList(): Promise<void> {
@@ -44,47 +44,64 @@ export class TemplateBrowser {
         <div class="upwork-buddy-template-grid" id="ub-template-grid">
           <div style="text-align:center; padding:24px; color:#999;">Loading templates...</div>
         </div>
+        <div id="ub-persisted-agents" data-testid="persisted-agents-section" style="margin-top:20px;">
+          <h4 style="margin:0 0 8px 0; font-size:14px; color:#333;">📦 Generated Agent Blueprints</h4>
+          <div style="font-size:12px; color:#999;">Loading saved blueprints...</div>
+        </div>
       </div>
     `;
 
     const grid = this.container.querySelector('#ub-template-grid');
+    const persistedEl = this.container.querySelector('#ub-persisted-agents');
     if (!grid) return;
 
-    try {
-      const response = await this.apiClient.listTemplates();
-      const templates = response.templates || [];
+    const [templatesResult, agentsResult] = await Promise.allSettled([
+      this.apiClient.listTemplates(),
+      this.apiClient.listAgents(),
+    ]);
 
+    if (templatesResult.status === 'fulfilled') {
+      const templates = templatesResult.value.templates || [];
       if (templates.length === 0) {
         grid.innerHTML =
           '<div style="text-align:center; padding:24px; color:#999;">No templates available. Make sure the backend is running.</div>';
-        return;
-      }
+      } else {
+        grid.innerHTML = templates
+          .map(
+            (t) => `
+          <div class="upwork-buddy-template-card" data-category="${escapeHtml(t.name)}" title="${escapeHtml(t.description)}">
+            <div class="upwork-buddy-template-card-icon">${escapeHtml(t.icon)}</div>
+            <div class="upwork-buddy-template-card-name">${escapeHtml(t.display_name)}</div>
+            <div style="font-size:11px; color:#888; margin-top:4px;">${t.agent_count} agents</div>
+          </div>
+        `,
+          )
+          .join('');
 
-      grid.innerHTML = templates
-        .map(
-          (t) => `
-        <div class="upwork-buddy-template-card" data-category="${escapeHtml(t.name)}" title="${escapeHtml(t.description)}">
-          <div class="upwork-buddy-template-card-icon">${escapeHtml(t.icon)}</div>
-          <div class="upwork-buddy-template-card-name">${escapeHtml(t.display_name)}</div>
-          <div style="font-size:11px; color:#888; margin-top:4px;">${t.agent_count} agents</div>
-        </div>
-      `,
-        )
-        .join('');
-
-      // Bind click handlers
-      grid.querySelectorAll('.upwork-buddy-template-card').forEach((card) => {
-        card.addEventListener('click', () => {
-          const name = (card as HTMLElement).dataset.category || '';
-          this.selectCategory(name);
+        grid.querySelectorAll('.upwork-buddy-template-card').forEach((card) => {
+          card.addEventListener('click', () => {
+            const name = (card as HTMLElement).dataset.category || '';
+            this.selectCategory(name);
+          });
         });
-      });
 
-      this.log('Template categories loaded', { count: templates.length });
-    } catch (error) {
-      const msg = error instanceof Error ? error.message : String(error);
+        this.log('Template categories loaded', { count: templates.length });
+      }
+    } else {
+      const msg =
+        templatesResult.reason instanceof Error
+          ? templatesResult.reason.message
+          : String(templatesResult.reason);
       grid.innerHTML = `<div class="upwork-buddy-error">❌ Failed to load templates: ${escapeHtml(msg)}</div>`;
-      console.error(this.logPrefix, 'Failed to load templates', error);
+      console.error(this.logPrefix, 'Failed to load templates', templatesResult.reason);
+    }
+
+    if (persistedEl) {
+      const persistedAgents =
+        agentsResult.status === 'fulfilled' && Array.isArray(agentsResult.value?.agents)
+          ? agentsResult.value.agents
+          : [];
+      this.renderPersistedAgentsSection(persistedEl as HTMLElement, persistedAgents);
     }
   }
 
@@ -338,6 +355,107 @@ export class TemplateBrowser {
       URL.revokeObjectURL(url);
 
       this.log('Agents downloaded as zip');
+    } catch (error) {
+      console.error(this.logPrefix, 'Download failed', error);
+    }
+  }
+
+  private renderPersistedAgentsSection(container: HTMLElement, agents: GeneratedAgent[]): void {
+    if (agents.length === 0) {
+      container.innerHTML = `
+        <h4 style="margin:0 0 8px 0; font-size:14px; color:#333;">📦 Generated Agent Blueprints</h4>
+        <div style="font-size:12px; color:#888;">No generated agent blueprints saved yet.</div>
+      `;
+      return;
+    }
+
+    const cardsHtml = agents
+      .map((agent, idx) => {
+        const displayName = agent.blueprint_name || agent.file_name;
+        const contentId = `ub-persisted-content-${idx}`;
+        const formatLabel =
+          FORMAT_OPTIONS.find((f) => f.value === agent.format)?.label || agent.format;
+        return `
+          <div style="margin: 8px 0; border: 1px solid #e0e0e0; border-radius: 6px; overflow: hidden;" data-testid="persisted-agent-item">
+            <div style="padding: 8px 12px; background: #f8f8f8; display: flex; align-items: center; justify-content: space-between; gap: 8px; flex-wrap: wrap;">
+              <div>
+                <strong style="color:#333; font-size:13px;">📄 ${escapeHtml(displayName)}</strong>
+                <span style="font-size:11px; color:#666; margin-left:6px;">${escapeHtml(agent.template_name)}</span>
+                <span style="font-size:11px; color:#888; margin-left:6px;">${escapeHtml(formatLabel)}</span>
+              </div>
+              <div style="display:flex; gap:8px; align-items:center;">
+                <button type="button" class="ub-persisted-toggle" data-target="${contentId}" style="background:none; border:none; color:#14a800; cursor:pointer; font-size:12px;">
+                  ▼ Preview
+                </button>
+                <button type="button" class="ub-persisted-download-btn" data-index="${idx}" style="background:#14a800; color:#fff; border:none; border-radius:4px; padding:3px 8px; cursor:pointer; font-size:11px;">
+                  📦 Download .zip
+                </button>
+              </div>
+            </div>
+            <div id="${contentId}" class="upwork-buddy-agent-preview" style="display:none; white-space:pre-wrap; font-family:monospace; font-size:12px; padding:8px 12px; background:#fafafa; max-height:300px; overflow:auto;">${escapeHtml(agent.content)}</div>
+          </div>
+        `;
+      })
+      .join('');
+
+    container.innerHTML = `
+      <div style="display:flex; align-items:center; justify-content:space-between; margin-bottom:8px;">
+        <h4 style="margin:0; font-size:14px; color:#333;">📦 Generated Agent Blueprints (${agents.length})</h4>
+        <button type="button" id="ub-persisted-download-all-btn" class="upwork-buddy-download-btn" style="font-size:12px; padding:4px 10px;">
+          📦 Download All (.zip)
+        </button>
+      </div>
+      ${cardsHtml}
+    `;
+
+    container.querySelectorAll('.ub-persisted-toggle').forEach((btn) => {
+      btn.addEventListener('click', () => {
+        const targetId = (btn as HTMLElement).dataset.target;
+        const target = targetId
+          ? container.querySelector<HTMLElement>(`[id="${targetId.replace(/"/g, '\\"')}"]`)
+          : null;
+        if (target) {
+          target.style.display = target.style.display === 'none' ? 'block' : 'none';
+        }
+      });
+    });
+
+    container.querySelectorAll('.ub-persisted-download-btn').forEach((btn) => {
+      btn.addEventListener('click', () => {
+        const idx = Number((btn as HTMLElement).dataset.index);
+        const agent = agents[idx];
+        if (!agent) return;
+        const agentName = agent.blueprint_name || agent.file_name.replace(/\.(yaml|md)$/, '');
+        void this.downloadAgentsZip([agentName], `${agentName}.zip`, {
+          template_name: agent.template_name,
+          format: agent.format,
+        });
+      });
+    });
+
+    container.querySelector('#ub-persisted-download-all-btn')?.addEventListener('click', () => {
+      const names = agents.map((a) => a.blueprint_name || a.file_name.replace(/\.(yaml|md)$/, ''));
+      void this.downloadAgentsZip(names, 'generated-agents.zip');
+    });
+  }
+
+  private async downloadAgentsZip(
+    agentNames: string[],
+    zipName: string,
+    options?: { template_name?: string; format?: string },
+  ): Promise<void> {
+    if (agentNames.length === 0) return;
+    try {
+      const blob = await this.apiClient.downloadAgents(agentNames, options);
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement('a');
+      a.href = url;
+      a.download = zipName;
+      document.body.appendChild(a);
+      a.click();
+      document.body.removeChild(a);
+      URL.revokeObjectURL(url);
+      this.log('Agents downloaded as zip', { count: agentNames.length });
     } catch (error) {
       console.error(this.logPrefix, 'Download failed', error);
     }

@@ -9,6 +9,7 @@ export class ProjectsListUI {
   constructor(
     private stateManager: StateManager,
     private modalBody: HTMLDivElement,
+    private badgeRoot: ParentNode = document,
   ) {
     this.log('Initialized ProjectsListUI');
   }
@@ -214,7 +215,7 @@ export class ProjectsListUI {
    * Update the badge count on the View Projects button
    */
   updateBadge(): void {
-    const btn = document.getElementById('upwork-buddy-view-projects-btn');
+    const btn = this.badgeRoot.querySelector<HTMLElement>('#upwork-buddy-view-projects-btn');
     if (btn) {
       const badge = btn.querySelector('.badge');
       const size = this.stateManager.getCacheSize();

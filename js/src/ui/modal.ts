@@ -6,8 +6,10 @@ export class Modal {
   private overlay: HTMLDivElement;
   private modal: HTMLDivElement;
   private modalBody: HTMLDivElement;
+  private readonly onMouseMove: (e: MouseEvent) => void;
+  private readonly onMouseUp: () => void;
 
-  constructor() {
+  constructor(mountTarget: HTMLElement = document.body) {
     this.overlay = this.createOverlay();
     this.modal = this.createModalElement();
     this.modalBody = this.createModalBody();
@@ -18,9 +20,14 @@ export class Modal {
     this.overlay.appendChild(this.modal);
 
     this.setupEventListeners();
-    this.setupDraggable();
 
-    document.body.insertBefore(this.overlay, document.body.firstChild);
+    this.onMouseMove = () => {};
+    this.onMouseUp = () => {};
+    const dragHandlers = this.setupDraggable();
+    this.onMouseMove = dragHandlers.onMouseMove;
+    this.onMouseUp = dragHandlers.onMouseUp;
+
+    mountTarget.appendChild(this.overlay);
   }
 
   private createOverlay(): HTMLDivElement {
@@ -81,23 +88,27 @@ export class Modal {
     });
   }
 
-  private setupDraggable(): void {
+  private setupDraggable(): {
+    onMouseMove: (e: MouseEvent) => void;
+    onMouseUp: () => void;
+  } {
     const header = this.modal.querySelector<HTMLElement>('.upwork-buddy-modal-header');
-    if (!header) return;
     let isDragging = false;
     let currentX = 0;
     let currentY = 0;
     let initialX = 0;
     let initialY = 0;
 
-    header.addEventListener('mousedown', (e) => {
-      if ((e.target as HTMLElement).closest('.upwork-buddy-modal-btn')) return;
-      isDragging = true;
-      initialX = e.clientX - (this.modal.offsetLeft || 0);
-      initialY = e.clientY - (this.modal.offsetTop || 0);
-    });
+    if (header) {
+      header.addEventListener('mousedown', (e) => {
+        if ((e.target as HTMLElement).closest('.upwork-buddy-modal-btn')) return;
+        isDragging = true;
+        initialX = e.clientX - (this.modal.offsetLeft || 0);
+        initialY = e.clientY - (this.modal.offsetTop || 0);
+      });
+    }
 
-    document.addEventListener('mousemove', (e) => {
+    const onMouseMove = (e: MouseEvent) => {
       if (!isDragging) return;
       e.preventDefault();
       currentX = e.clientX - initialX;
@@ -106,11 +117,22 @@ export class Modal {
       this.modal.style.left = `${currentX}px`;
       this.modal.style.top = `${currentY}px`;
       this.modal.style.transform = 'none';
-    });
+    };
 
-    document.addEventListener('mouseup', () => {
+    const onMouseUp = () => {
       isDragging = false;
-    });
+    };
+
+    document.addEventListener('mousemove', onMouseMove);
+    document.addEventListener('mouseup', onMouseUp);
+
+    return { onMouseMove, onMouseUp };
+  }
+
+  destroy(): void {
+    document.removeEventListener('mousemove', this.onMouseMove);
+    document.removeEventListener('mouseup', this.onMouseUp);
+    this.overlay.remove();
   }
 
   open(): void {

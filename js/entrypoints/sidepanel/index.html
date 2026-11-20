@@ -1,0 +1,51 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Upwork Buddy Side Panel</title>
+    <link rel="stylesheet" href="./style.css" />
+  </head>
+  <body>
+    <header class="sp-header">
+      <div class="sp-brand">
+        <strong>Upwork Buddy</strong>
+        <span id="sp-connection-pill" class="pill" data-connected="false">WS Offline</span>
+        <span id="sp-policy-badge" class="pill">confirm_in_ui</span>
+      </div>
+      <button type="button" id="sp-kill-switch-btn" data-testid="kill-switch-btn" class="btn-danger" aria-label="Kill Switch">
+        Kill Switch
+      </button>
+    </header>
+
+    <section id="sp-budget-bar" class="sp-budget-bar" data-testid="budget-bar" aria-label="Daily Policy Budgets">
+      <span>Proposals: <strong id="sp-budget-proposals" data-testid="budget-proposals">0 / 5</strong></span>
+      <span>Connects: <strong id="sp-budget-connects" data-testid="budget-connects">0 / 50</strong></span>
+      <span>Messages: <strong id="sp-budget-messages" data-testid="budget-messages">0 / 20</strong></span>
+    </section>
+
+    <div class="sp-tabs" role="tablist" aria-label="Upwork Buddy Sections">
+      <button type="button" role="tab" aria-selected="true" data-tab="pipeline" data-testid="tab-pipeline" class="sp-tab active">
+        Pipeline / Jobs
+      </button>
+      <button type="button" role="tab" aria-selected="false" data-tab="approvals" data-testid="tab-approvals" class="sp-tab">
+        Approvals <span id="sp-approvals-badge" class="tab-badge">0</span>
+      </button>
+      <button type="button" role="tab" aria-selected="false" data-tab="messages" data-testid="tab-messages" class="sp-tab">
+        Messages <span id="sp-unread-badge" data-testid="unread-badge" class="tab-badge">0</span>
+      </button>
+      <button type="button" role="tab" aria-selected="false" data-tab="activity" data-testid="tab-activity" class="sp-tab">
+        Activity &amp; Policy
+      </button>
+      <button type="button" role="tab" aria-selected="false" data-tab="agents" data-testid="tab-agents" class="sp-tab">
+        Profile &amp; Blueprints
+      </button>
+      <button type="button" role="tab" aria-selected="false" data-tab="selectors" data-testid="tab-selectors" class="sp-tab">
+        Selector Health
+      </button>
+    </div>
+
+    <main id="sidepanel-content" role="tabpanel" class="sp-main"></main>
+    <script type="module" src="./main.ts"></script>
+  </body>
+</html>

@@ -73,7 +73,7 @@ export class JobHistoryPanel {
   private renderJobCard(job: SavedJob): string {
     const timeAgo = getTimeAgo(new Date(job.created_at));
     return `
-      <div class="upwork-buddy-job-card" data-job-id="${job.id}">
+      <div class="upwork-buddy-job-card" data-job-id="${escapeHtml(String(job.id))}">
         <div class="upwork-buddy-job-card-header">
           <h4>${escapeHtml(job.job_title)}</h4>
           <span class="upwork-buddy-job-card-time">${escapeHtml(timeAgo)}</span>

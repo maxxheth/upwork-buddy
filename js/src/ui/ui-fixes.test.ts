@@ -3,6 +3,7 @@ import { UpworkBuddy } from '../main';
 import { StateManager } from '../state';
 import { STYLES } from '../styles';
 import type { ProfileState } from '../types';
+import { JobHistoryPanel } from './job-history';
 import { Modal } from './modal';
 import { ProfileConfigUI } from './profile-config';
 import { ProjectsListUI } from './projects-list';
@@ -134,5 +135,35 @@ describe('M1 Frontend Bug Fixes', () => {
     await new Promise((resolve) => setTimeout(resolve, 20));
 
     expect(document.getElementById('upwork-buddy-health-warning')).toBeNull();
+  });
+
+  it('M3 Carry-Forward: JobHistoryPanel escapes data-job-id attribute values', () => {
+    const container = document.createElement('div');
+    const panel = new JobHistoryPanel(container);
+    panel.render([
+      {
+        id: '1" onmouseover="alert(1)' as unknown as number,
+        job_title: 'Test Job',
+        job_description: 'Desc',
+        contract_type: 'fixed',
+        budget: '$500',
+        rate_range: '',
+        rate_min: '',
+        rate_max: '',
+        budget_amount: '$500',
+        experience_level: 'Expert',
+        skills: 'Go',
+        proposal: '',
+        time_estimate: '',
+        execution_prompt: '',
+        tone_analysis: '',
+        created_at: new Date().toISOString(),
+      },
+    ]);
+
+    const card = container.querySelector('.upwork-buddy-job-card');
+    expect(card).not.toBeNull();
+    expect(card?.getAttribute('onmouseover')).toBeNull();
+    expect(container.innerHTML).toContain('data-job-id="1&quot; onmouseover=&quot;alert(1)"');
   });
 });

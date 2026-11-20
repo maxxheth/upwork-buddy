@@ -5,6 +5,7 @@
 import { browser } from 'wxt/browser';
 import type {
   AnalysisResponse,
+  DownloadAgentsRequest,
   GenerateAgentsRequest,
   GenerateAgentsResponse,
   GeneratedAgent,
@@ -35,15 +36,18 @@ export interface ApiProxyResponseMessage {
   status: number;
   statusText: string;
   contentType?: string;
+  etag?: string;
+  xSelectorVersion?: string;
   bodyBase64?: string;
   error?: string;
 }
 
 function isContentScriptRuntime(): boolean {
   try {
+    const proto = window.location?.protocol;
     return (
       typeof window !== 'undefined' &&
-      window.location?.protocol === 'https:' &&
+      (proto === 'https:' || proto === 'chrome-extension:' || proto === 'moz-extension:') &&
       typeof browser?.runtime?.sendMessage === 'function'
     );
   } catch {
@@ -101,7 +105,17 @@ export function createExtensionProxyTransport(): ApiTransport {
 
     const status = reply.status || 500;
     const statusText = reply.statusText ?? '';
-    const responseHeaders = reply.contentType ? { 'Content-Type': reply.contentType } : undefined;
+    const headersRecord: Record<string, string> = {};
+    if (reply.contentType) {
+      headersRecord['Content-Type'] = reply.contentType;
+    }
+    if (reply.etag) {
+      headersRecord.ETag = reply.etag;
+    }
+    if (reply.xSelectorVersion) {
+      headersRecord['X-Selector-Version'] = reply.xSelectorVersion;
+    }
+    const responseHeaders = Object.keys(headersRecord).length > 0 ? headersRecord : undefined;
 
     if (status === 204 || status === 205 || status === 304) {
       return new Response(null, { status, statusText, headers: responseHeaders });
@@ -220,7 +234,7 @@ export class ApiClient {
     console.log('📡 API: Response status', response.status, response.statusText);
 
     if (!response.ok) {
-      console.error('❌ API: Request failed', response.status, response.statusText);
+      console.warn('⚠️ API: Request failed', response.status, response.statusText);
       throw new Error(`API error: ${response.status} ${response.statusText}`);
     }
 
@@ -337,11 +351,19 @@ export class ApiClient {
   /**
    * Download selected agents as a zip file
    */
-  async downloadAgents(agentNames: string[]): Promise<Blob> {
+  async downloadAgents(
+    agentNames: string[],
+    options?: { template_name?: string; format?: string },
+  ): Promise<Blob> {
+    const body: DownloadAgentsRequest = {
+      agent_names: agentNames,
+      ...(options?.template_name ? { template_name: options.template_name } : {}),
+      ...(options?.format ? { format: options.format } : {}),
+    };
     const response = await this.request(`${CONFIG.apiBaseUrl}/api/agents/download`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ agent_names: agentNames }),
+      body: JSON.stringify(body),
     });
     if (!response.ok) {
       throw new Error(`Download agents failed: ${response.status} ${response.statusText}`);

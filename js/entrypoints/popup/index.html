@@ -1,0 +1,55 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Upwork Buddy</title>
+    <link rel="stylesheet" href="./style.css" />
+  </head>
+  <body>
+    <main class="popup-card">
+      <header class="popup-header">
+        <h1>Upwork Buddy</h1>
+        <span id="daemon-status" data-testid="daemon-status" class="pill">Checking...</span>
+      </header>
+
+      <div
+        id="human-action-banner"
+        data-testid="human-action-banner"
+        class="challenge-banner"
+        hidden
+      >
+        HUMAN_ACTION_REQUIRED — Login / 2FA / Verification challenge detected
+      </div>
+
+      <section class="status-grid">
+        <div class="stat">
+          <span class="label">Policy Mode</span>
+          <strong id="policy-mode" data-testid="policy-mode">confirm_in_ui</strong>
+        </div>
+        <div class="stat">
+          <span class="label">Pending Approvals</span>
+          <strong id="pending-approvals-count" data-testid="pending-approvals-count">0</strong>
+        </div>
+      </section>
+
+      <div class="popup-actions">
+        <button type="button" id="open-sidepanel-btn" data-testid="open-sidepanel-btn" class="btn-primary">
+          Open Side Panel
+        </button>
+        <button type="button" id="kill-switch-btn" data-testid="kill-switch-btn" class="btn-danger">
+          Kill Switch
+        </button>
+        <button type="button" id="start-server-btn" data-testid="start-server-btn" class="btn-secondary">
+          Start Local Server
+        </button>
+        <button type="button" id="open-options-btn" data-testid="open-options-btn" class="btn-secondary">
+          Settings / Pairing
+        </button>
+      </div>
+
+      <p id="popup-feedback" class="feedback"></p>
+    </main>
+    <script type="module" src="./main.ts"></script>
+  </body>
+</html>

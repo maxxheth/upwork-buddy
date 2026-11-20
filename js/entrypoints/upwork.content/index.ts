@@ -1,10 +1,13 @@
+import './style.css';
 import { defineContentScript } from 'wxt/utils/define-content-script';
-import { UpworkBuddy } from '../../src/main';
+import { mountUpworkOverlay } from '../../src/content/overlay';
 
 export default defineContentScript({
   matches: ['https://www.upwork.com/*'],
   runAt: 'document_idle',
-  main() {
-    new UpworkBuddy();
+  cssInjectionMode: 'ui',
+  async main(ctx) {
+    const ui = await mountUpworkOverlay(ctx);
+    ui.mount();
   },
 });

@@ -61,9 +61,17 @@ export function attachCollapsibleListeners(container: HTMLElement): void {
 /**
  * Render a value (handles objects, arrays, strings, etc.)
  */
+const MAX_RENDER_DEPTH = 32;
+
 export function renderValue(value: unknown, depth = 0): string {
   if (value === null || value === undefined) {
     return '<em style="color: #999;">null</em>';
+  }
+  if (depth >= MAX_RENDER_DEPTH) {
+    if (typeof value === 'object') {
+      return '<em style="color: #999;">[Max depth exceeded]</em>';
+    }
+    return escapeHtml(String(value));
   }
 
   if (typeof value === 'boolean') {
@@ -105,7 +113,7 @@ export function renderValue(value: unknown, depth = 0): string {
       html += `
         <div class="upwork-buddy-section" style="margin-left: ${depth * 10}px;">
           <div class="upwork-buddy-section-header" data-collapsible="true">
-            <h4 style="font-size: ${15 - depth}px;">${displayKey}</h4>
+            <h4 style="font-size: ${Math.max(11, 15 - depth)}px;">${displayKey}</h4>
             <span class="upwork-buddy-section-toggle">▼</span>
           </div>
           <div class="upwork-buddy-section-content">
@@ -167,7 +175,7 @@ export function renderAnalysis(analysis: AnalysisResponse, showCachedIndicator =
     console.log(`📄 Rendering section: ${key}`);
 
     const displayName = key.replace(/_/g, ' ').replace(/\b\w/g, (l) => l.toUpperCase());
-    const icon = icons[key] || '📄';
+    const icon = Object.hasOwn(icons, key) ? icons[key] : '📄';
     const isOpen = defaultOpen.includes(key);
 
     try {

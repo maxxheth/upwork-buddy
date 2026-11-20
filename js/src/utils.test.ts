@@ -338,3 +338,25 @@ describe('attachCollapsibleListeners', () => {
     expect(nestedContent?.classList.contains('open')).toBe(true);
   });
 });
+
+describe('renderValue depth cap and font-size clamp', () => {
+  it('survives 4000-level deep objects without stack overflow and clamps font-size >= 11px', () => {
+    let deep: Record<string, unknown> = { leaf: 'end' };
+    for (let i = 0; i < 4000; i++) {
+      deep = { child: deep };
+    }
+    const html = renderValue(deep);
+    expect(html).toContain('[Max depth exceeded]');
+    expect(html).not.toMatch(/font-size:\s*-?\dpx;/);
+    expect(html).not.toContain('font-size: 0px');
+  });
+
+  it('renderAnalysis ignores Object.prototype keys in icons map', () => {
+    const html = renderAnalysis({
+      toString: 'boom',
+      summary: 'ok',
+    } as unknown as AnalysisResponse);
+    expect(html).not.toContain('function toString');
+    expect(html).toContain('📄 ToString');
+  });
+});

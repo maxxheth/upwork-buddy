@@ -269,6 +269,13 @@ export interface SavedJob {
   id: number;
   job_title: string;
   job_description: string;
+  url?: string;
+  upwork_job_id?: string;
+  canonical_url?: string;
+  source?: string;
+  source_feed?: string;
+  source_query?: string;
+  status?: string;
   contract_type: string;
   budget: string;
   rate_range: string;
@@ -276,12 +283,43 @@ export interface SavedJob {
   rate_max: string;
   budget_amount: string;
   experience_level: string;
+  duration?: string;
+  hours_per_week?: string;
   skills: string;
+  posted_text?: string;
+  posted_at_est?: string | null;
+  proposals_tier?: string;
+  proposals_count?: number | null;
+  connects_required?: number | null;
+  screening_questions?: Array<{ index: number; prompt: string; required?: boolean }>;
+  attachments?: Array<{ filename: string; url: string }>;
+  qualifications?: Array<{ name: string; value: string; met?: boolean | null }>;
   proposal: string;
   time_estimate: string;
   execution_prompt: string;
   tone_analysis: string;
+  score?: number | null;
+  score_breakdown?: Record<string, unknown>;
+  score_reasoning?: string;
+  fit_label?: string;
+  client_country?: string;
+  client_rating?: number | null;
+  client_reviews?: number | null;
+  client_spent?: string;
+  client_spent_usd?: number | null;
+  client_hires?: number | null;
+  client_hire_rate?: number | null;
+  payment_verified?: boolean | null;
+  client_activity?: {
+    interviewing?: number;
+    invites_sent?: number;
+    unanswered_invites?: number;
+    last_viewed?: string;
+    avg_hourly_rate_paid?: string;
+  };
+  last_enriched_at?: string | null;
   created_at: string;
+  updated_at?: string;
 }
 
 export interface SavedJobsResponse {
@@ -291,6 +329,14 @@ export interface SavedJobsResponse {
 export interface SaveJobRequest {
   job_title: string;
   job_description: string;
+  url?: string;
+  job_url?: string;
+  upwork_job_id?: string;
+  canonical_url?: string;
+  source?: string;
+  source_feed?: string;
+  source_query?: string;
+  status?: string;
   contract_type: string;
   budget: string;
   rate_range: string;
@@ -298,7 +344,33 @@ export interface SaveJobRequest {
   rate_max: string;
   budget_amount: string;
   experience_level: string;
+  duration?: string;
+  hours_per_week?: string;
   skills: string;
+  posted_text?: string;
+  proposals_tier?: string;
+  proposals_count?: number | null;
+  connects_required?: number | null;
+  screening_questions?: Array<{ index: number; prompt: string; required?: boolean }>;
+  attachments?: Array<{ filename: string; url: string }>;
+  qualifications?: Array<{ name: string; value: string; met?: boolean | null }>;
+  client_country?: string;
+  client_rating?: number | null;
+  client_reviews?: number | null;
+  client_spent?: string;
+  client_spent_usd?: number | null;
+  client_hires?: number | null;
+  client_hire_rate?: number | null;
+  payment_verified?: boolean | null;
+  client_avg_hourly?: string;
+  client_activity?: {
+    interviewing?: number;
+    invites_sent?: number;
+    unanswered_invites?: number;
+    last_viewed?: string;
+    avg_hourly_rate_paid?: string;
+  };
+  last_enriched_at?: string;
   proposal: string;
   time_estimate: string;
   execution_prompt: string;
@@ -345,9 +417,11 @@ export interface GenerateAgentsRequest {
 
 export interface GeneratedAgent {
   file_name: string;
+  blueprint_name?: string;
   content: string;
   template_name: string;
   format: string;
+  job_id?: number;
   generated_at: string;
 }
 
@@ -357,4 +431,6 @@ export interface GenerateAgentsResponse {
 
 export interface DownloadAgentsRequest {
   agent_names: string[];
+  template_name?: string;
+  format?: string;
 }
