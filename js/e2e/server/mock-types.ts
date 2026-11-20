@@ -15,6 +15,7 @@ export type DriftMode =
   | 'broken_search'
   | 'broken_v2_card'
   | 'broken_detail'
+  | 'broken_detail_skills'
   | 'mutated_drift'
   | 'unmapped_auth';
 

@@ -1264,6 +1264,17 @@ function renderSkillsSection(skills: string[], driftMode: DriftMode): string {
     .map((skill) => `      <div class="air3-line-clamp">${escapeHtml(skill)}</div>`)
     .join('\n');
 
+  if (driftMode === 'broken_detail_skills') {
+    const brokenItems = skills
+      .map((skill) => `        <li class="air3-skill-chip"><span>${escapeHtml(skill)}</span></li>`)
+      .join('\n');
+    return `    <section class="skills-expertise">
+      <h4>Skills and Expertise</h4>
+      <ul class="new-skill-chips">
+${brokenItems}
+      </ul>
+    </section>`;
+  }
   if (driftMode === 'clean_no_fragile') {
     return `    <section>
       <div class="skills-list">

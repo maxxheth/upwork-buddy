@@ -89,10 +89,12 @@ export async function startWorkerDaemon(opts: DaemonSpawnOptions): Promise<Daemo
   const homeDir = path.join(workDir, 'home');
   const xdgConfigHome = path.join(workDir, 'xdg');
   const selectorsDir = path.join(workDir, 'selectors');
+  const diagnosticsDir = path.join(workDir, 'diagnostics');
   const selectorsYamlPath = path.join(selectorsDir, 'upwork.yaml');
   await fs.mkdir(homeDir, { recursive: true });
   await fs.mkdir(xdgConfigHome, { recursive: true });
   await fs.mkdir(selectorsDir, { recursive: true });
+  await fs.mkdir(diagnosticsDir, { recursive: true });
 
   const repoSelectorsPath = path.join(opts.repoRoot, 'configs', 'selectors', 'upwork.yaml');
   const hasRepoSelectors = await fileExists(repoSelectorsPath);
@@ -125,6 +127,7 @@ export async function startWorkerDaemon(opts: DaemonSpawnOptions): Promise<Daemo
     MCP_ENABLED: 'true',
     CORS_ALLOWED_ORIGINS: 'chrome-extension://*,moz-extension://*',
     TEMPLATES_PATH: templatesPath,
+    DIAGNOSTICS_DIR: diagnosticsDir,
     ...(hasRepoSelectors ? { SELECTORS_PATH: selectorsYamlPath } : {}),
     ...(opts.extraEnv ?? {}),
   };

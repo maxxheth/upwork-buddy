@@ -5,6 +5,10 @@ const EXPECTED_TOOLS = [
   'upwork_session_status',
   'upwork_audit_selectors',
   'upwork_list_tabs',
+  'upwork_capture_ui_diagnostic',
+  'upwork_get_ui_diagnostic',
+  'upwork_test_selector_patch',
+  'upwork_apply_selector_patch',
   'upwork_search_jobs',
   'upwork_get_job_details',
   'upwork_list_saved_jobs',
@@ -29,15 +33,16 @@ const EXPECTED_RESOURCES = [
   'upwork://proposals/active',
   'upwork://messages/unread',
   'upwork://selectors/health',
+  'upwork://diagnostics/latest',
 ] as const;
 
 test.describe('Tier 1 F8 — Embedded Go MCP Server (Streamable HTTP + stdio)', () => {
-  test('T1-F8-01: Streamable HTTP /mcp handshake, all 18 tools & all 6 resources discovery', async ({
+  test('T1-F8-01: Streamable HTTP /mcp handshake, all 22 tools & all 7 resources discovery', async ({
     mcpHttp,
   }) => {
     const tools = await mcpHttp.listTools();
     const toolNames = tools.map((t) => t.name).sort();
-    expect(toolNames.length).toBe(18);
+    expect(toolNames.length).toBe(22);
     expect(toolNames).toEqual([...EXPECTED_TOOLS].sort());
     for (const tool of tools) {
       expect(tool.inputSchema).toBeDefined();
@@ -56,7 +61,7 @@ test.describe('Tier 1 F8 — Embedded Go MCP Server (Streamable HTTP + stdio)', 
     await stdioClient.initialize();
     try {
       const tools = await stdioClient.listTools();
-      expect(tools.length).toBe(18);
+      expect(tools.length).toBe(22);
 
       const statusRes = await stdioClient.callTool('upwork_session_status', {});
       expect(statusRes.isError).not.toBe(true);
@@ -278,7 +283,7 @@ test.describe('Tier 1 F8 — Embedded Go MCP Server (Streamable HTTP + stdio)', 
     }
   });
 
-  test('T1-F8-06: all 6 upwork://* MCP resources & concurrent Streamable HTTP client serialization', async ({
+  test('T1-F8-06: all 7 upwork://* MCP resources & concurrent Streamable HTTP client serialization', async ({
     pairedExtension,
     daemon,
     mcpHttp,

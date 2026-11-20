@@ -26,6 +26,7 @@ export interface WorkerDbHandle {
 
 export const DEFAULT_E2E_PG_PORT = 5444;
 export const E2E_DOMAIN_TABLES: readonly string[] = [
+  'uidiagnostic_captures',
   'action_audit_logs',
   'selector_audits',
   'generated_agents',
