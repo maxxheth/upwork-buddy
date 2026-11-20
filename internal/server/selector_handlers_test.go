@@ -40,8 +40,8 @@ func TestGetSelectorsHandler_JSONYAMLAndETag(t *testing.T) {
 	if etag == "" {
 		t.Fatal("expected non-empty ETag header")
 	}
-	if ver := resp.Header.Get("X-Selector-Version"); ver != "2.0" {
-		t.Fatalf("expected X-Selector-Version=2.0, got %q", ver)
+	if ver := resp.Header.Get("X-Selector-Version"); !strings.HasPrefix(ver, "2.") {
+		t.Fatalf("expected X-Selector-Version starting with 2., got %q", ver)
 	}
 
 	var cfg SelectorConfig

@@ -4,9 +4,9 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"io"
 	"log"
 	"net/http"
-	"os"
 	"strings"
 	"time"
 
@@ -17,11 +17,13 @@ import (
 	"gorm.io/gorm"
 )
 
-// AnalyzeJobRequest configures deterministic scoring and optional Ollama analysis for a persisted job.
+// AnalyzeJobRequest configures deterministic scoring and optional LLM analysis for a persisted job.
 type AnalyzeJobRequest struct {
 	JobID       any    `json:"job_id,omitempty"`
 	UpworkJobID string `json:"upwork_job_id,omitempty"`
 	UseLLM      *bool  `json:"use_llm,omitempty"`
+	Model       string `json:"model,omitempty"`
+	Effort      string `json:"effort,omitempty"`
 }
 
 // AnalyzeJobResult contains the deterministic score breakdown, optional LLM analysis, and updated job row.
@@ -98,7 +100,7 @@ func (s *Server) AnalyzeJob(ctx context.Context, req AnalyzeJobRequest) (*Analyz
 	if req.UseLLM != nil {
 		runLLM = *req.UseLLM
 		strictLLM = *req.UseLLM
-	} else if strings.TrimSpace(os.Getenv("OLLAMA_API_KEY")) != "" {
+	} else if ollama.IsConfigured() {
 		runLLM = true
 	}
 
@@ -134,6 +136,8 @@ func (s *Server) AnalyzeJob(ctx context.Context, req AnalyzeJobRequest) (*Analyz
 				ExperienceLevel: job.ExperienceLevel,
 				UserProfile:     prof.Description,
 				UserSkills:      prof.Skills,
+				Model:           req.Model,
+				Effort:          req.Effort,
 			})
 			if aErr != nil {
 				if strictLLM {
@@ -194,6 +198,44 @@ func (s *Server) AnalyzeJob(ctx context.Context, req AnalyzeJobRequest) (*Analyz
 	}, nil
 }
 
+// analyzeSavedJobHandler handles POST /api/jobs/{id}/analyze requests.
+func (s *Server) analyzeSavedJobHandler(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		respondWithError(w, http.StatusMethodNotAllowed, "Method not allowed")
+		return
+	}
+
+	id := strings.TrimSpace(r.PathValue("id"))
+	if id == "" {
+		respondWithError(w, http.StatusBadRequest, "Job ID is required")
+		return
+	}
+
+	var body struct {
+		UseLLM *bool  `json:"use_llm,omitempty"`
+		Model  string `json:"model,omitempty"`
+		Effort string `json:"effort,omitempty"`
+	}
+	if r.Body != nil {
+		if err := json.NewDecoder(r.Body).Decode(&body); err != nil && !errors.Is(err, io.EOF) {
+			respondWithError(w, http.StatusBadRequest, "Invalid request body")
+			return
+		}
+	}
+
+	res, err := s.AnalyzeJob(r.Context(), AnalyzeJobRequest{
+		JobID:  id,
+		UseLLM: body.UseLLM,
+		Model:  body.Model,
+		Effort: body.Effort,
+	})
+	if err != nil {
+		respondBridgeError(w, err)
+		return
+	}
+	respondWithJSON(w, res)
+}
+
 // analyzeJobHandler handles POST /api/analyze-job requests
 func (s *Server) analyzeJobHandler(w http.ResponseWriter, r *http.Request) {
 	log.Printf("=== ANALYZE JOB REQUEST START ===")
@@ -229,7 +271,11 @@ func (s *Server) analyzeJobHandler(w http.ResponseWriter, r *http.Request) {
 	result, err := ollamaService.AnalyzeJob(r.Context(), req)
 	if err != nil {
 		log.Printf("❌ Failed to analyze job: %v", err)
-		http.Error(w, "Failed to analyze job", http.StatusInternalServerError)
+		if errors.Is(err, ollama.ErrUnavailable) || errors.Is(err, ollama.ErrAuthRequired) {
+			http.Error(w, "Service unavailable", http.StatusServiceUnavailable)
+			return
+		}
+		http.Error(w, "Failed to analyze job", http.StatusBadGateway)
 		return
 	}
 

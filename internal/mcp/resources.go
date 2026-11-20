@@ -122,4 +122,29 @@ func (s *Server) registerResources() {
 			"count":  len(audits),
 		})
 	})
+
+	s.mcpServer.AddResource(&mcp.Resource{
+		URI:         "upwork://diagnostics/latest",
+		Name:        "Latest UI Diagnostic Capture",
+		Description: "Latest pruned DOM diagnostic capture, broken field diagnoses, ranked candidate selectors, and markdown summary.",
+		MIMEType:    "application/json",
+	}, func(ctx context.Context, req *mcp.ReadResourceRequest) (*mcp.ReadResourceResult, error) {
+		if s.backend.DB() == nil || s.backend.DB().GetGorm() == nil {
+			return jsonResourceResult(req.Params.URI, map[string]any{
+				"capture": nil,
+				"message": "Database unavailable",
+			})
+		}
+		detail, err := s.backend.GetUIDiagnosticCapture(ctx, "latest", false)
+		if err != nil {
+			if se, ok := err.(*server.ServiceError); ok && se.HTTPStatus == 404 {
+				return jsonResourceResult(req.Params.URI, map[string]any{
+					"capture": nil,
+					"message": "No UI diagnostic captures recorded yet",
+				})
+			}
+			return nil, err
+		}
+		return jsonResourceResult(req.Params.URI, detail)
+	})
 }

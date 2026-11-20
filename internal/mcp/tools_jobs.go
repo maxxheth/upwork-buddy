@@ -65,7 +65,9 @@ type listSavedJobsInput struct {
 type analyzeJobInput struct {
 	JobID       any    `json:"job_id,omitempty" jsonschema:"Persisted numeric DB job ID or Upwork ~jobID"`
 	UpworkJobID string `json:"upwork_job_id,omitempty" jsonschema:"Upwork job ID (e.g. ~01abc)"`
-	UseLLM      *bool  `json:"use_llm,omitempty" jsonschema:"Whether to also invoke Ollama LLM analysis (requires OLLAMA_API_KEY)"`
+	UseLLM      *bool  `json:"use_llm,omitempty" jsonschema:"Whether to also invoke AGY/Ollama LLM analysis (requires AGY_ENDPOINT_URL or OLLAMA_API_KEY)"`
+	Model       string `json:"model,omitempty" jsonschema:"Optional LLM model override (e.g. gemini-pro-orchestrator-neon, gemini-4-neon, gpt-oss:120b)"`
+	Effort      string `json:"effort,omitempty" jsonschema:"Optional AGY reasoning effort override (low, medium, high, xhigh)"`
 }
 
 type manageSearchProfilesInput struct {
@@ -249,12 +251,14 @@ func (s *Server) registerJobTools() {
 
 	mcp.AddTool(s.mcpServer, &mcp.Tool{
 		Name:        "upwork_analyze_job",
-		Description: "Run deterministic scoring against the live freelancer profile (plus optional Ollama LLM analysis) and persist updated score/analysis back to Postgres.",
+		Description: "Run deterministic scoring against the live freelancer profile (plus optional AGY/Ollama LLM analysis) and persist updated score/analysis back to Postgres.",
 	}, func(ctx context.Context, _ *mcp.CallToolRequest, in analyzeJobInput) (*mcp.CallToolResult, any, error) {
 		res, err := s.backend.AnalyzeJob(ctx, server.AnalyzeJobRequest{
 			JobID:       in.JobID,
 			UpworkJobID: in.UpworkJobID,
 			UseLLM:      in.UseLLM,
+			Model:       in.Model,
+			Effort:      in.Effort,
 		})
 		if err != nil {
 			return toolErrorResult(err)

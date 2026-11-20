@@ -91,6 +91,7 @@ func AllModels() []any {
 		&Message{},
 		&GeneratedAgent{},
 		&SelectorAudit{},
+		&UIDiagnosticCapture{},
 		&ActionAuditLog{},
 		&PolicyConfig{},
 	}
@@ -303,6 +304,21 @@ type SelectorAudit struct {
 	ReportJSON    JSONB     `gorm:"type:jsonb;not null"`
 	BaselineJSON  JSONB     `gorm:"type:jsonb"`
 	CreatedAt     time.Time `gorm:"type:timestamp(3);default:CURRENT_TIMESTAMP;not null;index:idx_selector_audits_created_at"`
+}
+
+// UIDiagnosticCapture indexes captured live DOM diagnostic bundles stored on disk.
+type UIDiagnosticCapture struct {
+	ID               uint      `gorm:"primaryKey;autoIncrement"`
+	CaptureUID       string    `gorm:"type:text;not null;uniqueIndex:idx_ui_diagnostic_captures_uid"`
+	ViewType         string    `gorm:"type:text;not null;index:idx_ui_diagnostic_captures_view_type"`
+	PageURL          string    `gorm:"type:text;not null;default:''"`
+	OverallStatus    string    `gorm:"type:text;not null;index:idx_ui_diagnostic_captures_overall_status"`
+	BrokenCount      int       `gorm:"type:integer;not null;default:0"`
+	BrokenFieldsJSON JSONB     `gorm:"type:jsonb"`
+	BundleDir        string    `gorm:"type:text;not null;default:''"`
+	HasScreenshot    bool      `gorm:"type:boolean;not null;default:false"`
+	SummaryJSON      JSONB     `gorm:"type:jsonb"`
+	CreatedAt        time.Time `gorm:"type:timestamp(3);default:CURRENT_TIMESTAMP;not null;index:idx_ui_diagnostic_captures_created_at"`
 }
 
 // ActionAuditLog records policy-governed actions, approvals, and kill-switch events.

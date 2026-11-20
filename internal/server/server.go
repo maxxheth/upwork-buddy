@@ -7,6 +7,7 @@ import (
 	"net"
 	"net/http"
 	"os"
+	"path/filepath"
 	"strconv"
 	"strings"
 	"sync"
@@ -42,6 +43,7 @@ type ServerDeps struct {
 	CORSAllowedOrigins string
 	TemplatesPath      string
 	SelectorsPath      string
+	DiagnosticsDir     string
 	APIToken           string
 	MCPEnabled         *bool
 	DB                 service.DatabaseService
@@ -56,6 +58,7 @@ type Server struct {
 	corsAllowedOrigins string
 	templatesPath      string
 	selectorsPath      string
+	diagnosticsDir     string
 	apiToken           string
 	mcpDisabled        bool
 
@@ -120,6 +123,10 @@ func NewServerWithDeps(deps ServerDeps) *Server {
 	if selectorsPath == "" {
 		selectorsPath = "configs/selectors/upwork.yaml"
 	}
+	diagnosticsDir := strings.TrimSpace(deps.DiagnosticsDir)
+	if diagnosticsDir == "" {
+		diagnosticsDir = filepath.Join("diagnostics", "captures")
+	}
 	mcpDisabled := deps.MCPEnabled != nil && !*deps.MCPEnabled
 	pe := deps.PolicyEngine
 	if pe == nil && deps.DB != nil && deps.DB.GetGorm() != nil {
@@ -136,6 +143,7 @@ func NewServerWithDeps(deps ServerDeps) *Server {
 		corsAllowedOrigins: strings.TrimSpace(deps.CORSAllowedOrigins),
 		templatesPath:      templatesPath,
 		selectorsPath:      selectorsPath,
+		diagnosticsDir:     diagnosticsDir,
 		apiToken:           deps.APIToken,
 		mcpDisabled:        mcpDisabled,
 		bridgeHub:          deps.BridgeHub,
@@ -178,6 +186,11 @@ func NewServerInstance() (*http.Server, *Server) {
 		selectorsPath = "configs/selectors/upwork.yaml"
 	}
 
+	diagnosticsDir := strings.TrimSpace(os.Getenv("DIAGNOSTICS_DIR"))
+	if diagnosticsDir == "" {
+		diagnosticsDir = filepath.Join("diagnostics", "captures")
+	}
+
 	apiToken, tokenSource, err := resolveOrCreateAPIToken()
 	if err != nil {
 		log.Fatalf("Failed to initialize API token: %v", err)
@@ -192,6 +205,7 @@ func NewServerInstance() (*http.Server, *Server) {
 		corsAllowedOrigins: corsAllowedOrigins,
 		templatesPath:      templatesPath,
 		selectorsPath:      selectorsPath,
+		diagnosticsDir:     diagnosticsDir,
 		apiToken:           apiToken,
 		mcpDisabled:        !mcpEnabled,
 		db:                 dbSvc,
@@ -252,6 +266,21 @@ func (s *Server) APIToken() string {
 // SelectorsPath returns the resolved selectors YAML path.
 func (s *Server) SelectorsPath() string {
 	return s.resolveSelectorsPath()
+}
+
+// DiagnosticsDir returns the resolved directory where UI diagnostic bundles are persisted.
+func (s *Server) DiagnosticsDir() string {
+	return s.resolveDiagnosticsDir()
+}
+
+func (s *Server) resolveDiagnosticsDir() string {
+	if s != nil && strings.TrimSpace(s.diagnosticsDir) != "" {
+		return strings.TrimSpace(s.diagnosticsDir)
+	}
+	if envDir := strings.TrimSpace(os.Getenv("DIAGNOSTICS_DIR")); envDir != "" {
+		return envDir
+	}
+	return filepath.Join("diagnostics", "captures")
 }
 
 // TemplatesPath returns the configured templates YAML path.

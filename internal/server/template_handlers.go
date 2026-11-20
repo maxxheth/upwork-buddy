@@ -10,7 +10,6 @@ import (
 	"io"
 	"log"
 	"net/http"
-	"os"
 	"regexp"
 	"strings"
 	"time"
@@ -470,7 +469,7 @@ func (s *Server) GenerateProjectAgents(ctx context.Context, req GenerateProjectA
 
 	var ollamaService *ollama.Service
 	var docsContent string
-	if strings.TrimSpace(os.Getenv("OLLAMA_API_KEY")) != "" {
+	if ollama.IsConfigured() {
 		if svc, oErr := ollama.New(); oErr == nil {
 			ollamaService = svc
 			defer func() {

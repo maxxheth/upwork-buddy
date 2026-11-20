@@ -139,17 +139,29 @@ func setupTestMCPServer(t *testing.T) (*server.Server, *Server) {
 		},
 	})
 
+	tmpDir := t.TempDir()
+	tmpSelectorsPath := filepath.Join(tmpDir, "upwork.yaml")
+	if rawSel, readErr := os.ReadFile("../../configs/selectors/upwork.yaml"); readErr == nil {
+		if writeErr := os.WriteFile(tmpSelectorsPath, rawSel, 0o644); writeErr != nil {
+			t.Fatalf("write isolated selectors yaml: %v", writeErr)
+		}
+	} else {
+		t.Fatalf("read selectors yaml: %v", readErr)
+	}
+	tmpDiagDir := filepath.Join(tmpDir, "diagnostics")
+
 	enabled := true
 	backend = server.NewServerWithDeps(server.ServerDeps{
-		Host:          "127.0.0.1",
-		Port:          0,
-		APIToken:      "test-mcp-api-token",
-		TemplatesPath: "../../templates.yaml",
-		SelectorsPath: "../../configs/selectors/upwork.yaml",
-		MCPEnabled:    &enabled,
-		DB:            dbSvc,
-		BridgeHub:     hub,
-		PolicyEngine:  policy.NewEngine(gormDB),
+		Host:           "127.0.0.1",
+		Port:           0,
+		APIToken:       "test-mcp-api-token",
+		TemplatesPath:  "../../templates.yaml",
+		SelectorsPath:  tmpSelectorsPath,
+		DiagnosticsDir: tmpDiagDir,
+		MCPEnabled:     &enabled,
+		DB:             dbSvc,
+		BridgeHub:      hub,
+		PolicyEngine:   policy.NewEngine(gormDB),
 	})
 
 	mcpSrv := NewServer(backend)
@@ -535,42 +547,118 @@ func defaultMockHandler() mockRPCHandler {
 			return map[string]any{"ok": true, "prefilled": true}, nil
 		case "messages.send":
 			return map[string]any{"ok": true, "sent": true}, nil
+		case "diagnostics.capture":
+			return map[string]any{
+				"ok": true,
+				"capture": map[string]any{
+					"captured_at":      time.Now().UTC().Format(time.RFC3339),
+					"url":              "https://www.upwork.com/jobs/~030100000000000000001/",
+					"title":            "Senior Go PostgreSQL Architect - Upwork",
+					"view_type":        "job_detail",
+					"scope":            "drawer",
+					"is_authenticated": true,
+					"overall_status":   "BROKEN",
+					"redact_pii":       true,
+					"audit_report":     map[string]any{"view_type": "job_detail", "overall_status": "BROKEN"},
+					"blueprint":        map[string]any{"view_type": "job_detail"},
+					"landmarks":        []map[string]any{{"landmark": "main", "tag": "main"}},
+					"repetitive_patterns": []map[string]any{
+						{
+							"pattern_name":       "skill_chip",
+							"container_selector": "ul.new-skill-chips",
+							"item_selector":      "ul.new-skill-chips > li.air3-skill-chip",
+							"instance_count":     2,
+							"sample_items":       []string{"Go", "PostgreSQL"},
+						},
+					},
+					"broken_fields": []map[string]any{
+						{
+							"field":               "skills",
+							"view":                "job_detail",
+							"status":              "BROKEN",
+							"registered_selector": "[data-test='Skill']",
+							"matched_count":       0,
+							"notes":               "Matched 0 nodes",
+							"nearest_heading":     "Skills and Expertise",
+							"anchor_html":         `<ul class="new-skill-chips"><li class="air3-skill-chip"><span>Go</span></li></ul>`,
+							"candidates": []map[string]any{
+								{
+									"selector":        ".air3-skill-chip span",
+									"stability_score": 88,
+									"matched_count":   2,
+									"sample_value":    []string{"Go", "PostgreSQL"},
+									"strategy":        "repetitive_pattern_leaf",
+									"is_fragile":      false,
+									"reason":          "Matched 2 nodes",
+								},
+							},
+						},
+					},
+					"pruned_html": `<main><ul class="new-skill-chips"><li class="air3-skill-chip"><span>Go</span></li></ul></main>`,
+				},
+			}, nil
+		case "diagnostics.test_patch":
+			return map[string]any{
+				"ok":            true,
+				"view":          "job_detail",
+				"field":         "skills",
+				"matched_count": 2,
+				"sample_value":  []string{"Go", "PostgreSQL"},
+				"status":        "HEALTHY",
+				"regressions":   []any{},
+				"before_summary": map[string]any{
+					"status":        "BROKEN",
+					"matched_count": 0,
+				},
+				"after_summary": map[string]any{
+					"status":           "HEALTHY",
+					"matched_count":    2,
+					"sample_value":     []string{"Go", "PostgreSQL"},
+					"matched_selector": ".air3-skill-chip span",
+				},
+			}, nil
+		case "selectors.reload":
+			return map[string]any{"ok": true, "reloaded": true}, nil
 		default:
 			return map[string]any{"ok": true}, nil
 		}
 	}
 }
 
-func TestMCP_InMemory_All18ToolsAnd6Resources(t *testing.T) {
+func TestMCP_InMemory_All22ToolsAnd7Resources(t *testing.T) {
 	backend, mcpSrv := setupTestMCPServer(t)
 	_, _ = startMockWSServerAndClient(t, backend, defaultMockHandler())
 	session := connectInMemoryClient(t, mcpSrv)
 	ctx := context.Background()
 
-	// 1. Verify exact 18 tools
+	// 1. Verify exact 22 tools
 	toolsRes, err := session.ListTools(ctx, &mcp.ListToolsParams{})
 	if err != nil {
 		t.Fatalf("ListTools failed: %v", err)
 	}
 	expectedTools := map[string]bool{
-		"upwork_session_status":           true,
-		"upwork_audit_selectors":          true,
-		"upwork_list_tabs":                true,
-		"upwork_search_jobs":              true,
-		"upwork_get_job_details":          true,
-		"upwork_list_saved_jobs":          true,
-		"upwork_analyze_job":              true,
-		"upwork_manage_search_profiles":   true,
-		"upwork_draft_proposal":           true,
-		"upwork_fill_proposal_form":       true,
-		"upwork_submit_proposal":          true,
-		"upwork_sync_proposals":           true,
-		"upwork_list_conversations":       true,
-		"upwork_get_conversation":         true,
-		"upwork_draft_message":            true,
-		"upwork_send_message":             true,
-		"upwork_profile":                  true,
-		"upwork_generate_project_agents":  true,
+		"upwork_session_status":          true,
+		"upwork_audit_selectors":         true,
+		"upwork_list_tabs":               true,
+		"upwork_capture_ui_diagnostic":   true,
+		"upwork_get_ui_diagnostic":       true,
+		"upwork_test_selector_patch":     true,
+		"upwork_apply_selector_patch":    true,
+		"upwork_search_jobs":             true,
+		"upwork_get_job_details":         true,
+		"upwork_list_saved_jobs":         true,
+		"upwork_analyze_job":             true,
+		"upwork_manage_search_profiles":  true,
+		"upwork_draft_proposal":          true,
+		"upwork_fill_proposal_form":      true,
+		"upwork_submit_proposal":         true,
+		"upwork_sync_proposals":          true,
+		"upwork_list_conversations":      true,
+		"upwork_get_conversation":        true,
+		"upwork_draft_message":           true,
+		"upwork_send_message":            true,
+		"upwork_profile":                 true,
+		"upwork_generate_project_agents": true,
 	}
 	if len(toolsRes.Tools) != len(expectedTools) {
 		t.Fatalf("expected %d tools, got %d", len(expectedTools), len(toolsRes.Tools))
@@ -584,7 +672,7 @@ func TestMCP_InMemory_All18ToolsAnd6Resources(t *testing.T) {
 		}
 	}
 
-	// 2. Verify exact 6 resources
+	// 2. Verify exact 7 resources
 	resList, err := session.ListResources(ctx, &mcp.ListResourcesParams{})
 	if err != nil {
 		t.Fatalf("ListResources failed: %v", err)
@@ -596,6 +684,7 @@ func TestMCP_InMemory_All18ToolsAnd6Resources(t *testing.T) {
 		"upwork://proposals/active",
 		"upwork://messages/unread",
 		"upwork://selectors/health",
+		"upwork://diagnostics/latest",
 	}
 	if len(resList.Resources) != len(expectedResources) {
 		t.Fatalf("expected %d resources, got %d", len(expectedResources), len(resList.Resources))
@@ -899,7 +988,78 @@ func TestMCP_InMemory_All18ToolsAnd6Resources(t *testing.T) {
 		t.Fatalf("upwork_send_message failed: %+v err=%v", sendMsgRes, err)
 	}
 
-	// 12. Verify all 6 resources return valid non-empty JSON
+	// 12. Exercise all 4 UI diagnostic & self-healing selector tools
+	capRes, err := session.CallTool(ctx, &mcp.CallToolParams{
+		Name: "upwork_capture_ui_diagnostic",
+		Arguments: map[string]any{
+			"scope":          "drawer",
+			"use_active_tab": true,
+			"redact_pii":     true,
+		},
+	})
+	if err != nil || capRes.IsError {
+		t.Fatalf("upwork_capture_ui_diagnostic failed: %+v err=%v", capRes, err)
+	}
+	capMap := parseToolJSON(t, capRes)
+	captureUID, _ := capMap["capture_uid"].(string)
+	if captureUID == "" {
+		t.Fatalf("expected non-empty capture_uid, got %+v", capMap)
+	}
+
+	getCapRes, err := session.CallTool(ctx, &mcp.CallToolParams{
+		Name: "upwork_get_ui_diagnostic",
+		Arguments: map[string]any{
+			"capture_id":   captureUID,
+			"include_html": true,
+		},
+	})
+	if err != nil || getCapRes.IsError {
+		t.Fatalf("upwork_get_ui_diagnostic failed: %+v err=%v", getCapRes, err)
+	}
+	if !strings.Contains(toolErrorText(getCapRes), "Skills and Expertise") {
+		t.Fatalf("expected markdown diagnostic content in get response, got: %s", toolErrorText(getCapRes))
+	}
+
+	testPatchRes, err := session.CallTool(ctx, &mcp.CallToolParams{
+		Name: "upwork_test_selector_patch",
+		Arguments: map[string]any{
+			"view":       "job_detail",
+			"field":      "skills",
+			"selectors":  []string{".air3-skill-chip span"},
+			"extract":    "list",
+			"capture_id": captureUID,
+		},
+	})
+	if err != nil || testPatchRes.IsError {
+		t.Fatalf("upwork_test_selector_patch failed: %+v err=%v", testPatchRes, err)
+	}
+	testPatchMap := parseToolJSON(t, testPatchRes)
+	if testPatchMap["valid_yaml"] != true || testPatchMap["dom_tested"] != true {
+		t.Fatalf("expected valid_yaml=true & dom_tested=true, got %+v", testPatchMap)
+	}
+
+	applyPatchRes, err := session.CallTool(ctx, &mcp.CallToolParams{
+		Name: "upwork_apply_selector_patch",
+		Arguments: map[string]any{
+			"view":       "job_detail",
+			"field":      "skills",
+			"selectors":  []string{".air3-skill-chip span"},
+			"extract":    "list",
+			"reason":     "MCP self-heal test",
+			"capture_id": captureUID,
+		},
+	})
+	if err != nil || applyPatchRes.IsError {
+		t.Fatalf("upwork_apply_selector_patch failed: %+v err=%v", applyPatchRes, err)
+	}
+	applyPatchMap := parseToolJSON(t, applyPatchRes)
+	if applyPatchMap["reloaded_extension"] != true ||
+		applyPatchMap["new_version"] == "" ||
+		applyPatchMap["new_version"] == applyPatchMap["old_version"] {
+		t.Fatalf("expected reloaded_extension=true & bumped new_version, got %+v", applyPatchMap)
+	}
+
+	// 13. Verify all 7 resources return valid non-empty JSON
 	for _, uri := range expectedResources {
 		rr, rErr := session.ReadResource(ctx, &mcp.ReadResourceParams{URI: uri})
 		if rErr != nil || len(rr.Contents) == 0 {
@@ -1251,11 +1411,11 @@ func TestMCP_StdioSubprocess_ProxyAndEmbeddedFallback(t *testing.T) {
 		}
 
 		toolsRes, err := cliSession.ListTools(ctx, &mcp.ListToolsParams{})
-		if err != nil || len(toolsRes.Tools) != 18 {
+		if err != nil || len(toolsRes.Tools) != 22 {
 			t.Fatalf("stdio ListTools failed: len=%d err=%v", len(toolsRes.Tools), err)
 		}
 		resList, err := cliSession.ListResources(ctx, &mcp.ListResourcesParams{})
-		if err != nil || len(resList.Resources) != 6 {
+		if err != nil || len(resList.Resources) != 7 {
 			t.Fatalf("stdio ListResources failed: len=%d err=%v", len(resList.Resources), err)
 		}
 

@@ -57,7 +57,15 @@ Native Messaging allows the extension Popup and Background Service Worker to lau
 
 ## 3. MCP Server Overview & Transports
 
-The embedded Go MCP server (`github.com/modelcontextprotocol/go-sdk v1.8.0`) exposes **18 tools** (`upwork_session_status`, `upwork_audit_selectors`, `upwork_list_tabs`, `upwork_search_jobs`, `upwork_get_job_details`, `upwork_list_saved_jobs`, `upwork_analyze_job`, `upwork_manage_search_profiles`, `upwork_draft_proposal`, `upwork_fill_proposal_form`, `upwork_submit_proposal`, `upwork_sync_proposals`, `upwork_list_conversations`, `upwork_get_conversation`, `upwork_draft_message`, `upwork_send_message`, `upwork_profile`, `upwork_generate_project_agents`) and **6 JSON resources** (`upwork://profile`, `upwork://jobs/hot`, `upwork://proposals/pending-approval`, `upwork://proposals/active`, `upwork://messages/unread`, `upwork://selectors/health`).
+The embedded Go MCP server (`github.com/modelcontextprotocol/go-sdk v1.8.0`) exposes **22 tools** (`upwork_session_status`, `upwork_audit_selectors`, `upwork_list_tabs`, `upwork_capture_ui_diagnostic`, `upwork_get_ui_diagnostic`, `upwork_test_selector_patch`, `upwork_apply_selector_patch`, `upwork_search_jobs`, `upwork_get_job_details`, `upwork_list_saved_jobs`, `upwork_analyze_job`, `upwork_manage_search_profiles`, `upwork_draft_proposal`, `upwork_fill_proposal_form`, `upwork_submit_proposal`, `upwork_sync_proposals`, `upwork_list_conversations`, `upwork_get_conversation`, `upwork_draft_message`, `upwork_send_message`, `upwork_profile`, `upwork_generate_project_agents`) and **7 JSON resources** (`upwork://profile`, `upwork://jobs/hot`, `upwork://proposals/pending-approval`, `upwork://proposals/active`, `upwork://messages/unread`, `upwork://selectors/health`, `upwork://diagnostics/latest`).
+
+### Closed-Loop UI Diagnostic & Self-Healing Selector Workflow
+
+When the in-page banner warns `Some selectors need updating (<field>)`:
+1. Click **Diagnose & Capture** on the warning banner (or call `upwork_capture_ui_diagnostic` with `use_active_tab: true`). This captures a PII-redacted pruned DOM snapshot, repetitive sibling patterns, broken-field anchor HTML, ranked candidate selectors, and exports `snapshot.json`, `pruned.html`, and `diagnostic.md` under `DIAGNOSTICS_DIR` (`diagnostics/captures/`).
+2. Inspect the latest capture with `upwork_get_ui_diagnostic` (or read `upwork://diagnostics/latest`).
+3. Dry-run a candidate rule non-destructively via `upwork_test_selector_patch` (`view`, `field`, `selectors`) to verify extracted sample values, zero sibling regressions, and valid YAML diff.
+4. Atomically patch `configs/selectors/upwork.yaml` via `upwork_apply_selector_patch`, which backs up the prior YAML to `configs/selectors/.backups/upwork.<timestamp>.yaml` and broadcasts `selectors.reload` over WebSocket so Chrome updates live extraction without rebuilding the extension. Roll back anytime via `POST /api/diagnostics/rollback` or the **Selectors -> Rollback Last Patch** button in the Side Panel.
 
 Two transports are supported:
 

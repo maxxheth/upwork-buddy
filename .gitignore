@@ -42,3 +42,7 @@ logs
 *.swp
 *.swo
 *~
+
+# Diagnostic capture bundles and selector patch backups
+/diagnostics/
+/configs/selectors/.backups/

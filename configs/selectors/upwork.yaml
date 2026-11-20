@@ -1,7 +1,6 @@
-version: "2.0"
+version: "2.0.8"
 site: "upwork"
 base_url: "https://www.upwork.com"
-
 # Rules for detecting 404, expired, private, or error page shells
 page_guards:
   not_found_headings:
@@ -21,7 +20,6 @@ page_guards:
     - "[data-cy='fixed-price']"
     - "[data-cy='expertise']"
     - "[data-qa='client-location']"
-
 # Guards for authenticated session state, login redirects, 2FA, and anti-bot challenges
 auth_and_challenge_guards:
   login_url_patterns:
@@ -63,7 +61,6 @@ auth_and_challenge_guards:
     - "a[href*='/ab/account-security/login']"
     - "[data-test='login-link']"
     - "form[action*='login']"
-
 views:
   search_listings:
     container_selectors:
@@ -182,7 +179,6 @@ views:
         extract: "text"
         auth_only: true
         description: "Client spend badge on card"
-
   best_matches:
     container_selectors:
       - "div[data-test='job-tile-list'] > section.air3-card-section"
@@ -300,7 +296,6 @@ views:
           - "clean_proposals_text"
         auth_only: true
         description: "Proposals tier count"
-
   most_recent:
     container_selectors:
       - "div[data-test='job-tile-list'] > section.air3-card-section"
@@ -404,7 +399,6 @@ views:
         transforms:
           - "clean_proposals_text"
         auth_only: true
-
   saved_jobs:
     container_selectors:
       - "div[data-test='job-tile-list'] > section.air3-card-section"
@@ -508,7 +502,6 @@ views:
         transforms:
           - "clean_proposals_text"
         auth_only: true
-
   job_detail:
     container_selectors:
       - ".job-details-content"
@@ -516,8 +509,9 @@ views:
     fields:
       title:
         selectors:
-          - "h1"
           - ".job-details-card h4 span.flex-1"
+          - ".job-details-card h4"
+          - "h1"
           - ".air3-card-section h4"
         extract: "full_text"
         required: true
@@ -557,9 +551,10 @@ views:
         description: "Expertise level icon container with sibling <strong>"
       duration:
         selectors:
-          - "[data-cy='duration2']"
-          - "[data-cy='duration1']"
-        extract: "sibling_text"
+          - "li:has([data-cy^='duration']) strong"
+          - "li:has([data-cy='duration2']) strong"
+          - "li:has([data-cy='duration1']) strong"
+        extract: "full_text"
         sibling_child_tag: "strong"
         description: "Duration icon container with sibling <strong>"
       hours_per_week:
@@ -570,17 +565,18 @@ views:
         description: "Hours per week icon container with sibling <strong>"
       skills:
         selectors:
+          - "[data-test='proposals-insights-v2-skill-chip'] .air3-line-clamp"
+          - "[data-test='proposals-insights-v2-skills-matching'] .air3-badge-skill .air3-line-clamp"
           - "section[data-v-3b2c2248] .skills-list .air3-line-clamp"
           - ".skills-list .air3-line-clamp"
           - "[data-test='Skill'] .air3-line-clamp"
           - "[data-test='Skill'] span"
           - ".air3-badge-highlight .air3-line-clamp"
         extract: "list"
-        is_fragile: true
-        fragile_reason: "Includes legacy Vue scope hash data-v-3b2c2248 fallback"
         description: "Skills list on job detail page"
       proposals:
         selectors:
+          - "[data-test='proposals-insights-v2-job-activity-section']"
           - "li.ca-item"
           - ".client-activity-items li.ca-item"
           - "[data-test='proposals-tier']"
@@ -630,6 +626,8 @@ views:
         description: "Client total hires badge"
       payment_verified:
         selectors:
+          - "[data-test='about-client-container'] div:has(.payment-verified) > strong"
+          - ".cfe-ui-job-about-client div:has(.payment-verified) > strong"
           - "[data-test='about-client-container'] .payment-verified"
           - ".cfe-ui-job-about-client .payment-verified"
           - "[data-qa='payment-verified']"
@@ -648,10 +646,10 @@ views:
         description: "Client job posting stats and hire rate percentage"
       connects_required:
         selectors:
+          - ".sidebar .air3-card-section .text-light-on-muted div:first-child strong"
           - "[data-test='connects-to-send'] strong"
           - "[data-test='connects-required'] strong"
           - "[data-test='connects-required']"
-          - ".sidebar .air3-card-section .text-light-on-muted div:first-child strong"
         extract: "text"
         transforms:
           - "first_token_int"
@@ -659,6 +657,8 @@ views:
         description: "Connects required to submit a proposal"
       client_activity:
         selectors:
+          - "[data-test='proposals-insights-v2-job-activity-section']"
+          - "[data-test='proposals-insights-v2-job-activity']"
           - "ul.client-activity-items li.ca-item"
           - "li.ca-item"
         extract: "list"
@@ -666,6 +666,7 @@ views:
         description: "Client activity items (Proposals, Interviewing, Invites sent, Unanswered invites)"
       screening_questions:
         selectors:
+          - ".air3-card-section ol.list-styled li"
           - "[data-test='screening-questions'] li"
           - "[data-test='questions'] li"
           - ".job-questions li"
@@ -687,7 +688,6 @@ views:
         extract: "list"
         auth_only: true
         description: "Preferred freelancer qualifications"
-
   proposal_apply:
     fields:
       cover_letter:
@@ -801,7 +801,6 @@ views:
         required: true
         auth_only: true
         description: "Final submit proposal button"
-
   proposals_list:
     container_selectors:
       - "[data-test='proposal-row']"
@@ -849,7 +848,6 @@ views:
           - ".viewed-by-client"
         extract: "text"
         auth_only: true
-
   messages_rooms:
     container_selectors:
       - "[data-test='room-item']"
@@ -898,7 +896,6 @@ views:
           - ".air3-badge-notification"
         extract: "text"
         auth_only: true
-
   messages_thread:
     container_selectors:
       - "[data-test='message-item']"

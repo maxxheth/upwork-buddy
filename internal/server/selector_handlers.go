@@ -224,6 +224,7 @@ type TabsListResponse struct {
 type AuditSelectorsRequest struct {
 	View           string `json:"view"`
 	URL            string `json:"url"`
+	UseActiveTab   bool   `json:"use_active_tab,omitempty"`
 	UpdateBaseline bool   `json:"update_baseline"`
 	SaveBaseline   bool   `json:"save_baseline,omitempty"`
 }
@@ -339,17 +340,19 @@ func (s *Server) AuditSelectors(ctx context.Context, req AuditSelectorsRequest) 
 		}
 	}
 	explicitURL := strings.TrimSpace(req.URL)
-	if view == "" && explicitURL == "" {
-		view = "search_listings"
-	}
-	if view == "messages" && explicitURL == "" {
-		view = "messages_rooms"
-	}
-	if explicitURL == "" && (view == "job_detail" || view == "proposal_apply" || view == "messages_thread") {
-		return nil, &ServiceError{
-			Code:       "INVALID_PARAMS",
-			HTTPStatus: http.StatusBadRequest,
-			Message:    fmt.Sprintf("url is required when auditing view %q", view),
+	if !req.UseActiveTab {
+		if view == "" && explicitURL == "" {
+			view = "search_listings"
+		}
+		if view == "messages" && explicitURL == "" {
+			view = "messages_rooms"
+		}
+		if explicitURL == "" && (view == "job_detail" || view == "proposal_apply" || view == "messages_thread") {
+			return nil, &ServiceError{
+				Code:       "INVALID_PARAMS",
+				HTTPStatus: http.StatusBadRequest,
+				Message:    fmt.Sprintf("url is required when auditing view %q", view),
+			}
 		}
 	}
 
@@ -360,6 +363,7 @@ func (s *Server) AuditSelectors(ctx context.Context, req AuditSelectorsRequest) 
 	updateBaseline := req.UpdateBaseline || req.SaveBaseline
 	wsParams := map[string]any{
 		"update_baseline": updateBaseline,
+		"use_active_tab":  req.UseActiveTab,
 	}
 	if view != "" {
 		wsParams["view"] = view

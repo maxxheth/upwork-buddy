@@ -39,6 +39,7 @@ func NewServer(backend *server.Server) *Server {
 	}
 
 	s.registerSessionTools()
+	s.registerDiagnosticTools()
 	s.registerJobTools()
 	s.registerProposalTools()
 	s.registerMessageTools()
