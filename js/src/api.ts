@@ -242,8 +242,14 @@ export class ApiClient {
     console.log('✅ API: Received response', {
       proposalLength: data.proposal?.length || 0,
       executionPromptLength: data.execution_prompt?.length || 0,
-      questionsCount: data.questions_for_client?.length || 0,
-      tipsCount: data.tips_and_advice?.length || 0,
+      questionsCount:
+        Array.isArray(data.questions_for_client) || typeof data.questions_for_client === 'string'
+          ? data.questions_for_client.length
+          : 0,
+      tipsCount:
+        Array.isArray(data.tips_and_advice) || typeof data.tips_and_advice === 'string'
+          ? data.tips_and_advice.length
+          : 0,
       hasTimeEstimate: !!data.time_estimate,
       hasWorkloadDivision: !!data.workload_division,
       hasToneAnalysis: !!data.tone_analysis,
@@ -255,9 +261,14 @@ export class ApiClient {
   /**
    * Save a job analysis to the backend
    */
-  async saveJob(
-    job: SaveJobRequest,
-  ): Promise<{ id: number; job_title: string; created_at: string }> {
+  async saveJob(job: SaveJobRequest): Promise<{
+    id: number;
+    job_title: string;
+    created_at: string;
+    score?: number | null;
+    fit_label?: string;
+    upserted?: boolean;
+  }> {
     const response = await this.request(CONFIG.jobsApiEndpoint, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
@@ -265,6 +276,24 @@ export class ApiClient {
     });
     if (!response.ok) {
       throw new Error(`Save job failed: ${response.status} ${response.statusText}`);
+    }
+    return response.json();
+  }
+
+  /**
+   * Analyze an already-saved job on the backend
+   */
+  async analyzeSavedJob(
+    id: number,
+    opts?: { use_llm?: boolean; model?: string; effort?: string },
+  ): Promise<AnalysisResponse> {
+    const response = await this.request(`${CONFIG.jobsApiEndpoint}/${id}/analyze`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(opts ?? {}),
+    });
+    if (!response.ok) {
+      throw new Error(`Analyze saved job failed: ${response.status} ${response.statusText}`);
     }
     return response.json();
   }

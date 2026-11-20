@@ -14,6 +14,9 @@ import {
   executeDetailEnrich,
   executeSearchSweep,
   executeSelectorAuditRpc,
+  executeSelectorPatchTestRpc,
+  executeUiDiagnosticCaptureRpc,
+  handleBgCaptureUiDiagnosticCommand,
   handleBgSelectorAuditCommand,
 } from '../src/background/discovery-rpc';
 import { BadgeManager, NativeLauncher } from '../src/background/native-launcher';
@@ -71,6 +74,7 @@ export default defineBackground(() => {
   let activeChallenge: string | null = null;
   let pendingApprovalsCount = 0;
   let unreadMessagesCount = 0;
+  let pendingSidePanelTab: string | null = null;
 
   const recordActivity = (entry: Omit<ActivityLogEntry, 'id' | 'timestamp'>): void => {
     recentActivity.unshift({
@@ -263,9 +267,57 @@ export default defineBackground(() => {
     executeDetailEnrich(discoveryDeps, params, ctx.sendProgress, ctx.requestId),
   );
 
+  const reloadAndBroadcastSelectors = async (): Promise<{
+    ok: boolean;
+    version: string;
+    tabs_notified: number;
+  }> => {
+    const selectors = await discoveryDeps.getSelectors(true);
+    const tabs = await browser.tabs.query({ url: 'https://www.upwork.com/*' }).catch(() => []);
+    let notified = 0;
+    await Promise.all(
+      tabs.map(async (tab) => {
+        if (typeof tab.id !== 'number') return;
+        try {
+          await browser.tabs.sendMessage(tab.id, {
+            type: 'CONTENT_SELECTORS_RELOADED',
+            selectorConfig: selectors,
+          });
+          notified += 1;
+        } catch {
+          // tab content script not ready
+        }
+      }),
+    );
+    void browser.runtime
+      .sendMessage({ type: 'SIDEPANEL_SELECTORS_UPDATED', version: selectors.version })
+      .catch(() => undefined);
+    recordActivity({
+      source: 'ws',
+      action: 'selectors.reload',
+      detail: `Reloaded v${selectors.version} (${notified} tab(s))`,
+      status: 'ok',
+    });
+    return {
+      ok: true,
+      version: selectors.version,
+      tabs_notified: notified,
+    };
+  };
+
   wsClient.registerMethod('audit.selectors', (params, ctx) =>
     executeSelectorAuditRpc(discoveryDeps, params, ctx.sendProgress, ctx.requestId),
   );
+
+  wsClient.registerMethod('diagnostics.capture', (params, ctx) =>
+    executeUiDiagnosticCaptureRpc(discoveryDeps, params, ctx.sendProgress, ctx.requestId),
+  );
+
+  wsClient.registerMethod('diagnostics.test_patch', (params, ctx) =>
+    executeSelectorPatchTestRpc(discoveryDeps, params, ctx.sendProgress),
+  );
+
+  wsClient.registerMethod('selectors.reload', async () => reloadAndBroadcastSelectors());
 
   const workflowDeps = {
     tabController,
@@ -549,7 +601,93 @@ export default defineBackground(() => {
       case 'BG_RUN_SELECTOR_AUDIT':
         return handleBgSelectorAuditCommand(discoveryDeps, msg);
 
+      case 'BG_CAPTURE_UI_DIAGNOSTIC':
+        return handleBgCaptureUiDiagnosticCommand(discoveryDeps, msg);
+
+      case 'BG_TEST_SELECTOR_PATCH': {
+        return executeSelectorPatchTestRpc(discoveryDeps, {
+          view: msg.view,
+          field: msg.field,
+          rule: msg.rule,
+          capture_id: msg.captureId,
+          use_active_tab: msg.useActiveTab ?? true,
+        });
+      }
+
+      case 'BG_APPLY_SELECTOR_PATCH': {
+        const res = await proxyDaemonFetch('/api/diagnostics/apply-patch', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            view: msg.view,
+            field: msg.field,
+            selectors: msg.rule.selectors,
+            extract: msg.rule.extract,
+            attribute: msg.rule.attribute,
+            transforms: msg.rule.transforms,
+            sibling_child_tag: msg.rule.sibling_child_tag,
+            join_with: msg.rule.join_with,
+            label_contains: msg.rule.label_contains,
+            required: msg.rule.required,
+            is_fragile: msg.rule.is_fragile,
+            fragile_reason: msg.rule.fragile_reason,
+            auth_only: msg.rule.auth_only,
+            description: msg.rule.description,
+            reason: msg.reason,
+            export_fixture: msg.exportFixture,
+            capture_id: msg.captureId,
+            mode: msg.mode ?? 'prepend',
+          }),
+        });
+        const data = (await res.json().catch(() => ({}))) as Record<string, unknown>;
+        if (!res.ok) {
+          return {
+            ok: false,
+            error:
+              typeof data.error === 'string'
+                ? data.error
+                : `Apply patch failed with HTTP ${res.status}`,
+          };
+        }
+        await reloadAndBroadcastSelectors().catch(() => undefined);
+        return { ok: true, ...data };
+      }
+
+      case 'BG_ROLLBACK_SELECTOR_PATCH': {
+        const res = await proxyDaemonFetch('/api/diagnostics/rollback', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            backup_file: msg.backupFile ?? '',
+          }),
+        });
+        const data = (await res.json().catch(() => ({}))) as Record<string, unknown>;
+        if (!res.ok) {
+          return {
+            ok: false,
+            error:
+              typeof data.error === 'string'
+                ? data.error
+                : `Rollback failed with HTTP ${res.status}`,
+          };
+        }
+        await reloadAndBroadcastSelectors().catch(() => undefined);
+        return { ok: true, ...data };
+      }
+
+      case 'BG_GET_PENDING_SIDEPANEL_TAB': {
+        const tab = pendingSidePanelTab;
+        pendingSidePanelTab = null;
+        return { ok: true, tab };
+      }
+
       case 'OPEN_SIDEPANEL': {
+        if (msg.tab) {
+          pendingSidePanelTab = msg.tab;
+          void browser.runtime
+            .sendMessage({ type: 'SIDEPANEL_SWITCH_TAB', tab: msg.tab })
+            .catch(() => undefined);
+        }
         try {
           const sidePanelApi = (
             globalThis as unknown as {
@@ -581,7 +719,10 @@ export default defineBackground(() => {
             return { ok: true, mode: 'sidebarAction' };
           }
 
-          await browser.tabs.create({ url: browser.runtime.getURL('/sidepanel.html') });
+          const tabUrl = msg.tab
+            ? `${browser.runtime.getURL('/sidepanel.html')}?tab=${encodeURIComponent(msg.tab)}`
+            : browser.runtime.getURL('/sidepanel.html');
+          await browser.tabs.create({ url: tabUrl });
           return { ok: true, mode: 'tab' };
         } catch (error) {
           return {

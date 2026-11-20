@@ -295,4 +295,124 @@ describe('UI Drift Auditor & DOM Blueprinting', () => {
     });
     expect(bpMsgRef.view_type).toBe('job_detail');
   });
+
+  it('audits proposals_insights_v2 proposals ("0") and client_activity as HEALTHY', () => {
+    const html = `
+      <!DOCTYPE html>
+      <html>
+      <head><title>Job Details</title></head>
+      <body>
+      <main>
+        <div data-test="job-details">
+          <h1>Build Analytics Dashboard</h1>
+          <section data-test="proposals-insights-v2-job-activity">
+            <div data-test="proposals-insights-v2-job-activity-section">
+              <span>Bid range</span>
+              <button type="button" aria-expanded="false">Toggle</button>
+              <div data-ev-sublocation="!collapse">
+                <span>Low $20.00 - High $50.00</span>
+              </div>
+            </div>
+            <div data-test="proposals-insights-v2-job-activity-section">
+              <span>Proposals</span>
+              <span>(0)</span>
+            </div>
+            <div data-test="proposals-insights-v2-job-activity-section">
+              <span>Invites</span>
+              <span>(0)</span>
+            </div>
+            <div data-test="proposals-insights-v2-job-activity-section">
+              <span>Interviews</span>
+              <span>(0)</span>
+            </div>
+            <div data-test="proposals-insights-v2-job-activity-section">
+              <span>Offers</span>
+              <span>(0)</span>
+            </div>
+            <div data-test="proposals-insights-v2-job-activity-section">
+              <span>Hires</span>
+              <span>(0)</span>
+            </div>
+            <div data-test="proposals-insights-v2-job-activity-section">
+              <div>
+                <span>Last viewed by client:</span>
+                <span>354 days ago</span>
+              </div>
+            </div>
+          </section>
+        </div>
+      </main>
+      </body>
+      </html>
+    `;
+
+    const bp = buildPageBlueprint(html, {
+      url: 'https://www.upwork.com/jobs/~022115332344639171/',
+      isAuthenticated: true,
+    });
+    const report = new DriftAuditor(bp, html).audit();
+
+    const proposalsAudit = report.audits.find((a) => a.target_field === 'proposals');
+    expect(proposalsAudit?.status).toBe('HEALTHY');
+    expect(proposalsAudit?.sample_extracted_value).toBe('0');
+
+    const clientActivityAudit = report.audits.find((a) => a.target_field === 'client_activity');
+    expect(clientActivityAudit?.status).toBe('HEALTHY');
+  });
+
+  it('marks proposals DEGRADED with empty sample when proposals_insights_v2 lacks a Proposals section', () => {
+    const html = `
+      <!DOCTYPE html>
+      <html>
+      <head><title>Job Details</title></head>
+      <body>
+      <main>
+        <div data-test="job-details">
+          <h1>Build Analytics Dashboard</h1>
+          <section data-test="proposals-insights-v2-job-activity">
+            <div data-test="proposals-insights-v2-job-activity-section">
+              <span>Bid range</span>
+              <button type="button" aria-expanded="false">Toggle</button>
+              <div data-ev-sublocation="!collapse">
+                <span>Low $20.00 - High $50.00</span>
+              </div>
+            </div>
+            <div data-test="proposals-insights-v2-job-activity-section">
+              <span>Invites</span>
+              <span>(2)</span>
+            </div>
+          </section>
+        </div>
+      </main>
+      </body>
+      </html>
+    `;
+
+    const bp = buildPageBlueprint(html, {
+      url: 'https://www.upwork.com/jobs/~022115332344639171/',
+      isAuthenticated: true,
+    });
+    const report = new DriftAuditor(bp, html).audit();
+
+    const proposalsAudit = report.audits.find((a) => a.target_field === 'proposals');
+    expect(proposalsAudit?.status).toBe('DEGRADED');
+    expect(proposalsAudit?.sample_extracted_value).toBe('');
+  });
+
+  it('audits items_container as HEALTHY when root Element itself matches .job-details-content', () => {
+    const doc = parseHtmlDocument(
+      '<!DOCTYPE html><html><body><div class="job-details-content"><div class="job-details-card"><h4><span class="flex-1">Test Job</span></h4></div></div></body></html>',
+    );
+    const rootEl = doc.querySelector('.job-details-content')!;
+    const bp = buildPageBlueprint(doc, {
+      url: 'https://www.upwork.com/jobs/~022115332344639171/',
+      isAuthenticated: true,
+    });
+    const report = new DriftAuditor(bp, rootEl).audit('job_detail');
+
+    const containerAudit = report.audits.find((a) => a.target_field === 'items_container');
+    expect(containerAudit?.status).toBe('HEALTHY');
+    expect(containerAudit?.matched_count).toBe(1);
+    expect(containerAudit?.registered_selector).toBe('.job-details-content');
+  });
 });

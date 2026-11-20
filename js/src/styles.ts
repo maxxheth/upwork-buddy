@@ -521,6 +521,28 @@ export const STYLES = `
   text-align: center;
 }
 
+.upwork-buddy-health-diagnose {
+  background: #856404;
+  color: #ffffff;
+  border: 1px solid #856404;
+  border-radius: 6px;
+  padding: 4px 10px;
+  cursor: pointer;
+  font-size: 12px;
+  font-weight: 600;
+  flex-shrink: 0;
+  transition: opacity 0.2s;
+}
+
+.upwork-buddy-health-diagnose:hover:not(:disabled) {
+  opacity: 0.9;
+}
+
+.upwork-buddy-health-diagnose:disabled {
+  opacity: 0.65;
+  cursor: wait;
+}
+
 .upwork-buddy-health-dismiss {
   background: transparent;
   border: 1px solid #856404;

@@ -184,6 +184,7 @@ describe('Background API Proxy', () => {
     expect(isContentScriptProxyAllowed('POST', '/api/analyze-job', base)).toBe(true);
     expect(isContentScriptProxyAllowed('GET', '/api/jobs', base)).toBe(true);
     expect(isContentScriptProxyAllowed('POST', '/api/jobs', base)).toBe(true);
+    expect(isContentScriptProxyAllowed('POST', '/api/jobs/42/analyze', base)).toBe(true);
     expect(isContentScriptProxyAllowed('DELETE', '/api/jobs/42', base)).toBe(true);
     expect(isContentScriptProxyAllowed('GET', '/api/templates', base)).toBe(true);
     expect(isContentScriptProxyAllowed('GET', '/api/templates/golang', base)).toBe(true);
@@ -200,6 +201,8 @@ describe('Background API Proxy', () => {
     expect(isContentScriptProxyAllowed('POST', '/api/messages/send', base)).toBe(false);
     expect(isContentScriptProxyAllowed('POST', '/api/jobs/search', base)).toBe(false);
     expect(isContentScriptProxyAllowed('POST', '/api/jobs/detail', base)).toBe(false);
+    expect(isContentScriptProxyAllowed('GET', '/api/jobs/42/analyze', base)).toBe(false);
+    expect(isContentScriptProxyAllowed('POST', '/api/jobs/abc/analyze', base)).toBe(false);
     expect(isContentScriptProxyAllowed('POST', '/mcp', base)).toBe(false);
     expect(isContentScriptProxyAllowed('DELETE', '/api/jobs/batch', base)).toBe(false);
 

@@ -378,4 +378,89 @@ describe('ApiClient', () => {
       expect(blob.size).toBe(4);
     });
   });
+
+  describe('analyzeSavedJob & saveJob score metadata', () => {
+    it('analyzeSavedJob calls POST /api/jobs/:id/analyze with options payload', async () => {
+      const fetchSpy = vi.fn().mockResolvedValue({
+        ok: true,
+        status: 200,
+        json: () =>
+          Promise.resolve({
+            proposal: 'Saved job proposal',
+            time_estimate: '1 week',
+          }),
+      });
+      globalThis.fetch = fetchSpy;
+
+      const result = await client.analyzeSavedJob(42, {
+        use_llm: true,
+        model: 'gemini-4-neon',
+        effort: 'medium',
+      });
+
+      expect(fetchSpy).toHaveBeenCalledTimes(1);
+      const [url, options] = fetchSpy.mock.calls[0];
+      expect(url).toMatch(/\/api\/jobs\/42\/analyze$/);
+      expect(options.method).toBe('POST');
+      expect(options.headers['Content-Type']).toBe('application/json');
+      expect(JSON.parse(options.body)).toEqual({
+        use_llm: true,
+        model: 'gemini-4-neon',
+        effort: 'medium',
+      });
+      expect(result.proposal).toBe('Saved job proposal');
+    });
+
+    it('analyzeSavedJob defaults body to {} and throws on non-OK response', async () => {
+      const fetchSpy = vi.fn().mockResolvedValue({
+        ok: false,
+        status: 503,
+        statusText: 'Service Unavailable',
+      });
+      globalThis.fetch = fetchSpy;
+
+      await expect(client.analyzeSavedJob(99)).rejects.toThrow(
+        'Analyze saved job failed: 503 Service Unavailable',
+      );
+      const [_url, options] = fetchSpy.mock.calls[0];
+      expect(JSON.parse(options.body)).toEqual({});
+    });
+
+    it('saveJob preserves score, fit_label, and upserted in response', async () => {
+      mockFetch({
+        ok: true,
+        status: 200,
+        json: () =>
+          Promise.resolve({
+            id: 7,
+            job_title: 'Go Backend',
+            created_at: '2026-11-20T00:00:00Z',
+            score: 88,
+            fit_label: 'Strong Fit',
+            upserted: true,
+          }),
+      });
+
+      const res = await client.saveJob({
+        job_title: 'Go Backend',
+        job_description: 'Build API',
+        contract_type: 'fixed',
+        budget: '$1000',
+        rate_range: '',
+        rate_min: '',
+        rate_max: '',
+        budget_amount: '$1000',
+        experience_level: 'Expert',
+        skills: 'Go',
+        proposal: '',
+        time_estimate: '',
+        execution_prompt: '',
+        tone_analysis: '',
+      });
+
+      expect(res.score).toBe(88);
+      expect(res.fit_label).toBe('Strong Fit');
+      expect(res.upserted).toBe(true);
+    });
+  });
 });

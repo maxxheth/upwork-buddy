@@ -203,6 +203,62 @@ function extractClientActivity(container: Element, clientAvgHourly?: string): Cl
     }
   }
 
+  const v2Sections = queryAllSafe(
+    container,
+    "[data-test='proposals-insights-v2-job-activity-section']",
+  );
+  for (const section of v2Sections) {
+    const candidates = queryAllSafe(section, 'div, span');
+    for (const el of candidates) {
+      if (el.children.length > 0) continue;
+      const nextEl = el.nextElementSibling;
+      if (!nextEl || nextEl.matches('button, [data-ev-sublocation="!collapse"]')) continue;
+
+      const label = extractFullText(el).toLowerCase().trim();
+      if (!label || label.length > 40 || /\d/.test(label)) continue;
+
+      const valText = extractFullText(nextEl).trim();
+      const countMatch = /^\(?\s*(\d+)\s*\)?$/.exec(valText);
+      if (!countMatch) continue;
+
+      const n = Number.parseInt(countMatch[1], 10);
+      if (!Number.isFinite(n)) continue;
+
+      if (
+        (label.includes('interviewing') || label.includes('interviews')) &&
+        activity.interviewing === undefined
+      ) {
+        activity.interviewing = n;
+      } else if (label.includes('unanswered') && activity.unanswered_invites === undefined) {
+        activity.unanswered_invites = n;
+      } else if (
+        (label.includes('invites sent') || label === 'invites' || label.includes('invites')) &&
+        activity.invites_sent === undefined
+      ) {
+        activity.invites_sent = n;
+      }
+    }
+  }
+
+  if (activity.last_viewed === undefined) {
+    const v2Roots = queryAllSafe(container, "[data-test='proposals-insights-v2-job-activity']");
+    for (const root of v2Roots) {
+      const spans = queryAllSafe(root, 'span');
+      for (const span of spans) {
+        const label = extractFullText(span).toLowerCase();
+        if (!label.includes('last viewed')) continue;
+        const valText = span.nextElementSibling
+          ? extractFullText(span.nextElementSibling).trim()
+          : '';
+        if (valText) {
+          activity.last_viewed = valText;
+          break;
+        }
+      }
+      if (activity.last_viewed !== undefined) break;
+    }
+  }
+
   if (clientAvgHourly) {
     activity.avg_hourly_rate_paid = clientAvgHourly;
   }

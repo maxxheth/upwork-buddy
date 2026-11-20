@@ -8,11 +8,11 @@ import type { ContentScriptContext } from 'wxt/utils/content-script-context';
 import { ApiClient } from './api';
 import { extractJobDetail } from './content/adapters/detail-adapter';
 import { JobExtractor } from './job-extractor';
-import { loadActiveSelectors } from './shared/selectors';
+import { BUNDLED_SELECTORS, loadActiveSelectors, type SelectorConfig } from './shared/selectors';
 import { StateManager } from './state';
 import { StorageAdapter } from './storage';
 import { injectStyles } from './styles';
-import type { SavedJob } from './types';
+import type { AnalysisResponse, SavedJob } from './types';
 import { CONFIG, detectEnvironment, loadConfig } from './types';
 import { ButtonManager } from './ui/buttons';
 import { JobHistoryPanel } from './ui/job-history';
@@ -42,7 +42,12 @@ export class UpworkBuddy {
   private templateBrowser: TemplateBrowser | null = null;
   private drawerOpen = false;
   private healthChecked = false;
+  private currentBrokenFields: string[] = [];
+  private healthWarningDismissed = false;
+  private drawerHydrationTimer: ReturnType<typeof setTimeout> | null = null;
+  private pendingHealthRecheckTimer: ReturnType<typeof setTimeout> | null = null;
   private drawerObserver: MutationObserver | null = null;
+  private activeSelectors: SelectorConfig = BUNDLED_SELECTORS;
   private logPrefix = '[UpworkBuddy][Main]';
 
   private readonly uiRoot: HTMLElement;
@@ -86,10 +91,22 @@ export class UpworkBuddy {
   }
 
   destroy(): void {
+    this.clearHealthTimers();
     this.drawerObserver?.disconnect();
     this.drawerObserver = null;
     this.modal.destroy();
     this.buttonManager.getContainer().remove();
+  }
+
+  private clearHealthTimers(): void {
+    if (this.drawerHydrationTimer !== null) {
+      clearTimeout(this.drawerHydrationTimer);
+      this.drawerHydrationTimer = null;
+    }
+    if (this.pendingHealthRecheckTimer !== null) {
+      clearTimeout(this.pendingHealthRecheckTimer);
+      this.pendingHealthRecheckTimer = null;
+    }
   }
 
   setToolbarStatus(connected: boolean, policyMode = 'confirm_in_ui', challenge = false): void {
@@ -131,6 +148,7 @@ export class UpworkBuddy {
     await this.stateManager.initializeStorage();
     this.log('Storage initialized', { cacheSize: this.stateManager.getCacheSize() });
     await this.stateManager.loadProfile();
+    this.activeSelectors = await loadActiveSelectors().catch(() => BUNDLED_SELECTORS);
 
     if (this.stateManager.getCacheSize() > 0) {
       this.log('Cached projects detected, bootstrapping ProjectsListUI');
@@ -145,12 +163,12 @@ export class UpworkBuddy {
       this.drawerOpen = true;
       this.buttonManager.showContainer();
       initialDrawer.setAttribute('data-upwork-buddy', 'true');
-      this.runHealthCheck(initialDrawer);
+      this.runHealthCheck(initialDrawer, this.activeSelectors);
       this.healthChecked = true;
     } else if (this.isStandaloneJobDetailView()) {
       this.buttonManager.showContainer();
       const detailContainer = document.querySelector('.job-details-card') ?? document.body;
-      this.runHealthCheck(detailContainer);
+      this.runHealthCheck(detailContainer, this.activeSelectors);
       this.healthChecked = true;
     }
 
@@ -161,7 +179,7 @@ export class UpworkBuddy {
 
   private isStandaloneJobDetailView(): boolean {
     try {
-      return /^\/jobs\/~[a-zA-Z0-9]+/.test(window.location.pathname);
+      return /^\/jobs\/(?:[^/]*_)?~[a-zA-Z0-9]+/.test(window.location.pathname);
     } catch {
       return false;
     }
@@ -203,8 +221,33 @@ export class UpworkBuddy {
     return undefined;
   }
 
-  private runHealthCheck(targetContainer?: Element): void {
-    const results = this.jobExtractor.healthCheck(targetContainer);
+  async refreshSelectorsAndHealthCheck(selectorConfig?: SelectorConfig): Promise<void> {
+    this.clearHealthTimers();
+    this.healthWarningDismissed = false;
+    this.activeSelectors =
+      selectorConfig ?? (await loadActiveSelectors(true).catch(() => this.activeSelectors));
+    const container = this.resolveJobContainer();
+    if (container) {
+      this.runHealthCheck(container, this.activeSelectors);
+      this.healthChecked = true;
+    } else {
+      this.removeHealthWarning();
+    }
+  }
+
+  private removeHealthWarning(): void {
+    this.currentBrokenFields = [];
+    const existing =
+      this.styleRoot.querySelector('#upwork-buddy-health-warning') ??
+      this.uiRoot.querySelector('#upwork-buddy-health-warning');
+    existing?.remove();
+  }
+
+  private runHealthCheck(
+    targetContainer?: Element,
+    selectorConfig: SelectorConfig = this.activeSelectors,
+  ): void {
+    const results = this.jobExtractor.healthCheck(targetContainer, selectorConfig);
     const brokenFields = results.filter((r) => r.status === 'broken');
 
     if (brokenFields.length > 0) {
@@ -213,6 +256,7 @@ export class UpworkBuddy {
       });
       this.showHealthWarning(brokenFields.map((f) => f.field));
     } else {
+      this.removeHealthWarning();
       const fallbackFields = results.filter((r) => r.status === 'fallback');
       if (fallbackFields.length > 0) {
         this.log('Health check: some fields using fallback selectors', {
@@ -225,7 +269,19 @@ export class UpworkBuddy {
   }
 
   private showHealthWarning(brokenFields: string[]): void {
-    if (this.styleRoot.querySelector('#upwork-buddy-health-warning')) {
+    this.currentBrokenFields = [...brokenFields];
+    if (this.healthWarningDismissed) {
+      return;
+    }
+
+    const existing =
+      this.styleRoot.querySelector('#upwork-buddy-health-warning') ??
+      this.uiRoot.querySelector('#upwork-buddy-health-warning');
+    if (existing) {
+      const span = existing.querySelector('span');
+      if (span) {
+        span.textContent = `⚠️ Upwork Buddy: Some selectors need updating (${brokenFields.join(', ')}). Job extraction may be incomplete.`;
+      }
       return;
     }
 
@@ -234,10 +290,39 @@ export class UpworkBuddy {
     banner.className = 'upwork-buddy-health-warning';
     banner.innerHTML = `
       <span>⚠️ Upwork Buddy: Some selectors need updating (${escapeHtml(brokenFields.join(', '))}). Job extraction may be incomplete.</span>
+      <button type="button" class="upwork-buddy-health-diagnose">Diagnose &amp; Capture</button>
       <button type="button" class="upwork-buddy-health-dismiss" title="Dismiss for this session">✕</button>
     `;
 
+    const diagnoseBtn = banner.querySelector<HTMLButtonElement>('.upwork-buddy-health-diagnose');
+    diagnoseBtn?.addEventListener('click', () => {
+      void (async () => {
+        diagnoseBtn.disabled = true;
+        diagnoseBtn.textContent = 'Capturing...';
+        try {
+          await browser.runtime.sendMessage({
+            type: 'BG_CAPTURE_UI_DIAGNOSTIC',
+            useActiveTab: true,
+            scope: 'auto',
+            brokenFields: [...this.currentBrokenFields],
+          });
+          await browser.runtime.sendMessage({
+            type: 'OPEN_SIDEPANEL',
+            tab: 'selectors',
+          });
+          diagnoseBtn.textContent = 'Captured!';
+        } catch (error) {
+          this.log('Diagnostic capture from warning banner failed', {
+            error: error instanceof Error ? error.message : String(error),
+          });
+          diagnoseBtn.textContent = 'Retry Capture';
+          diagnoseBtn.disabled = false;
+        }
+      })();
+    });
+
     banner.querySelector('.upwork-buddy-health-dismiss')?.addEventListener('click', () => {
+      this.healthWarningDismissed = true;
       banner.remove();
     });
 
@@ -252,15 +337,58 @@ export class UpworkBuddy {
 
       if (drawer && !drawer.hasAttribute('data-upwork-buddy')) {
         console.log('✅ Job details drawer found!');
+        this.clearHealthTimers();
         this.drawerOpen = true;
+        this.healthChecked = false;
+        this.healthWarningDismissed = false;
         this.buttonManager.showContainer();
         drawer.setAttribute('data-upwork-buddy', 'true');
-        if (!this.healthChecked) {
-          this.runHealthCheck(drawer);
+
+        const broken = this.jobExtractor
+          .healthCheck(drawer, this.activeSelectors)
+          .filter((r) => r.status === 'broken');
+        if (broken.length === 0) {
+          this.removeHealthWarning();
           this.healthChecked = true;
+        } else {
+          this.drawerHydrationTimer = setTimeout(() => {
+            this.drawerHydrationTimer = null;
+            const activeDrawer = this.jobExtractor.findJobDrawer();
+            if (activeDrawer) {
+              this.runHealthCheck(activeDrawer, this.activeSelectors);
+              this.healthChecked = true;
+            }
+          }, 1200);
+        }
+      } else if (drawer && drawer.hasAttribute('data-upwork-buddy')) {
+        if (this.drawerHydrationTimer !== null || this.currentBrokenFields.length > 0) {
+          if (this.pendingHealthRecheckTimer !== null) {
+            clearTimeout(this.pendingHealthRecheckTimer);
+          }
+          this.pendingHealthRecheckTimer = setTimeout(() => {
+            this.pendingHealthRecheckTimer = null;
+            const activeDrawer = this.jobExtractor.findJobDrawer();
+            if (!activeDrawer) {
+              return;
+            }
+            const broken = this.jobExtractor
+              .healthCheck(activeDrawer, this.activeSelectors)
+              .filter((r) => r.status === 'broken');
+            if (broken.length === 0) {
+              this.clearHealthTimers();
+              this.removeHealthWarning();
+              this.healthChecked = true;
+            } else if (this.healthChecked) {
+              this.showHealthWarning(broken.map((f) => f.field));
+            }
+          }, 250);
         }
       } else if (!drawer && this.drawerOpen) {
+        this.clearHealthTimers();
         this.drawerOpen = false;
+        this.healthChecked = false;
+        this.healthWarningDismissed = false;
+        this.removeHealthWarning();
         console.log('👋 Job details drawer closed');
         this.buttonManager.hideContainer();
       }
@@ -294,9 +422,10 @@ export class UpworkBuddy {
       : '<div class="upwork-buddy-loading">🤖 Saving and analyzing job posting...</div>';
 
     try {
-      const jobInfo = this.jobExtractor.extractJobInfo(container);
+      const selectors = await loadActiveSelectors().catch(() => this.activeSelectors);
+      this.activeSelectors = selectors;
+      const jobInfo = this.jobExtractor.extractJobInfo(container, selectors);
       const jobUrl = this.resolveCurrentJobUrl(container);
-      const selectors = await loadActiveSelectors().catch(() => undefined);
       const detailRes = extractJobDetail(container, { url: jobUrl, selectors });
       const enrichedPayload = detailRes.ok ? detailRes.payload : undefined;
       console.log('📊 Extracting job info:', jobInfo, {
@@ -374,13 +503,25 @@ export class UpworkBuddy {
       this.log('Analysis cached', { cacheSize: this.stateManager.getCacheSize() });
 
       try {
-        await this.stateManager.saveJobToHistory({
+        const timeEstimate =
+          typeof analysis.time_estimate === 'string'
+            ? analysis.time_estimate
+            : analysis.time_estimate != null
+              ? JSON.stringify(analysis.time_estimate)
+              : '';
+        const updatedSavedJob = await this.stateManager.saveJobToHistory({
           ...baseSavePayload,
           proposal: analysis.proposal || '',
-          time_estimate: analysis.time_estimate || '',
+          time_estimate: timeEstimate,
+          workload_division: analysis.workload_division ?? '',
+          questions_for_client: analysis.questions_for_client ?? '',
+          tips_and_advice: analysis.tips_and_advice ?? '',
           execution_prompt: analysis.execution_prompt || '',
           tone_analysis: analysis.tone_analysis || '',
         });
+        if (updatedSavedJob.score != null || updatedSavedJob.fit_label) {
+          savedJob = updatedSavedJob;
+        }
         this.log('Job auto-saved with AI analysis');
       } catch (saveError) {
         console.warn('⚠️ Failed to auto-save analyzed job:', saveError);
@@ -393,7 +534,19 @@ export class UpworkBuddy {
         this.projectsListUI.updateBadge();
       }
 
-      modalBody.innerHTML = renderAnalysis(analysis, false);
+      const scoreParts: string[] = [];
+      if (savedJob?.fit_label) {
+        scoreParts.push(`Fit: <strong>${escapeHtml(savedJob.fit_label)}</strong>`);
+      }
+      if (savedJob?.score != null) {
+        scoreParts.push(`Score: <strong>${escapeHtml(String(savedJob.score))}</strong>`);
+      }
+      const scoreBanner =
+        scoreParts.length > 0
+          ? `<div class="upwork-buddy-score-banner" style="background: #eef7ee; color: #1d4d1d; padding: 10px 12px; border-radius: 8px; margin-bottom: 12px; font-size: 13px;">🎯 ${scoreParts.join(' · ')}</div>`
+          : '';
+
+      modalBody.innerHTML = `${scoreBanner}${renderAnalysis(analysis, false)}`;
       attachCollapsibleListeners(modalBody);
     } catch (error) {
       console.warn('⚠️ Analysis error:', error);
@@ -468,11 +621,41 @@ export class UpworkBuddy {
     }
   }
 
+  private hasNonEmptyValue(value: unknown): boolean {
+    if (value == null) return false;
+    if (typeof value === 'string') return value.trim().length > 0;
+    if (Array.isArray(value)) return value.length > 0;
+    if (typeof value === 'object') return Object.keys(value).length > 0;
+    return true;
+  }
+
+  private toAnalysisField(value: unknown): string | string[] | Record<string, unknown> | undefined {
+    if (!this.hasNonEmptyValue(value)) {
+      return undefined;
+    }
+    if (typeof value === 'string') {
+      return value;
+    }
+    if (Array.isArray(value)) {
+      return value as string[];
+    }
+    if (value && typeof value === 'object') {
+      return value as Record<string, unknown>;
+    }
+    return String(value);
+  }
+
   private viewSavedJob(job: SavedJob): void {
     const modalBody = this.modal.getBody();
-    const analysis = {
+    const workloadDivision = this.toAnalysisField(job.workload_division);
+    const questionsForClient = this.toAnalysisField(job.questions_for_client);
+    const tipsAndAdvice = this.toAnalysisField(job.tips_and_advice);
+    const analysis: AnalysisResponse = {
       proposal: job.proposal,
       time_estimate: job.time_estimate,
+      ...(workloadDivision !== undefined ? { workload_division: workloadDivision } : {}),
+      ...(questionsForClient !== undefined ? { questions_for_client: questionsForClient } : {}),
+      ...(tipsAndAdvice !== undefined ? { tips_and_advice: tipsAndAdvice } : {}),
       execution_prompt: job.execution_prompt,
       tone_analysis: job.tone_analysis,
     };

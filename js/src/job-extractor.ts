@@ -36,18 +36,27 @@
  *                <p class="text-body-sm multiline-text">…</p>
  */
 
+import { BUNDLED_SELECTORS, type FieldSelectorRule, type SelectorConfig } from './shared/selectors';
 import type { ContractType, JobInfo } from './types';
 
 /**
  * Defines a chain of CSS selectors to try in order for a given field.
  * Primary selector first, then increasingly generic fallbacks.
  */
-interface SelectorChain {
+export interface SelectorChain {
   field: string;
   selectors: string[];
   attribute?: string; // e.g., 'href' for links; textContent is default
   transform?: (value: string) => string;
   isMulti?: boolean; // if true, collect all matches (e.g., skills)
+}
+
+export interface HealthCheckResult {
+  field: string;
+  status: 'ok' | 'fallback' | 'broken';
+  matchedSelector?: string;
+  matchedCount?: number;
+  triedSelectors?: string[];
 }
 
 /**
@@ -99,6 +108,8 @@ const SELECTOR_CHAINS: SelectorChain[] = [
       'li:has([data-cy="clock-timelog"])',
       // Fixed-price row identified by data-cy="fixed-price"
       'li:has([data-cy="fixed-price"])',
+      // Hourly row without posted rate range identified by data-cy="clock-hourly"
+      'li:has([data-cy="clock-hourly"])',
       // Fallback: BudgetAmount test attribute
       '[data-test="BudgetAmount"]',
       // Older fallbacks
@@ -136,6 +147,99 @@ const SELECTOR_CHAINS: SelectorChain[] = [
   },
 ];
 
+function uniqueSelectors(lists: Array<readonly string[] | undefined>): string[] {
+  const seen = new Set<string>();
+  const out: string[] = [];
+  for (const list of lists) {
+    if (!list) continue;
+    for (const raw of list) {
+      const sel = raw.trim();
+      if (!sel || seen.has(sel)) continue;
+      seen.add(sel);
+      out.push(sel);
+    }
+  }
+  return out;
+}
+
+function expandRuleSelectors(rule: FieldSelectorRule | undefined): string[] {
+  if (!rule) return [];
+  if (rule.extract === 'sibling_text' && rule.sibling_child_tag) {
+    const expanded: string[] = [];
+    for (const sel of rule.selectors) {
+      expanded.push(`li:has(${sel}) ${rule.sibling_child_tag}`);
+      expanded.push(`${sel} ~ ${rule.sibling_child_tag}`);
+    }
+    return uniqueSelectors([expanded]);
+  }
+  return uniqueSelectors([rule.selectors]);
+}
+
+/**
+ * Build ordered selector chains merged from a live SelectorConfig (`views.job_detail`),
+ * preserving legacy fallbacks at the end of each chain.
+ */
+export function buildSelectorChains(config?: SelectorConfig): SelectorChain[] {
+  if (!config) {
+    return SELECTOR_CHAINS;
+  }
+  const jobDetailFields = config.views?.job_detail?.fields;
+  if (!jobDetailFields) {
+    return SELECTOR_CHAINS;
+  }
+
+  return SELECTOR_CHAINS.map((legacyChain) => {
+    if (legacyChain.field === 'title') {
+      return {
+        ...legacyChain,
+        selectors: uniqueSelectors([
+          expandRuleSelectors(jobDetailFields.title),
+          legacyChain.selectors,
+        ]),
+      };
+    }
+    if (legacyChain.field === 'description') {
+      return {
+        ...legacyChain,
+        selectors: uniqueSelectors([
+          expandRuleSelectors(jobDetailFields.description),
+          legacyChain.selectors,
+        ]),
+      };
+    }
+    if (legacyChain.field === 'skills') {
+      return {
+        ...legacyChain,
+        selectors: uniqueSelectors([
+          expandRuleSelectors(jobDetailFields.skills),
+          legacyChain.selectors,
+        ]),
+      };
+    }
+    if (legacyChain.field === 'experienceLevel') {
+      return {
+        ...legacyChain,
+        selectors: uniqueSelectors([
+          expandRuleSelectors(jobDetailFields.experience_level),
+          legacyChain.selectors,
+        ]),
+      };
+    }
+    if (legacyChain.field === 'budgetRow') {
+      return {
+        ...legacyChain,
+        selectors: uniqueSelectors([
+          expandRuleSelectors(jobDetailFields.budget),
+          expandRuleSelectors(jobDetailFields.hourly_rate),
+          expandRuleSelectors(jobDetailFields.hours_per_week),
+          legacyChain.selectors,
+        ]),
+      };
+    }
+    return legacyChain;
+  });
+}
+
 /**
  * Parsed budget info from the DOM.
  */
@@ -153,14 +257,15 @@ export class JobExtractor {
    * Extract job information from a container element.
    * Returns a complete JobInfo with contract-type-aware budget data.
    */
-  extractJobInfo(container: Element): JobInfo {
+  extractJobInfo(container: Element, selectorConfig?: SelectorConfig): JobInfo {
     console.log('🔍 Extracting from container:', container.className);
 
+    const chains = buildSelectorChains(selectorConfig);
     const result: Partial<JobInfo> = {};
     const fieldStatus: Record<string, 'ok' | 'fallback' | 'broken'> = {};
 
     // Extract standard fields via selector chains
-    for (const chain of SELECTOR_CHAINS) {
+    for (const chain of chains) {
       if (chain.field === 'budgetRow') continue; // handled separately
       const { value, usedIndex } = this.trySelectorChain(container, chain);
 
@@ -186,7 +291,7 @@ export class JobExtractor {
     }
 
     // ── Contract-type-aware budget extraction ─────────────────────────
-    const budgetInfo = this.extractBudgetInfo(container);
+    const budgetInfo = this.extractBudgetInfo(container, chains);
     result.contractType = budgetInfo.contractType;
     result.rateRange = budgetInfo.rateRange;
     result.rateMin = budgetInfo.rateMin;
@@ -217,7 +322,10 @@ export class JobExtractor {
    * Extract budget information by detecting whether the job is
    * hourly (rate range) or fixed-price (single amount).
    */
-  private extractBudgetInfo(container: Element): BudgetInfo {
+  private extractBudgetInfo(
+    container: Element,
+    chains: SelectorChain[] = SELECTOR_CHAINS,
+  ): BudgetInfo {
     const empty: BudgetInfo = {
       contractType: '',
       rateRange: '',
@@ -317,8 +425,23 @@ export class JobExtractor {
       }
     }
 
+    // ── Strategy 3.5: Hourly contract without a posted rate range (data-cy="clock-hourly") ──
+    const clockHourlyIcon = container.querySelector('[data-cy="clock-hourly"]');
+    if (clockHourlyIcon) {
+      const li = clockHourlyIcon.closest('li');
+      const hoursText = li?.querySelector('strong')?.textContent?.trim() ?? '';
+      return {
+        contractType: 'hourly',
+        rateRange: '',
+        rateMin: '',
+        rateMax: '',
+        budgetAmount: '',
+        budget: hoursText ? `Hourly (${hoursText})` : 'Hourly (rate not specified)',
+      };
+    }
+
     // ── Strategy 4: Fallback selector chains for budget ──
-    const budgetChain = SELECTOR_CHAINS.find((c) => c.field === 'budgetRow');
+    const budgetChain = chains.find((c) => c.field === 'budgetRow');
     if (budgetChain) {
       // Skip the :has() selectors in jsdom/test env — they may not be supported
       const fallbackSelectors = budgetChain.selectors.filter((s) => !s.startsWith('li:has('));
@@ -354,7 +477,7 @@ export class JobExtractor {
   trySelectorChain(
     container: Element,
     chain: SelectorChain,
-  ): { value: string | null; usedIndex: number } {
+  ): { value: string | null; usedIndex: number; matchedSelector?: string; matchedCount?: number } {
     if (chain.isMulti) {
       for (let i = 0; i < chain.selectors.length; i++) {
         const selector = chain.selectors[i];
@@ -370,14 +493,19 @@ export class JobExtractor {
               console.log(
                 `🔍 [${chain.field}] selector "${selector}" matched ${texts.length} items (index ${i})`,
               );
-              return { value, usedIndex: i };
+              return {
+                value,
+                usedIndex: i,
+                matchedSelector: selector,
+                matchedCount: texts.length,
+              };
             }
           }
         } catch (err) {
           console.debug(`🔍 [${chain.field}] selector "${selector}" threw:`, err);
         }
       }
-      return { value: null, usedIndex: -1 };
+      return { value: null, usedIndex: -1, matchedCount: 0 };
     }
 
     // Single-match fields
@@ -390,7 +518,12 @@ export class JobExtractor {
           if (raw.length > 0) {
             const value = chain.transform ? chain.transform(raw) : raw;
             console.log(`🔍 [${chain.field}] selector "${selector}" matched (index ${i})`);
-            return { value, usedIndex: i };
+            return {
+              value,
+              usedIndex: i,
+              matchedSelector: selector,
+              matchedCount: 1,
+            };
           }
         }
       } catch (err) {
@@ -398,7 +531,7 @@ export class JobExtractor {
       }
     }
 
-    return { value: null, usedIndex: -1 };
+    return { value: null, usedIndex: -1, matchedCount: 0 };
   }
 
   /**
@@ -455,21 +588,22 @@ export class JobExtractor {
   /**
    * Check the health of all selector chains against the current page DOM.
    */
-  healthCheck(
-    targetContainer?: Element,
-  ): { field: string; status: 'ok' | 'fallback' | 'broken' }[] {
+  healthCheck(targetContainer?: Element, selectorConfig?: SelectorConfig): HealthCheckResult[] {
     const container = targetContainer ?? this.findJobDrawer() ?? document.body;
+    const chains = buildSelectorChains(selectorConfig);
 
-    return SELECTOR_CHAINS.map((chain) => {
-      const { usedIndex } = this.trySelectorChain(container, chain);
+    return chains.map((chain) => {
+      const { usedIndex, matchedSelector, matchedCount } = this.trySelectorChain(container, chain);
 
       let status: 'ok' | 'fallback' | 'broken';
+      let effectiveMatchedCount = matchedCount ?? 0;
       if (usedIndex === -1) {
         if (
           chain.field === 'experienceLevel' &&
           this.extractExperienceLevelFallback(container) !== null
         ) {
           status = 'fallback';
+          effectiveMatchedCount = 1;
         } else {
           status = 'broken';
         }
@@ -479,8 +613,18 @@ export class JobExtractor {
         status = 'fallback';
       }
 
-      return { field: chain.field as string, status };
+      return {
+        field: chain.field as string,
+        status,
+        matchedSelector,
+        matchedCount: effectiveMatchedCount,
+        triedSelectors: [...chain.selectors],
+      };
     });
+  }
+
+  static getBundledDefaultSelectors(): SelectorConfig {
+    return BUNDLED_SELECTORS;
   }
 
   /**

@@ -1,5 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { JobExtractor, SELECTOR_CHAINS } from './job-extractor';
+import { buildSelectorChains, JobExtractor, SELECTOR_CHAINS } from './job-extractor';
+import { BUNDLED_SELECTORS, type SelectorConfig } from './shared/selectors';
 import type { JobInfo } from './types';
 
 function createElement(
@@ -595,6 +596,84 @@ describe('JobExtractor', () => {
       document.body.innerHTML = '';
       const result = extractor.findJobDrawer();
       expect(result).toBeNull();
+    });
+  });
+
+  // ── Live SelectorConfig healing ─────────────────────────────────────────
+
+  describe('live SelectorConfig chains', () => {
+    it('buildSelectorChains overrides mutated skills selectors while preserving fallbacks', () => {
+      const container = document.createElement('div');
+      container.innerHTML = `
+        <h4 class="m-0">Patched Job Title</h4>
+        <div data-test="Description"><p class="text-body-sm">Need Go and Playwright automation.</p></div>
+        <ul class="patched-skill-chips">
+          <li class="custom-skill"><span>Go</span></li>
+          <li class="custom-skill"><span>Playwright</span></li>
+        </ul>
+      `;
+
+      // Before patching, default selectors cannot extract mutated skill chips
+      const brokenHealth = extractor.healthCheck(container);
+      expect(brokenHealth.find((r) => r.field === 'skills')?.status).toBe('broken');
+      expect(extractor.extractJobInfo(container).skills).toBe('Not specified');
+
+      const patchedConfig: SelectorConfig = {
+        ...BUNDLED_SELECTORS,
+        version: '2.0.1',
+        views: {
+          ...BUNDLED_SELECTORS.views,
+          job_detail: {
+            ...BUNDLED_SELECTORS.views.job_detail,
+            fields: {
+              ...BUNDLED_SELECTORS.views.job_detail.fields,
+              skills: {
+                selectors: ['.patched-skill-chips .custom-skill span'],
+                extract: 'list',
+              },
+            },
+          },
+        },
+      };
+
+      const chains = buildSelectorChains(patchedConfig);
+      expect(chains.find((c) => c.field === 'skills')?.selectors[0]).toBe(
+        '.patched-skill-chips .custom-skill span',
+      );
+
+      const healedHealth = extractor.healthCheck(container, patchedConfig);
+      expect(healedHealth.find((r) => r.field === 'skills')?.status).toBe('ok');
+      expect(healedHealth.find((r) => r.field === 'skills')?.matchedCount).toBe(2);
+
+      const healedInfo = extractor.extractJobInfo(container, patchedConfig);
+      expect(healedInfo.skills).toBe('Go, Playwright');
+    });
+
+    it('extracts hourly job without posted rate range (clock-hourly only) and passes budgetRow healthCheck', () => {
+      const container = document.createElement('div');
+      container.classList.add('job-details-content');
+      container.innerHTML = `
+        <div class="job-details-card">
+          <h4><span class="flex-1">Hourly Job Without Rate</span></h4>
+        </div>
+        <div data-test="Description"><p class="multiline-text">Ongoing hourly contract.</p></div>
+        <ul>
+          <li><div data-cy="clock-hourly"></div><strong>More than 30 hrs/week</strong><div class="description">Hourly</div></li>
+        </ul>
+      `;
+
+      const info = extractor.extractJobInfo(container);
+      expect(info.contractType).toBe('hourly');
+      expect(info.budget).toBe('Hourly (More than 30 hrs/week)');
+      expect(info.rateRange).toBe('');
+
+      const defaultHealth = extractor.healthCheck(container);
+      const defaultBudgetRow = defaultHealth.find((r) => r.field === 'budgetRow');
+      expect(['ok', 'fallback']).toContain(defaultBudgetRow?.status);
+
+      const bundledHealth = extractor.healthCheck(container, BUNDLED_SELECTORS);
+      const bundledBudgetRow = bundledHealth.find((r) => r.field === 'budgetRow');
+      expect(['ok', 'fallback']).toContain(bundledBudgetRow?.status);
     });
   });
 });

@@ -7,6 +7,7 @@ import {
 import { UpworkBuddy } from '../main';
 import {
   type ContentAuditSelectorsRequest,
+  type ContentCaptureUiDiagnosticRequest,
   type ContentGuardCheckRequest,
   type ContentMessagesDraftRequest,
   type ContentMessagesGetRequest,
@@ -17,6 +18,8 @@ import {
   type ContentProposalsSyncRequest,
   type ContentScrapeDetailRequest,
   type ContentScrapeSearchRequest,
+  type ContentSelectorsReloadedMessage,
+  type ContentTestSelectorPatchRequest,
   PASSIVE_TAP_EVENT,
   PASSIVE_TAP_READY_EVENT,
   type PassiveTapPayload,
@@ -44,6 +47,7 @@ import {
 } from './adapters/proposal-adapter';
 import { extractSearchListings } from './adapters/search-adapter';
 import { detectChallengeOrAuth, waitForHydration } from './guards';
+import { captureUiDiagnostic, testSelectorPatchOnDocument } from './ui-capture';
 
 export { detectChallengeOrAuth, waitForHydration };
 
@@ -286,6 +290,74 @@ export async function mountUpworkOverlay(
           blueprint,
           overall_status: computeOverallAuditStatus(report),
         });
+      })();
+      return true;
+    }
+
+    if (type === 'CONTENT_CAPTURE_UI_DIAGNOSTIC') {
+      const req = msg as unknown as ContentCaptureUiDiagnosticRequest;
+      void (async () => {
+        const selectors = await resolveContentSelectors(req.selectorConfig);
+        const probe = detectChallengeOrAuth(
+          document,
+          window.location,
+          selectors.auth_and_challenge_guards,
+        );
+        if (probe.challengeDetected) {
+          sendResponse({
+            ok: false,
+            errorCode: 'HUMAN_ACTION_REQUIRED',
+            challengeType: probe.challengeType ?? 'unknown',
+            reason: probe.challengeReason ?? 'Verification challenge detected',
+            url: probe.url,
+          });
+          return;
+        }
+        const capture = captureUiDiagnostic(document, {
+          url: window.location.href,
+          title: document.title,
+          view: req.view,
+          scope: req.scope ?? 'auto',
+          redactPii: req.redactPii ?? true,
+          brokenFields: req.brokenFields,
+          selectorConfig: selectors,
+          baseline: (req.baseline ?? null) as UpWorkPageBlueprint | null,
+          isAuthenticated: req.isAuthenticated ?? probe.loggedIn,
+          passivePayloads: req.passivePayloads ?? [...recentPassivePayloads],
+        });
+        sendResponse({
+          ok: true,
+          capture,
+        });
+      })();
+      return true;
+    }
+
+    if (type === 'CONTENT_TEST_SELECTOR_PATCH') {
+      const req = msg as unknown as ContentTestSelectorPatchRequest;
+      void (async () => {
+        const selectors = await resolveContentSelectors(req.selectorConfig);
+        const targetDocOrHtml = req.prunedHtml ? req.prunedHtml : document;
+        const result = testSelectorPatchOnDocument(
+          targetDocOrHtml,
+          selectors,
+          req.view,
+          req.field,
+          req.rule,
+          window.location.href,
+        );
+        sendResponse(result);
+      })();
+      return true;
+    }
+
+    if (type === 'CONTENT_SELECTORS_RELOADED') {
+      const req = msg as unknown as ContentSelectorsReloadedMessage;
+      void (async () => {
+        if (buddyInstance) {
+          await buddyInstance.refreshSelectorsAndHealthCheck(req.selectorConfig);
+        }
+        sendResponse({ ok: true });
       })();
       return true;
     }

@@ -4,7 +4,12 @@ import {
   PASSIVE_TAP_READY_EVENT,
   type PassiveTapPayload,
 } from './passive-tap-types';
-import { AuthAndChallengeGuardsConfigSchema, type SelectorConfig } from './selectors';
+import {
+  AuthAndChallengeGuardsConfigSchema,
+  type FieldSelectorRule,
+  FieldSelectorRuleSchema,
+  type SelectorConfig,
+} from './selectors';
 
 export { PASSIVE_TAP_EVENT, PASSIVE_TAP_READY_EVENT, type PassiveTapPayload };
 
@@ -121,6 +126,9 @@ export const WsRpcMethodSchema = z.enum([
   'session.status',
   'tabs.list',
   'audit.selectors',
+  'diagnostics.capture',
+  'diagnostics.test_patch',
+  'selectors.reload',
   'jobs.search',
   'jobs.detail',
   'proposal.fill',
@@ -402,6 +410,146 @@ export const DriftAuditReportSchema = z.object({
 });
 export type DriftAuditReport = z.infer<typeof DriftAuditReportSchema>;
 
+export const RepetitivePatternCandidateSchema = z.object({
+  pattern_name: z.string(),
+  nearest_heading: z.string().nullable().default(null),
+  container_selector: z.string(),
+  item_selector: z.string(),
+  instance_count: z.number().int().nonnegative(),
+  sample_items: z.array(z.string()).default([]),
+});
+export type RepetitivePatternCandidate = z.infer<typeof RepetitivePatternCandidateSchema>;
+
+export const RankedSelectorCandidateSchema = z.object({
+  selector: z.string(),
+  stability_score: z.number(),
+  matched_count: z.number().int().nonnegative(),
+  sample_value: z.unknown().nullable().default(null),
+  strategy: z.string(),
+  is_fragile: z.boolean().default(false),
+  reason: z.string().default(''),
+});
+export type RankedSelectorCandidate = z.infer<typeof RankedSelectorCandidateSchema>;
+
+export const BrokenFieldDiagnosisSchema = z.object({
+  field: z.string(),
+  view: z.string(),
+  status: SelectorHealthStatusSchema,
+  registered_selector: z.string(),
+  matched_count: z.number().int().nonnegative(),
+  notes: z.string().default(''),
+  nearest_heading: z.string().nullable().default(null),
+  anchor_html: z.string().default(''),
+  candidates: z.array(RankedSelectorCandidateSchema).default([]),
+});
+export type BrokenFieldDiagnosis = z.infer<typeof BrokenFieldDiagnosisSchema>;
+
+export interface PrunedLandmarkNode {
+  landmark: string;
+  tag: string;
+  id: string | null;
+  data_test: string | null;
+  classes: string[];
+  text_preview: string;
+  child_count: number;
+  patterns: RepetitivePatternCandidate[];
+  children: PrunedLandmarkNode[];
+}
+
+export const PrunedLandmarkNodeSchema: z.ZodType<PrunedLandmarkNode> = z.lazy(() =>
+  z.object({
+    landmark: z.string(),
+    tag: z.string(),
+    id: z.string().nullable().default(null),
+    data_test: z.string().nullable().default(null),
+    classes: z.array(z.string()).default([]),
+    text_preview: z.string().default(''),
+    child_count: z.number().int().nonnegative().default(0),
+    patterns: z.array(RepetitivePatternCandidateSchema).default([]),
+    children: z.array(PrunedLandmarkNodeSchema).default([]),
+  }),
+);
+
+export const PassiveGraphqlSummarySchema = z.object({
+  operation_name: z.string(),
+  url: z.string(),
+  top_keys: z.array(z.string()).default([]),
+});
+export type PassiveGraphqlSummary = z.infer<typeof PassiveGraphqlSummarySchema>;
+
+export const DiagnosticScopeSchema = z.enum(['auto', 'drawer', 'page']);
+export type DiagnosticScope = z.infer<typeof DiagnosticScopeSchema>;
+
+export const UiDiagnosticCaptureSchema = z.object({
+  capture_uid: z.string().optional(),
+  captured_at: z.string(),
+  url: z.string(),
+  title: z.string(),
+  view_type: z.string(),
+  scope: DiagnosticScopeSchema.default('auto'),
+  is_authenticated: z.boolean().default(false),
+  overall_status: SelectorHealthStatusSchema,
+  redact_pii: z.boolean().default(true),
+  audit_report: DriftAuditReportSchema,
+  blueprint: UpWorkPageBlueprintSchema,
+  landmarks: z.array(PrunedLandmarkNodeSchema).default([]),
+  repetitive_patterns: z.array(RepetitivePatternCandidateSchema).default([]),
+  broken_fields: z.array(BrokenFieldDiagnosisSchema).default([]),
+  pruned_html: z.string().default(''),
+  passive_graphql_ops: z.array(PassiveGraphqlSummarySchema).default([]),
+  screenshot_data_url: z.string().optional(),
+});
+export type UiDiagnosticCapture = z.infer<typeof UiDiagnosticCaptureSchema>;
+
+export const SelectorPatchTestRequestSchema = z.object({
+  view: z.string().min(1),
+  field: z.string().min(1),
+  rule: FieldSelectorRuleSchema,
+  capture_id: z.string().optional(),
+  use_active_tab: z.boolean().optional(),
+  pruned_html: z.string().optional(),
+});
+export type SelectorPatchTestRequest = z.infer<typeof SelectorPatchTestRequestSchema>;
+
+export const SelectorPatchFieldSummarySchema = z.object({
+  status: SelectorHealthStatusSchema,
+  matched_count: z.number().int().nonnegative(),
+  sample_value: z.unknown().nullable().default(null),
+  matched_selector: z.string().nullable().default(null),
+});
+export type SelectorPatchFieldSummary = z.infer<typeof SelectorPatchFieldSummarySchema>;
+
+export const SelectorPatchRegressionSchema = z.object({
+  field: z.string(),
+  before_status: SelectorHealthStatusSchema,
+  after_status: SelectorHealthStatusSchema,
+  reason: z.string().default(''),
+});
+export type SelectorPatchRegression = z.infer<typeof SelectorPatchRegressionSchema>;
+
+export const SelectorPatchTestResultSchema = z.object({
+  ok: z.boolean(),
+  view: z.string(),
+  field: z.string(),
+  matched_count: z.number().int().nonnegative(),
+  sample_value: z.unknown().nullable().default(null),
+  status: SelectorHealthStatusSchema,
+  regressions: z.array(SelectorPatchRegressionSchema).default([]),
+  before_summary: SelectorPatchFieldSummarySchema,
+  after_summary: SelectorPatchFieldSummarySchema,
+  yaml_diff: z.string().optional(),
+});
+export type SelectorPatchTestResult = z.infer<typeof SelectorPatchTestResultSchema>;
+
+export const SidePanelTabSchema = z.enum([
+  'pipeline',
+  'approvals',
+  'messages',
+  'activity',
+  'agents',
+  'selectors',
+]);
+
 export const BackgroundCommandMessageSchema = z.discriminatedUnion('type', [
   z.object({
     type: z.literal('API_PROXY_REQUEST'),
@@ -460,12 +608,47 @@ export const BackgroundCommandMessageSchema = z.discriminatedUnion('type', [
     view: z.string().optional(),
     url: z.string().optional(),
     updateBaseline: z.boolean().optional(),
+    useActiveTab: z.boolean().optional(),
+  }),
+  z.object({
+    type: z.literal('BG_CAPTURE_UI_DIAGNOSTIC'),
+    useActiveTab: z.boolean().optional(),
+    view: z.string().optional(),
+    url: z.string().optional(),
+    scope: DiagnosticScopeSchema.optional(),
+    includeScreenshot: z.boolean().optional(),
+    redactPii: z.boolean().optional(),
+    brokenFields: z.array(z.string()).optional(),
+  }),
+  z.object({
+    type: z.literal('BG_TEST_SELECTOR_PATCH'),
+    view: z.string().min(1),
+    field: z.string().min(1),
+    rule: FieldSelectorRuleSchema,
+    captureId: z.string().optional(),
+    useActiveTab: z.boolean().optional(),
+  }),
+  z.object({
+    type: z.literal('BG_APPLY_SELECTOR_PATCH'),
+    view: z.string().min(1),
+    field: z.string().min(1),
+    rule: FieldSelectorRuleSchema,
+    reason: z.string().optional(),
+    exportFixture: z.boolean().optional(),
+    captureId: z.string().optional(),
+    mode: z.enum(['prepend', 'replace']).optional(),
+  }),
+  z.object({
+    type: z.literal('BG_ROLLBACK_SELECTOR_PATCH'),
+    backupFile: z.string().optional(),
   }),
   z.object({
     type: z.literal('OPEN_SIDEPANEL'),
     windowId: z.number().int().optional(),
     tabId: z.number().int().optional(),
+    tab: SidePanelTabSchema.optional(),
   }),
+  z.object({ type: z.literal('BG_GET_PENDING_SIDEPANEL_TAB') }),
   z.object({
     type: z.literal('PASSIVE_TAP_PAYLOAD'),
     kind: z.enum(['graphql', 'xhr']),
@@ -542,9 +725,38 @@ export interface ContentMessagesSendRequest {
   selectorConfig?: SelectorConfig;
 }
 
+export interface ContentCaptureUiDiagnosticRequest {
+  type: 'CONTENT_CAPTURE_UI_DIAGNOSTIC';
+  view?: string;
+  scope?: DiagnosticScope;
+  redactPii?: boolean;
+  brokenFields?: string[];
+  selectorConfig?: SelectorConfig;
+  baseline?: UpWorkPageBlueprint | null;
+  isAuthenticated?: boolean;
+  passivePayloads?: PassiveTapPayload[];
+}
+
+export interface ContentTestSelectorPatchRequest {
+  type: 'CONTENT_TEST_SELECTOR_PATCH';
+  view: string;
+  field: string;
+  rule: FieldSelectorRule;
+  selectorConfig?: SelectorConfig;
+  prunedHtml?: string;
+}
+
+export interface ContentSelectorsReloadedMessage {
+  type: 'CONTENT_SELECTORS_RELOADED';
+  selectorConfig: SelectorConfig;
+}
+
 export type ContentRuntimeMessage =
   | ContentGuardCheckRequest
   | ContentAuditSelectorsRequest
+  | ContentCaptureUiDiagnosticRequest
+  | ContentTestSelectorPatchRequest
+  | ContentSelectorsReloadedMessage
   | ContentScrapeSearchRequest
   | ContentScrapeDetailRequest
   | ContentProposalFillRequest

@@ -393,7 +393,12 @@ export const BUNDLED_SELECTORS: SelectorConfig = {
       container_selectors: ['.job-details-content', '.job-details-card'],
       fields: {
         title: {
-          selectors: ['h1', '.job-details-card h4 span.flex-1', '.air3-card-section h4'],
+          selectors: [
+            '.job-details-card h4 span.flex-1',
+            '.job-details-card h4',
+            'h1',
+            '.air3-card-section h4',
+          ],
           extract: 'full_text',
           required: true,
         },
@@ -423,9 +428,12 @@ export const BUNDLED_SELECTORS: SelectorConfig = {
           sibling_child_tag: 'strong',
         },
         duration: {
-          selectors: ["[data-cy='duration2']", "[data-cy='duration1']"],
-          extract: 'sibling_text',
-          sibling_child_tag: 'strong',
+          selectors: [
+            "li:has([data-cy^='duration']) strong",
+            "li:has([data-cy='duration2']) strong",
+            "li:has([data-cy='duration1']) strong",
+          ],
+          extract: 'full_text',
         },
         hours_per_week: {
           selectors: ["[data-cy='clock-hourly']"],
@@ -436,6 +444,8 @@ export const BUNDLED_SELECTORS: SelectorConfig = {
           selectors: [
             'section[data-v-3b2c2248] .skills-list .air3-line-clamp',
             '.skills-list .air3-line-clamp',
+            "[data-test='proposals-insights-v2-skill-chip'] .air3-line-clamp",
+            "[data-test='proposals-insights-v2-skills-matching'] .air3-badge-skill .air3-line-clamp",
             "[data-test='Skill'] .air3-line-clamp",
             "[data-test='Skill'] span",
             '.air3-badge-highlight .air3-line-clamp',
@@ -446,6 +456,7 @@ export const BUNDLED_SELECTORS: SelectorConfig = {
         },
         proposals: {
           selectors: [
+            "[data-test='proposals-insights-v2-job-activity-section']",
             'li.ca-item',
             '.client-activity-items li.ca-item',
             "[data-test='proposals-tier']",
@@ -488,6 +499,8 @@ export const BUNDLED_SELECTORS: SelectorConfig = {
         },
         payment_verified: {
           selectors: [
+            "[data-test='about-client-container'] div:has(.payment-verified) > strong",
+            '.cfe-ui-job-about-client div:has(.payment-verified) > strong',
             "[data-test='about-client-container'] .payment-verified",
             '.cfe-ui-job-about-client .payment-verified',
             "[data-qa='payment-verified']",
@@ -508,22 +521,28 @@ export const BUNDLED_SELECTORS: SelectorConfig = {
         },
         connects_required: {
           selectors: [
+            '.sidebar .air3-card-section .text-light-on-muted div:first-child strong',
             "[data-test='connects-to-send'] strong",
             "[data-test='connects-required'] strong",
             "[data-test='connects-required']",
-            '.sidebar .air3-card-section .text-light-on-muted div:first-child strong',
           ],
           extract: 'text',
           transforms: ['first_token_int'],
           auth_only: true,
         },
         client_activity: {
-          selectors: ['ul.client-activity-items li.ca-item', 'li.ca-item'],
+          selectors: [
+            "[data-test='proposals-insights-v2-job-activity-section']",
+            "[data-test='proposals-insights-v2-job-activity']",
+            'ul.client-activity-items li.ca-item',
+            'li.ca-item',
+          ],
           extract: 'list',
           auth_only: true,
         },
         screening_questions: {
           selectors: [
+            '.air3-card-section ol.list-styled li',
             "[data-test='screening-questions'] li",
             "[data-test='questions'] li",
             '.job-questions li',

@@ -1180,4 +1180,232 @@ describe('Extension UI Pages (Side Panel, Popup, Options)', () => {
     expect(html).toContain('&lt;img');
     expect(html).toContain('&lt;svg');
   });
+
+  it('SidePanelController Selectors Workbench captures active tab, tests & applies patches, copies markdown, rolls back, and honors pending tab', async () => {
+    document.body.innerHTML = `
+      <span id="sp-connection-pill"></span>
+      <span id="sp-policy-badge"></span>
+      <button id="sp-kill-switch-btn" type="button"></button>
+      <span id="sp-approvals-badge"></span>
+      <span id="sp-unread-badge"></span>
+      <span id="sp-budget-proposals"></span>
+      <span id="sp-budget-connects"></span>
+      <span id="sp-budget-messages"></span>
+      <button class="sp-tab" data-tab="pipeline"></button>
+      <button class="sp-tab" data-tab="selectors"></button>
+      <main id="sidepanel-content"></main>
+    `;
+
+    const capturePayload = {
+      capture_uid: 'cap_20261120_skills',
+      captured_at: '2026-11-20T09:00:00Z',
+      url: 'https://www.upwork.com/jobs/~02123/',
+      title: 'Senior Go Engineer',
+      view_type: 'job_detail',
+      scope: 'drawer',
+      is_authenticated: true,
+      overall_status: 'BROKEN',
+      redact_pii: true,
+      audit_report: {
+        view_type: 'job_detail',
+        url: 'https://www.upwork.com/jobs/~02123/',
+        timestamp: '2026-11-20T09:00:00Z',
+        is_authenticated: true,
+        overall_status: 'BROKEN',
+        healthy_selectors_count: 5,
+        degraded_selectors_count: 0,
+        broken_selectors_count: 1,
+        fragile_selectors_count: 0,
+        audits: [],
+        discovered_candidates: [],
+        baseline_diffs: [],
+      },
+      blueprint: {
+        view_type: 'job_detail',
+        url: 'https://www.upwork.com/jobs/~02123/',
+        captured_at: '2026-11-20T09:00:00Z',
+        is_authenticated: true,
+        landmarks: [],
+        attribute_hooks: [],
+        captured_xhr_endpoints: [],
+      },
+      landmarks: [],
+      repetitive_patterns: [],
+      broken_fields: [
+        {
+          field: 'skills',
+          view: 'job_detail',
+          status: 'BROKEN',
+          registered_selector: '[data-test="Skill"]',
+          matched_count: 0,
+          notes: 'Matched 0 nodes',
+          nearest_heading: 'Skills and Expertise',
+          anchor_html:
+            '<ul class="new-skill-chips"><li class="air3-skill-chip"><span>Go</span></li></ul>',
+          candidates: [
+            {
+              selector: '.air3-skill-chip span',
+              stability_score: 88,
+              matched_count: 3,
+              sample_value: ['Go', 'PostgreSQL', 'Playwright'],
+              strategy: 'repetitive_pattern_leaf',
+              is_fragile: false,
+              reason: 'Matched 3 nodes',
+            },
+          ],
+        },
+      ],
+      pruned_html: '<main></main>',
+      passive_graphql_ops: [],
+    };
+
+    const writeTextSpy = vi.fn(async () => undefined);
+    Object.defineProperty(navigator, 'clipboard', {
+      configurable: true,
+      value: { writeText: writeTextSpy },
+    });
+
+    const sendSpy = vi.spyOn(fakeBrowser.runtime, 'sendMessage').mockImplementation(async (msg) => {
+      const m = msg as { type?: string };
+      if (m.type === 'BG_GET_PENDING_SIDEPANEL_TAB') return { tab: 'selectors' };
+      if (m.type === 'GET_RUNTIME_STATUS') {
+        return { wsConnected: true, policyMode: 'confirm_in_ui', pendingApprovalsCount: 0 };
+      }
+      if (m.type === 'BG_CAPTURE_UI_DIAGNOSTIC') {
+        return {
+          ok: true,
+          capture_uid: 'cap_20261120_skills',
+          markdown: '# UI Diagnostic Capture: job_detail',
+          capture: capturePayload,
+        };
+      }
+      if (m.type === 'BG_TEST_SELECTOR_PATCH') {
+        return {
+          ok: true,
+          view: 'job_detail',
+          field: 'skills',
+          matched_count: 3,
+          sample_value: ['Go', 'PostgreSQL', 'Playwright'],
+          status: 'HEALTHY',
+          regressions: [],
+          before_summary: {
+            status: 'BROKEN',
+            matched_count: 0,
+            sample_value: null,
+            matched_selector: null,
+          },
+          after_summary: {
+            status: 'HEALTHY',
+            matched_count: 3,
+            sample_value: ['Go', 'PostgreSQL', 'Playwright'],
+            matched_selector: '.air3-skill-chip span',
+          },
+        };
+      }
+      if (m.type === 'BG_APPLY_SELECTOR_PATCH') {
+        return { ok: true, new_version: '2.0.1', backup_file: 'upwork.20261120.yaml' };
+      }
+      if (m.type === 'BG_ROLLBACK_SELECTOR_PATCH') {
+        return { ok: true, version: '2.0', backup_file: 'upwork.20261120.yaml' };
+      }
+      return { ok: true };
+    });
+
+    const mockTransport = vi.fn(async (url: string) => {
+      if (url.startsWith('/api/selector-audits')) {
+        return new Response(JSON.stringify({ audits: [] }), { status: 200 });
+      }
+      if (url.startsWith('/api/diagnostics/captures/cap_20261120_skills')) {
+        return new Response(
+          JSON.stringify({
+            capture_uid: 'cap_20261120_skills',
+            markdown: '# UI Diagnostic Capture: job_detail',
+            capture: capturePayload,
+          }),
+          { status: 200 },
+        );
+      }
+      if (url.startsWith('/api/diagnostics/captures')) {
+        return new Response(
+          JSON.stringify({
+            captures: [
+              {
+                id: 1,
+                capture_uid: 'cap_20261120_skills',
+                view_type: 'job_detail',
+                overall_status: 'BROKEN',
+                broken_count: 1,
+              },
+            ],
+          }),
+          { status: 200 },
+        );
+      }
+      return new Response(JSON.stringify({}), { status: 200 });
+    });
+
+    const controller = new SidePanelController(
+      {
+        root: document,
+        connectionPill: mustEl('sp-connection-pill'),
+        policyBadge: mustEl('sp-policy-badge'),
+        killSwitchBtn: document.getElementById('sp-kill-switch-btn') as HTMLButtonElement,
+        approvalsBadge: mustEl('sp-approvals-badge'),
+        unreadBadge: mustEl('sp-unread-badge'),
+        tabButtons: Array.from(document.querySelectorAll<HTMLButtonElement>('.sp-tab')),
+        contentEl: mustEl('sidepanel-content'),
+      },
+      { proxyTransport: mockTransport },
+    );
+
+    await controller.init();
+    expect(controller.getActiveTab()).toBe('selectors');
+
+    const content = mustEl('sidepanel-content');
+    expect(
+      content.querySelector('[data-testid="failing-fields-inspector"]')?.textContent,
+    ).toContain('job_detail.skills');
+
+    content.querySelector<HTMLButtonElement>('[data-testid="copy-diagnostic-md-btn"]')?.click();
+    await new Promise((resolve) => setTimeout(resolve, 10));
+    expect(writeTextSpy).toHaveBeenCalledWith('# UI Diagnostic Capture: job_detail');
+
+    content.querySelector<HTMLButtonElement>('[data-testid="capture-active-tab-btn"]')?.click();
+    await new Promise((resolve) => setTimeout(resolve, 20));
+    expect(sendSpy).toHaveBeenCalledWith(
+      expect.objectContaining({ type: 'BG_CAPTURE_UI_DIAGNOSTIC', useActiveTab: true }),
+    );
+
+    content.querySelector<HTMLButtonElement>('.js-test-patch')?.click();
+    await new Promise((resolve) => setTimeout(resolve, 20));
+    expect(sendSpy).toHaveBeenCalledWith(
+      expect.objectContaining({
+        type: 'BG_TEST_SELECTOR_PATCH',
+        view: 'job_detail',
+        field: 'skills',
+      }),
+    );
+    expect(content.querySelector('#sp-patch-feedback-0')?.textContent).toContain(
+      'HEALTHY: 3 match(es)',
+    );
+
+    content.querySelector<HTMLButtonElement>('.js-apply-patch')?.click();
+    await new Promise((resolve) => setTimeout(resolve, 20));
+    expect(sendSpy).toHaveBeenCalledWith(
+      expect.objectContaining({
+        type: 'BG_APPLY_SELECTOR_PATCH',
+        view: 'job_detail',
+        field: 'skills',
+      }),
+    );
+
+    content.querySelector<HTMLButtonElement>('[data-testid="rollback-patch-btn"]')?.click();
+    await new Promise((resolve) => setTimeout(resolve, 20));
+    expect(sendSpy).toHaveBeenCalledWith(
+      expect.objectContaining({ type: 'BG_ROLLBACK_SELECTOR_PATCH' }),
+    );
+    expect(content.querySelector('#sp-selectors-status')?.textContent).toContain(
+      'Rolled back selectors to v2.0',
+    );
+  });
 });

@@ -12,7 +12,12 @@ import type {
   UpWorkPageBlueprint,
 } from '../../shared/protocol';
 import { BUNDLED_SELECTORS, type ExtractMode, type SelectorConfig } from '../../shared/selectors';
-import { extractDirectText, extractFullText, parseHtmlDocument } from '../selector-engine';
+import {
+  extractCaItemValue,
+  extractFullText,
+  parseHtmlDocument,
+  queryAllSafe,
+} from '../selector-engine';
 
 export interface RegisteredSelector {
   view: string;
@@ -606,7 +611,7 @@ export class DriftAuditor {
   }
 
   private auditSingleSelector(reg: RegisteredSelector): SelectorAuditEntry {
-    const matches = querySelectorAllSafe(this.root, reg.css_selector);
+    const matches = queryAllSafe(this.root, reg.css_selector);
     const count = matches.length;
 
     if (count === 0) {
@@ -624,7 +629,7 @@ export class DriftAuditor {
       }
 
       for (const fb of reg.fallback_selectors) {
-        const fbMatches = querySelectorAllSafe(this.root, fb);
+        const fbMatches = queryAllSafe(this.root, fb);
         if (fbMatches.length > 0) {
           const sampleVal = this.extractSampleValue(fbMatches, reg);
           return {
@@ -723,17 +728,8 @@ export class DriftAuditor {
     if (matches.length === 0) return null;
 
     if (reg.extract_mode === 'ca_item_value') {
-      const labelReq = reg.label_contains ?? '';
-      for (const li of matches) {
-        const titleSpan = li.querySelector('span.title');
-        if (titleSpan && extractDirectText(titleSpan).includes(labelReq)) {
-          const valSpan = li.querySelector('span.value');
-          if (valSpan) {
-            return collapsedText(valSpan).slice(0, 100);
-          }
-        }
-      }
-      return '';
+      const val = extractCaItemValue(matches, reg.label_contains);
+      return val !== null ? val.replace(/\s+/g, ' ').trim().slice(0, 100) : '';
     }
 
     if (reg.sibling_child_tag) {

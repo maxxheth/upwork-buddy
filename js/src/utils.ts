@@ -130,6 +130,16 @@ export function renderValue(value: unknown, depth = 0): string {
   return escapeHtml(String(value));
 }
 
+function fieldLength(value: unknown): number {
+  if (typeof value === 'string' || Array.isArray(value)) {
+    return value.length;
+  }
+  if (value && typeof value === 'object') {
+    return Object.keys(value).length;
+  }
+  return 0;
+}
+
 /**
  * Render analysis results
  */
@@ -138,10 +148,10 @@ export function renderAnalysis(analysis: AnalysisResponse, showCachedIndicator =
   console.log('🎨 renderAnalysis: Field lengths:', {
     proposal: analysis.proposal?.length || 0,
     execution_prompt: analysis.execution_prompt?.length || 0,
-    time_estimate: analysis.time_estimate?.length || 0,
-    workload_division: analysis.workload_division?.length || 0,
-    questions_for_client: analysis.questions_for_client?.length || 0,
-    tips_and_advice: analysis.tips_and_advice?.length || 0,
+    time_estimate: fieldLength(analysis.time_estimate),
+    workload_division: fieldLength(analysis.workload_division),
+    questions_for_client: fieldLength(analysis.questions_for_client),
+    tips_and_advice: fieldLength(analysis.tips_and_advice),
     tone_analysis: analysis.tone_analysis?.length || 0,
   });
 

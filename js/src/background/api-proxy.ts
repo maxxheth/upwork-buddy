@@ -35,6 +35,7 @@ const CONTENT_SCRIPT_ALLOWED_COMMANDS = new Set([
   'PASSIVE_TAP_PAYLOAD',
   'GET_RUNTIME_STATUS',
   'BG_SELECTORS_GET',
+  'BG_CAPTURE_UI_DIAGNOSTIC',
   'OPEN_SIDEPANEL',
   'API_PROXY_REQUEST',
 ]);
@@ -120,6 +121,9 @@ export function isContentScriptProxyAllowed(
   }
   if (path === '/api/jobs') {
     return m === 'GET' || m === 'POST';
+  }
+  if (/^\/api\/jobs\/\d+\/analyze$/.test(path)) {
+    return m === 'POST';
   }
   if (/^\/api\/jobs\/\d+$/.test(path)) {
     return m === 'DELETE';

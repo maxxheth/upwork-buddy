@@ -383,4 +383,71 @@ describe('Declarative Selector Engine (Scrapling / parser.py parity)', () => {
       'Less than 1 month',
     );
   });
+
+  it('extracts proposals_insights_v2 ca_item_value without falling back to Bid range across multiple sections', () => {
+    const v2Doc = parseHtmlDocument(`
+      <div data-test="proposals-insights-v2-job-activity">
+        <div>
+          <div data-test="proposals-insights-v2-job-activity-section">
+            <div><div><div>Bid range</div></div><button type="button" data-test="proposals-insights-v2-job-activity-section-toggle"></button></div>
+            <div data-ev-sublocation="!collapse">High $50, Avg $35, Low $20</div>
+          </div>
+          <div data-test="proposals-insights-v2-job-activity-section">
+            <div><div><div>Proposals</div> <div>(1)</div></div><button type="button"></button></div>
+          </div>
+          <div data-test="proposals-insights-v2-job-activity-section">
+            <div><div><div>Invites</div> <div>(0)</div></div><button type="button"></button></div>
+          </div>
+          <div data-test="proposals-insights-v2-job-activity-section">
+            <div><div><div>Interviews</div> <div>(0)</div></div></div>
+            <div data-ev-sublocation="!collapse"><div></div></div>
+          </div>
+        </div>
+      </div>
+    `);
+
+    expect(
+      extractFieldValue(v2Doc, {
+        selectors: ["[data-test='proposals-insights-v2-job-activity-section']"],
+        extract: 'ca_item_value',
+        label_contains: 'Proposals',
+        transforms: ['clean_proposals_text'],
+      }),
+    ).toBe('1');
+
+    const missingProposalsDoc = parseHtmlDocument(`
+      <div data-test="proposals-insights-v2-job-activity">
+        <div>
+          <div data-test="proposals-insights-v2-job-activity-section">
+            <div><div><div>Bid range</div></div><button type="button" data-test="proposals-insights-v2-job-activity-section-toggle"></button></div>
+            <div data-ev-sublocation="!collapse">High $50, Avg $35, Low $20</div>
+          </div>
+          <div data-test="proposals-insights-v2-job-activity-section">
+            <div><div><div>Invites</div> <div>(0)</div></div><button type="button"></button></div>
+          </div>
+        </div>
+      </div>
+    `);
+
+    expect(
+      extractFieldValue(missingProposalsDoc, {
+        selectors: ["[data-test='proposals-insights-v2-job-activity-section']"],
+        extract: 'ca_item_value',
+        label_contains: 'Proposals',
+        transforms: ['clean_proposals_text'],
+      }),
+    ).toBeNull();
+  });
+
+  it('unwraps parenthesized proposal counts in clean_proposals_text and parseProposalCount', () => {
+    expect(applyTransform('(1)', 'clean_proposals_text')).toBe('1');
+    expect(applyTransform('(15)', 'clean_proposals_text')).toBe('15');
+    expect(applyTransform('(Less than 5)', 'clean_proposals_text')).toBe('Less than 5');
+    expect(applyTransform('(5 to 10)', 'clean_proposals_text')).toBe('5 to 10');
+
+    expect(parseProposalCount('(1)')).toBe(1);
+    expect(parseProposalCount('(15)')).toBe(15);
+    expect(parseProposalCount('(Less than 5)')).toBe(4);
+    expect(parseProposalCount('(5 to 10)')).toBe(10);
+  });
 });

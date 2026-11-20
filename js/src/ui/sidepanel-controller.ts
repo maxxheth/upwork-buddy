@@ -1,7 +1,14 @@
 import { browser } from 'wxt/browser';
 import { ApiClient, createExtensionProxyTransport } from '../api';
-import type { DriftAuditReport, RuntimeStatusSnapshot } from '../shared/protocol';
+import type {
+  BrokenFieldDiagnosis,
+  DriftAuditReport,
+  RuntimeStatusSnapshot,
+  SelectorPatchTestResult,
+  UiDiagnosticCapture,
+} from '../shared/protocol';
 import type { SearchProfileEntry } from '../shared/schemas';
+import type { ExtractMode } from '../shared/selectors';
 import { StateManager } from '../state';
 import type { GeneratedAgent, SavedJob } from '../types';
 import { attachCollapsibleListeners, escapeHtml, renderAnalysis, sanitizeHttpUrl } from '../utils';
@@ -141,6 +148,23 @@ export class SidePanelController {
   private activeAgentsSubTab: 'profile' | 'cache' | 'history' | 'blueprints' = 'profile';
   private listenersAttached = false;
   private tabSelectedBeforeInitDone = false;
+  private includeScreenshot = false;
+  private latestCaptureDetail: {
+    capture_uid?: string;
+    markdown?: string;
+    entry?: {
+      id?: number;
+      capture_uid?: string;
+      view_type?: string;
+      page_url?: string;
+      overall_status?: string;
+      broken_count?: number;
+      created_at?: string;
+      broken_fields?: BrokenFieldDiagnosis[];
+    };
+    capture?: UiDiagnosticCapture;
+  } | null = null;
+  private patchTestFeedback = new Map<string, string>();
   private cachedBudgetText = {
     proposals: '0 / 5',
     connects: '0 / 50',
@@ -176,13 +200,52 @@ export class SidePanelController {
       this.els.killSwitchBtn.addEventListener('click', () => {
         void this.triggerKillSwitch();
       });
+
+      if (typeof browser?.runtime?.onMessage?.addListener === 'function') {
+        browser.runtime.onMessage.addListener((rawMsg: unknown) => {
+          const msg = rawMsg as { type?: string; tab?: string };
+          if (!msg || typeof msg !== 'object') return;
+          if (msg.type === 'SIDEPANEL_SWITCH_TAB' && this.isValidSidePanelTab(msg.tab)) {
+            this.tabSelectedBeforeInitDone = true;
+            void this.switchTab(msg.tab);
+          } else if (msg.type === 'SIDEPANEL_SELECTORS_UPDATED' && this.activeTab === 'selectors') {
+            void this.renderSelectorsTab();
+          }
+        });
+      }
     }
 
     await this.stateManager.initializeStorage().catch(() => undefined);
     await this.refreshHeaderStatus();
     if (!this.tabSelectedBeforeInitDone) {
-      await this.switchTab('pipeline');
+      let initialTab: SidePanelTabId = 'pipeline';
+      if (typeof window !== 'undefined' && typeof window.location?.search === 'string') {
+        const paramTab = new URLSearchParams(window.location.search).get('tab');
+        if (this.isValidSidePanelTab(paramTab)) {
+          initialTab = paramTab;
+        }
+      }
+      if (initialTab === 'pipeline') {
+        const pending = (await browser.runtime
+          .sendMessage({ type: 'BG_GET_PENDING_SIDEPANEL_TAB' })
+          .catch(() => null)) as { tab?: string | null } | null;
+        if (this.isValidSidePanelTab(pending?.tab)) {
+          initialTab = pending.tab;
+        }
+      }
+      await this.switchTab(initialTab);
     }
+  }
+
+  private isValidSidePanelTab(tab: string | null | undefined): tab is SidePanelTabId {
+    return (
+      tab === 'pipeline' ||
+      tab === 'approvals' ||
+      tab === 'messages' ||
+      tab === 'activity' ||
+      tab === 'agents' ||
+      tab === 'selectors'
+    );
   }
 
   getActiveTab(): SidePanelTabId {
@@ -1687,12 +1750,164 @@ export class SidePanelController {
     `;
   }
 
+  private inferPatchExtractMode(field: string): ExtractMode {
+    const lower = field.toLowerCase();
+    if (lower === 'skills' || lower === 'skill' || lower.includes('items')) return 'list';
+    if (lower.includes('url') || lower === 'link') return 'attribute';
+    if (lower.includes('description') || lower.includes('body')) return 'full_text';
+    return 'text';
+  }
+
+  private renderBrokenFieldsInspector(): string {
+    const detail = this.latestCaptureDetail;
+    const captureUid = detail?.capture_uid ?? detail?.entry?.capture_uid ?? '';
+    const brokenFields = detail?.capture?.broken_fields ?? detail?.entry?.broken_fields ?? [];
+    if (!detail) {
+      return `
+        <div class="sp-section" data-testid="failing-fields-inspector">
+          <h4>UI Diagnostic Workbench</h4>
+          <p class="sp-meta">Click <strong>Capture Active Tab</strong> while viewing an Upwork job or drawer to capture pruned DOM context and candidate selectors.</p>
+        </div>
+      `;
+    }
+    if (brokenFields.length === 0) {
+      return `
+        <div class="sp-section" data-testid="failing-fields-inspector">
+          <h4>UI Diagnostic Workbench</h4>
+          <p class="sp-meta">Latest capture <code>${escapeHtml(captureUid)}</code> (${escapeHtml(detail.capture?.view_type ?? detail.entry?.view_type ?? '')}) found zero broken selectors.</p>
+        </div>
+      `;
+    }
+
+    const cardsHtml = brokenFields
+      .map((bf, idx) => {
+        const defaultSelector = bf.candidates[0]?.selector ?? '';
+        const defaultExtract = this.inferPatchExtractMode(bf.field);
+        const key = `${bf.view}:${bf.field}`;
+        const feedback = this.patchTestFeedback.get(key) ?? '';
+        const candidatesHtml =
+          bf.candidates.length === 0
+            ? '<span class="sp-meta">No automatic candidates found — inspect Anchor HTML below.</span>'
+            : bf.candidates
+                .slice(0, 6)
+                .map((c) => {
+                  const sampleStr = Array.isArray(c.sample_value)
+                    ? c.sample_value.slice(0, 3).join(', ')
+                    : String(c.sample_value ?? '');
+                  return `
+                    <button
+                      type="button"
+                      class="sp-candidate-chip"
+                      data-idx="${idx}"
+                      data-selector="${escapeHtml(c.selector)}"
+                      title="${escapeHtml(c.reason)}${sampleStr ? ` | sample: ${escapeHtml(sampleStr)}` : ''}"
+                    >
+                      <code>${escapeHtml(c.selector)}</code>
+                      <span>(${escapeHtml(String(c.stability_score))}, ${escapeHtml(String(c.matched_count))}x)</span>
+                    </button>
+                  `;
+                })
+                .join('');
+
+        return `
+          <article class="sp-card sp-broken-card" data-broken-idx="${idx}" data-field="${escapeHtml(bf.field)}" data-view="${escapeHtml(bf.view)}">
+            <div class="sp-card-header">
+              <h5>${escapeHtml(bf.view)}.${escapeHtml(bf.field)}</h5>
+              <span class="score-pill">${escapeHtml(bf.status)}</span>
+            </div>
+            <div class="sp-meta">
+              ${bf.nearest_heading ? `<span>Heading: ${escapeHtml(bf.nearest_heading)}</span>` : ''}
+              <span>Current: <code>${escapeHtml(bf.registered_selector || '(none)')}</code></span>
+            </div>
+            ${bf.notes ? `<p class="sp-meta">${escapeHtml(bf.notes)}</p>` : ''}
+            <div class="sp-candidate-list">${candidatesHtml}</div>
+            <div class="sp-patch-row">
+              <input
+                type="text"
+                class="sp-patch-input"
+                id="sp-patch-input-${idx}"
+                value="${escapeHtml(defaultSelector)}"
+                placeholder="CSS selector to test & apply"
+              />
+              <select class="sp-patch-extract" id="sp-patch-extract-${idx}">
+                <option value="list" ${defaultExtract === 'list' ? 'selected' : ''}>list</option>
+                <option value="text" ${defaultExtract === 'text' ? 'selected' : ''}>text</option>
+                <option value="full_text" ${defaultExtract === 'full_text' ? 'selected' : ''}>full_text</option>
+                <option value="rendered_text" ${defaultExtract === 'rendered_text' ? 'selected' : ''}>rendered_text</option>
+                <option value="attribute" ${defaultExtract === 'attribute' ? 'selected' : ''}>attribute</option>
+                <option value="sibling_text" ${defaultExtract === 'sibling_text' ? 'selected' : ''}>sibling_text</option>
+                <option value="hourly_or_fixed_label" ${defaultExtract === 'hourly_or_fixed_label' ? 'selected' : ''}>hourly_or_fixed_label</option>
+                <option value="ca_item_value" ${defaultExtract === 'ca_item_value' ? 'selected' : ''}>ca_item_value</option>
+              </select>
+            </div>
+            <div class="sp-card-actions">
+              <button type="button" class="btn-secondary js-test-patch" data-idx="${idx}" data-view="${escapeHtml(bf.view)}" data-field="${escapeHtml(bf.field)}">Test</button>
+              <button type="button" class="btn-primary js-apply-patch" data-idx="${idx}" data-view="${escapeHtml(bf.view)}" data-field="${escapeHtml(bf.field)}">Apply Patch</button>
+            </div>
+            <p class="sp-meta sp-patch-feedback" id="sp-patch-feedback-${idx}">${escapeHtml(feedback)}</p>
+            ${
+              bf.anchor_html
+                ? `<details><summary>Anchor HTML</summary><pre class="sp-code-preview">${escapeHtml(bf.anchor_html)}</pre></details>`
+                : ''
+            }
+          </article>
+        `;
+      })
+      .join('');
+
+    return `
+      <div class="sp-section" data-testid="failing-fields-inspector">
+        <h4>Failing Fields Inspector (${escapeHtml(captureUid || 'active')})</h4>
+        <div class="sp-list">${cardsHtml}</div>
+      </div>
+    `;
+  }
+
   private async renderSelectorsTab(): Promise<void> {
-    const data = await this.fetchJsonSafe<{ audits?: SelectorAuditRow[] }>(
-      '/api/selector-audits?latest=true&limit=20',
-      { method: 'GET' },
-    );
+    type CaptureSummaryEntry = NonNullable<SidePanelController['latestCaptureDetail']>['entry'];
+    const [data, capturesData] = await Promise.all([
+      this.fetchJsonSafe<{ audits?: SelectorAuditRow[] }>(
+        '/api/selector-audits?latest=true&limit=20',
+        {
+          method: 'GET',
+        },
+      ),
+      this.fetchJsonSafe<{ captures?: NonNullable<CaptureSummaryEntry>[] }>(
+        '/api/diagnostics/captures?limit=10',
+        { method: 'GET' },
+      ),
+    ]);
     const audits = data?.audits ?? [];
+    const captures = capturesData?.captures ?? [];
+
+    if (!this.latestCaptureDetail && captures.length > 0 && captures[0]?.capture_uid) {
+      const detail = await this.fetchJsonSafe<
+        NonNullable<SidePanelController['latestCaptureDetail']>
+      >(`/api/diagnostics/captures/${encodeURIComponent(captures[0].capture_uid)}`, {
+        method: 'GET',
+      });
+      if (detail) {
+        this.latestCaptureDetail = detail;
+      }
+    }
+
+    const capturesHtml =
+      captures.length === 0
+        ? '<p class="sp-meta">No diagnostic captures persisted yet.</p>'
+        : captures
+            .map(
+              (c) => `
+                <div class="sp-capture-row">
+                  <span><code>${escapeHtml(c.capture_uid ?? String(c.id ?? ''))}</code> · ${escapeHtml(c.view_type ?? '')} [${escapeHtml(c.overall_status ?? '')}, ${escapeHtml(String(c.broken_count ?? 0))} broken]</span>
+                  ${
+                    c.capture_uid
+                      ? `<button type="button" class="btn-small js-load-capture" data-capture-uid="${escapeHtml(c.capture_uid)}">Inspect</button>`
+                      : ''
+                  }
+                </div>
+              `,
+            )
+            .join('');
 
     const rowsHtml =
       audits.length === 0
@@ -1716,9 +1931,14 @@ export class SidePanelController {
 
     this.els.contentEl.innerHTML = `
       <section class="sp-panel" data-testid="panel-selectors">
+        ${this.renderBrokenFieldsInspector()}
         <div class="sp-list">${rowsHtml}</div>
+        <div class="sp-section" data-testid="recent-captures-list">
+          <h4>Recent Captures</h4>
+          ${capturesHtml}
+        </div>
         <div class="sp-toolbar">
-          <h3>Selector Health</h3>
+          <h3>Selector Health &amp; Diagnostics</h3>
           <select id="sp-audit-view" data-testid="audit-view-select">
             <option value="auto">Auto (Current View)</option>
             <option value="search_listings">search_listings</option>
@@ -1731,30 +1951,86 @@ export class SidePanelController {
             <option value="messages_rooms">messages_rooms</option>
             <option value="messages_thread">messages_thread</option>
           </select>
-          <button type="button" id="sp-audit-current-tab" data-testid="audit-current-tab-btn" class="btn-primary">Audit Current Tab</button>
-          <button type="button" id="sp-refresh-selectors" data-testid="refresh-selectors-btn" class="btn-secondary">Refresh Selectors</button>
+          <div class="sp-workbench-actions">
+            <button type="button" id="sp-capture-active-tab" data-testid="capture-active-tab-btn" class="btn-primary">Capture Active Tab</button>
+            <button type="button" id="sp-audit-current-tab" data-testid="audit-current-tab-btn" class="btn-primary">Audit Current Tab</button>
+            <button type="button" id="sp-refresh-selectors" data-testid="refresh-selectors-btn" class="btn-secondary">Refresh Selectors</button>
+            <button type="button" id="sp-copy-diagnostic-md" data-testid="copy-diagnostic-md-btn" class="btn-secondary">Copy Diagnostic MD</button>
+            <button type="button" id="sp-rollback-patch" data-testid="rollback-patch-btn" class="btn-danger">Rollback Last Patch</button>
+          </div>
+          <label class="sp-checkbox-label">
+            <input type="checkbox" id="sp-include-screenshot" ${this.includeScreenshot ? 'checked' : ''} />
+            Include Screenshot
+          </label>
         </div>
         <p id="sp-selectors-status" class="sp-meta"></p>
       </section>
     `;
 
     const statusEl = this.els.contentEl.querySelector<HTMLElement>('#sp-selectors-status');
+    const setStatus = (msg: string): void => {
+      if (statusEl) statusEl.textContent = msg;
+    };
     const auditBtn = this.els.contentEl.querySelector<HTMLButtonElement>('#sp-audit-current-tab');
+    const captureBtn =
+      this.els.contentEl.querySelector<HTMLButtonElement>('#sp-capture-active-tab');
     const viewSelect = this.els.contentEl.querySelector<HTMLSelectElement>('#sp-audit-view');
+    const screenshotCheckbox =
+      this.els.contentEl.querySelector<HTMLInputElement>('#sp-include-screenshot');
+
+    screenshotCheckbox?.addEventListener('change', () => {
+      this.includeScreenshot = Boolean(screenshotCheckbox.checked);
+    });
+
+    captureBtn?.addEventListener('click', async () => {
+      const selectedView = viewSelect?.value ?? 'auto';
+      captureBtn.disabled = true;
+      setStatus('Capturing live UI diagnostic bundle...');
+      try {
+        const res = (await browser.runtime.sendMessage({
+          type: 'BG_CAPTURE_UI_DIAGNOSTIC',
+          useActiveTab: true,
+          view: selectedView === 'auto' ? undefined : selectedView,
+          includeScreenshot: this.includeScreenshot,
+          redactPii: true,
+        })) as
+          | (NonNullable<SidePanelController['latestCaptureDetail']> & {
+              ok?: boolean;
+              error?: string;
+            })
+          | undefined;
+        if (!res?.ok) {
+          setStatus(res?.error ?? 'Diagnostic capture failed');
+          return;
+        }
+        this.latestCaptureDetail = res;
+        this.patchTestFeedback.clear();
+        await this.renderSelectorsTab();
+        const uid =
+          res.capture_uid ?? res.entry?.capture_uid ?? res.capture?.capture_uid ?? 'captured';
+        const refreshedStatus =
+          this.els.contentEl.querySelector<HTMLElement>('#sp-selectors-status');
+        if (refreshedStatus) {
+          refreshedStatus.textContent = `Captured diagnostic ${uid} (${res.capture?.broken_fields?.length ?? 0} broken field(s))`;
+        }
+      } catch (err) {
+        setStatus(err instanceof Error ? err.message : 'Diagnostic capture failed');
+      } finally {
+        captureBtn.disabled = false;
+      }
+    });
 
     auditBtn?.addEventListener('click', async () => {
       const selectedView = viewSelect?.value ?? 'auto';
       auditBtn.disabled = true;
-      if (statusEl) statusEl.textContent = 'Running selector audit...';
+      setStatus('Running selector audit...');
       try {
         const res = (await browser.runtime.sendMessage({
           type: 'BG_RUN_SELECTOR_AUDIT',
           view: selectedView === 'auto' ? undefined : selectedView,
         })) as { ok?: boolean; overall_status?: string; error?: string } | undefined;
         if (!res?.ok) {
-          if (statusEl) {
-            statusEl.textContent = res?.error ?? 'Selector audit failed';
-          }
+          setStatus(res?.error ?? 'Selector audit failed');
           return;
         }
         await this.renderSelectorsTab();
@@ -1764,9 +2040,7 @@ export class SidePanelController {
           refreshedStatus.textContent = `Audit complete: ${res.overall_status ?? 'HEALTHY'}`;
         }
       } catch (err) {
-        if (statusEl) {
-          statusEl.textContent = err instanceof Error ? err.message : 'Selector audit failed';
-        }
+        setStatus(err instanceof Error ? err.message : 'Selector audit failed');
       } finally {
         auditBtn.disabled = false;
       }
@@ -1780,14 +2054,201 @@ export class SidePanelController {
             type: 'BG_SELECTORS_GET',
             forceRefresh: true,
           })) as { ok?: boolean; selectors?: { version?: string } } | undefined;
-          if (statusEl) {
-            statusEl.textContent = res?.ok
+          setStatus(
+            res?.ok
               ? `Selectors refreshed (v${res.selectors?.version ?? '2.0'})`
-              : 'Refresh failed';
-          }
+              : 'Refresh failed',
+          );
         } catch {
-          if (statusEl) statusEl.textContent = 'Refresh failed';
+          setStatus('Refresh failed');
         }
       });
+
+    this.els.contentEl
+      .querySelector('#sp-copy-diagnostic-md')
+      ?.addEventListener('click', async () => {
+        const md = this.latestCaptureDetail?.markdown;
+        if (!md) {
+          setStatus('No captured diagnostic markdown to copy yet');
+          return;
+        }
+        if (!navigator.clipboard?.writeText) {
+          setStatus('Clipboard write unavailable in this context');
+          return;
+        }
+        try {
+          await navigator.clipboard.writeText(md);
+          setStatus('Copied diagnostic markdown to clipboard');
+        } catch {
+          setStatus('Clipboard write unavailable in this context');
+        }
+      });
+
+    this.els.contentEl
+      .querySelector<HTMLButtonElement>('#sp-rollback-patch')
+      ?.addEventListener('click', async () => {
+        try {
+          const res = (await browser.runtime.sendMessage({
+            type: 'BG_ROLLBACK_SELECTOR_PATCH',
+          })) as
+            | { ok?: boolean; version?: string; backup_file?: string; error?: string }
+            | undefined;
+          if (!res?.ok) {
+            setStatus(res?.error ?? 'Rollback failed');
+            return;
+          }
+          await this.renderSelectorsTab();
+          const refreshedStatus =
+            this.els.contentEl.querySelector<HTMLElement>('#sp-selectors-status');
+          if (refreshedStatus) {
+            refreshedStatus.textContent = `Rolled back selectors to v${res.version ?? '?'} from ${res.backup_file ?? 'backup'}`;
+          }
+        } catch (err) {
+          setStatus(err instanceof Error ? err.message : 'Rollback failed');
+        }
+      });
+
+    for (const chip of Array.from(
+      this.els.contentEl.querySelectorAll<HTMLButtonElement>('.sp-candidate-chip'),
+    )) {
+      chip.addEventListener('click', () => {
+        const idx = chip.dataset.idx ?? '';
+        const selector = chip.dataset.selector ?? '';
+        const input = this.els.contentEl.querySelector<HTMLInputElement>(`#sp-patch-input-${idx}`);
+        if (input && selector) {
+          input.value = selector;
+        }
+      });
+    }
+
+    for (const btn of Array.from(
+      this.els.contentEl.querySelectorAll<HTMLButtonElement>('.js-test-patch'),
+    )) {
+      btn.addEventListener('click', async () => {
+        const idx = btn.dataset.idx ?? '';
+        const view = btn.dataset.view ?? '';
+        const field = btn.dataset.field ?? '';
+        const input = this.els.contentEl.querySelector<HTMLInputElement>(`#sp-patch-input-${idx}`);
+        const extractSelect = this.els.contentEl.querySelector<HTMLSelectElement>(
+          `#sp-patch-extract-${idx}`,
+        );
+        const feedbackEl = this.els.contentEl.querySelector<HTMLElement>(
+          `#sp-patch-feedback-${idx}`,
+        );
+        const selector = input?.value.trim() ?? '';
+        const extract = (extractSelect?.value ?? 'text') as ExtractMode;
+        if (!selector) {
+          if (feedbackEl) feedbackEl.textContent = 'Enter a CSS selector to test';
+          return;
+        }
+        btn.disabled = true;
+        if (feedbackEl) feedbackEl.textContent = 'Testing selector against DOM...';
+        try {
+          const res = (await browser.runtime.sendMessage({
+            type: 'BG_TEST_SELECTOR_PATCH',
+            view,
+            field,
+            rule: { selectors: [selector], extract },
+            captureId:
+              this.latestCaptureDetail?.capture_uid ?? this.latestCaptureDetail?.entry?.capture_uid,
+            useActiveTab: true,
+          })) as (SelectorPatchTestResult & { error?: string }) | undefined;
+          if (!res) {
+            if (feedbackEl) feedbackEl.textContent = 'Dry-run returned empty response';
+            return;
+          }
+          if (res.error) {
+            if (feedbackEl) feedbackEl.textContent = res.error;
+            return;
+          }
+          const sampleText = Array.isArray(res.sample_value)
+            ? res.sample_value.slice(0, 5).join(', ')
+            : String(res.sample_value ?? '(empty)');
+          const msg = `${res.after_summary.status}: ${res.matched_count} match(es), regressions=${res.regressions.length}, sample=${sampleText}`;
+          this.patchTestFeedback.set(`${view}:${field}`, msg);
+          if (feedbackEl) feedbackEl.textContent = msg;
+        } catch (err) {
+          if (feedbackEl) {
+            feedbackEl.textContent = err instanceof Error ? err.message : 'Dry-run test failed';
+          }
+        } finally {
+          btn.disabled = false;
+        }
+      });
+    }
+
+    for (const btn of Array.from(
+      this.els.contentEl.querySelectorAll<HTMLButtonElement>('.js-apply-patch'),
+    )) {
+      btn.addEventListener('click', async () => {
+        const idx = btn.dataset.idx ?? '';
+        const view = btn.dataset.view ?? '';
+        const field = btn.dataset.field ?? '';
+        const input = this.els.contentEl.querySelector<HTMLInputElement>(`#sp-patch-input-${idx}`);
+        const extractSelect = this.els.contentEl.querySelector<HTMLSelectElement>(
+          `#sp-patch-extract-${idx}`,
+        );
+        const feedbackEl = this.els.contentEl.querySelector<HTMLElement>(
+          `#sp-patch-feedback-${idx}`,
+        );
+        const selector = input?.value.trim() ?? '';
+        const extract = (extractSelect?.value ?? 'text') as ExtractMode;
+        if (!selector) {
+          if (feedbackEl) feedbackEl.textContent = 'Enter a CSS selector to apply';
+          return;
+        }
+        btn.disabled = true;
+        setStatus(`Applying patch for ${view}.${field}...`);
+        try {
+          const res = (await browser.runtime.sendMessage({
+            type: 'BG_APPLY_SELECTOR_PATCH',
+            view,
+            field,
+            rule: { selectors: [selector], extract },
+            mode: 'prepend',
+            reason: 'Patched via Side Panel diagnostic workbench',
+            captureId:
+              this.latestCaptureDetail?.capture_uid ?? this.latestCaptureDetail?.entry?.capture_uid,
+          })) as
+            | { ok?: boolean; new_version?: string; backup_file?: string; error?: string }
+            | undefined;
+          if (!res?.ok) {
+            setStatus(res?.error ?? 'Apply patch failed');
+            return;
+          }
+          this.patchTestFeedback.set(
+            `${view}:${field}`,
+            `Applied in v${res.new_version ?? '?'} (backup: ${res.backup_file ?? 'saved'})`,
+          );
+          await this.renderSelectorsTab();
+          const refreshedStatus =
+            this.els.contentEl.querySelector<HTMLElement>('#sp-selectors-status');
+          if (refreshedStatus) {
+            refreshedStatus.textContent = `Patched ${view}.${field} -> v${res.new_version ?? '?'}`;
+          }
+        } catch (err) {
+          setStatus(err instanceof Error ? err.message : 'Apply patch failed');
+        } finally {
+          btn.disabled = false;
+        }
+      });
+    }
+
+    for (const btn of Array.from(
+      this.els.contentEl.querySelectorAll<HTMLButtonElement>('.js-load-capture'),
+    )) {
+      btn.addEventListener('click', async () => {
+        const uid = btn.dataset.captureUid;
+        if (!uid) return;
+        const detail = await this.fetchJsonSafe<
+          NonNullable<SidePanelController['latestCaptureDetail']>
+        >(`/api/diagnostics/captures/${encodeURIComponent(uid)}`, { method: 'GET' });
+        if (detail) {
+          this.latestCaptureDetail = detail;
+          this.patchTestFeedback.clear();
+          await this.renderSelectorsTab();
+        }
+      });
+    }
   }
 }

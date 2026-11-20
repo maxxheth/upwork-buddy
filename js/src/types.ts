@@ -250,10 +250,10 @@ export interface ProfileApiResponse {
 export interface AnalysisResponse {
   proposal?: string;
   execution_prompt?: string;
-  time_estimate?: string;
-  workload_division?: string;
-  questions_for_client?: string;
-  tips_and_advice?: string;
+  time_estimate?: string | string[] | Record<string, unknown>;
+  workload_division?: string | string[] | Record<string, unknown>;
+  questions_for_client?: string | string[] | Record<string, unknown>;
+  tips_and_advice?: string | string[] | Record<string, unknown>;
   tone_analysis?: string;
   [key: string]: unknown;
 }
@@ -296,6 +296,9 @@ export interface SavedJob {
   qualifications?: Array<{ name: string; value: string; met?: boolean | null }>;
   proposal: string;
   time_estimate: string;
+  workload_division?: unknown;
+  questions_for_client?: unknown;
+  tips_and_advice?: unknown;
   execution_prompt: string;
   tone_analysis: string;
   score?: number | null;
@@ -373,6 +376,9 @@ export interface SaveJobRequest {
   last_enriched_at?: string;
   proposal: string;
   time_estimate: string;
+  workload_division?: unknown;
+  questions_for_client?: unknown;
+  tips_and_advice?: unknown;
   execution_prompt: string;
   tone_analysis: string;
 }

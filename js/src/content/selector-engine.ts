@@ -254,7 +254,11 @@ export function parseProposalCount(proposals: string | number | null | undefined
   }
   let text = proposals.trim();
   if (!text) return null;
-  text = text.replace(/^Proposals\s*:\s*/i, '').trim();
+  text = text
+    .replace(/^Proposals\s*:\s*/i, '')
+    .trim()
+    .replace(/^\(([^)]+)\)$/, '$1')
+    .trim();
   const lower = text.toLowerCase();
 
   let m = /less\s+than\s+(\d+)/i.exec(lower);
@@ -333,6 +337,8 @@ export function applyTransform(
         .replace(/^Proposals\s*:\s*/i, '')
         .trim()
         .replace(/Close the tooltip.*$/i, '')
+        .trim()
+        .replace(/^\(([^)]+)\)$/, '$1')
         .trim();
     case 'first_token_float': {
       const token = val.trim().split(/\s+/)[0] ?? '';
@@ -371,6 +377,51 @@ export function applyTransforms(
     result = applyTransform(result, t);
   }
   return result;
+}
+
+export function extractCaItemValue(matched: Element[], labelContains?: string): string | null {
+  const labelReq = labelContains ?? '';
+  const normalizedReq = labelReq.trim().replace(/:$/, '').trim().toLowerCase();
+  let rawVal: string | null = null;
+  for (const item of matched) {
+    const titleSpan = item.querySelector('span.title');
+    if (titleSpan) {
+      if (extractDirectText(titleSpan).includes(labelReq)) {
+        const valSpan = item.querySelector('span.value');
+        if (valSpan) {
+          rawVal = extractDirectText(valSpan);
+          break;
+        }
+      }
+      continue;
+    }
+    if (normalizedReq) {
+      for (const el of item.querySelectorAll('*')) {
+        if (el.children.length > 0) continue;
+        const labelText = extractFullText(el).trim().replace(/:$/, '').trim().toLowerCase();
+        const nextEl = el.nextElementSibling;
+        if (
+          labelText === normalizedReq &&
+          nextEl &&
+          nextEl.tagName.toLowerCase() !== 'button' &&
+          nextEl.getAttribute('data-ev-sublocation') !== '!collapse'
+        ) {
+          const valText = extractFullText(nextEl).trim();
+          if (valText) {
+            rawVal = valText.replace(/^\(([^)]+)\)$/, '$1').trim();
+            break;
+          }
+        }
+      }
+      if (rawVal !== null) {
+        break;
+      }
+    }
+  }
+  if (rawVal === null && matched.length === 1 && !matched[0].querySelector('span.title')) {
+    rawVal = extractFullText(matched[0]);
+  }
+  return rawVal;
 }
 
 export function extractFieldValue(
@@ -435,20 +486,7 @@ export function extractFieldValue(
       break;
     }
     case 'ca_item_value': {
-      const labelReq = rule.label_contains ?? '';
-      for (const li of matched) {
-        const titleSpan = li.querySelector('span.title');
-        if (titleSpan && extractDirectText(titleSpan).includes(labelReq)) {
-          const valSpan = li.querySelector('span.value');
-          if (valSpan) {
-            rawVal = extractDirectText(valSpan);
-            break;
-          }
-        }
-      }
-      if (rawVal === null && matched.length > 0 && !matched[0].querySelector('span.title')) {
-        rawVal = extractFullText(matched[0]);
-      }
+      rawVal = extractCaItemValue(matched, rule.label_contains);
       break;
     }
   }

@@ -211,4 +211,142 @@ describe('Full Job Detail Enrichment Adapter', () => {
       last_viewed: '8 minutes ago',
     });
   });
+
+  it('extracts proposals_insights_v2 job activity, skills, duration3, and air3-card-section screening questions', () => {
+    const doc = parseHtmlDocument(`
+      <html><body><div class="job-details-content">
+        <h1><span class="flex-1">Full Stack TypeScript Engineer</span></h1>
+        <div data-test="Description">
+          <p class="multiline-text">Build and maintain a modern TypeScript web application.</p>
+        </div>
+        <ul>
+          <li><div data-cy="clock-timelog"></div><strong>$60.00</strong> - <strong>$85.00</strong></li>
+          <li><div data-cy="expertise"></div><strong>Expert</strong></li>
+          <li><div data-cy="duration3"></div><strong><span>3 to 6 months</span></strong></li>
+        </ul>
+        <div data-test="proposals-insights-v2-skills-matching">
+          <span data-test="proposals-insights-v2-skill-chip" class="air3-badge-skill">
+            <span class="air3-line-clamp">TypeScript</span>
+          </span>
+          <span data-test="proposals-insights-v2-skill-chip" class="air3-badge-skill">
+            <span class="air3-line-clamp">React</span>
+          </span>
+        </div>
+        <div data-test="proposals-insights-v2-job-activity">
+          <span data-test="proposals-insights-v2-education-popover">
+            <span><span data-test="proposals-insights-v2-education-anchor-job-activity-title">
+              <h5 class="job-activity-title-heading">Activity on this job</h5>
+            </span></span>
+          </span>
+          <div>
+            <div data-test="proposals-insights-v2-job-activity-section">
+              <div><div><div>Bid range</div></div><button type="button" data-test="proposals-insights-v2-job-activity-section-toggle"></button></div>
+              <div data-ev-sublocation="!collapse"><div>$50 - $80</div></div>
+            </div>
+            <div data-test="proposals-insights-v2-job-activity-section">
+              <div><div><div>Proposals</div> <div>(1)</div></div><button type="button"></button></div>
+            </div>
+            <div data-test="proposals-insights-v2-job-activity-section">
+              <div><div><div>Invites</div> <div>(0)</div></div><button type="button"></button></div>
+            </div>
+            <div data-test="proposals-insights-v2-job-activity-section">
+              <div><div><div>Interviews</div> <div>(2)</div></div></div>
+              <div data-ev-sublocation="!collapse"><div></div></div>
+            </div>
+            <div data-test="proposals-insights-v2-job-activity-section">
+              <div><div><div>Offers</div> <div>(0)</div></div><button type="button"></button></div>
+            </div>
+            <div data-test="proposals-insights-v2-job-activity-section">
+              <div><div><div>Hires</div> <div>(0)</div></div></div>
+              <div data-ev-sublocation="!collapse"><div></div></div>
+            </div>
+            <div><span>Last viewed by client:</span> <span>12 min ago</span> <span><div class="help-icon"></div></span></div>
+          </div>
+        </div>
+        <section class="air3-card-section">
+          <ol class="list-styled">
+            <li>Describe your experience with Vitest *</li>
+            <li>Link a recent production TypeScript repository</li>
+          </ol>
+        </section>
+      </div></body></html>
+    `);
+
+    const url = 'https://www.upwork.com/jobs/Full-Stack-TS_~0288776655/';
+    const res = extractJobDetail(doc, {
+      url,
+      requireDrawer: true,
+      location: { href: url, pathname: '/jobs/Full-Stack-TS_~0288776655/' },
+    });
+
+    expect(res.ok).toBe(true);
+    expect(res.detail?.duration).toBe('3 to 6 months');
+    expect(res.detail?.skills).toEqual(['TypeScript', 'React']);
+    expect(res.detail?.proposals_tier).toBe('1');
+    expect(res.detail?.proposals_count).toBe(1);
+    expect(res.detail?.client_activity).toEqual({
+      interviewing: 2,
+      invites_sent: 0,
+      last_viewed: '12 min ago',
+    });
+    expect(res.detail?.screening_questions).toEqual([
+      { index: 0, prompt: 'Describe your experience with Vitest *', required: true },
+      { index: 1, prompt: 'Link a recent production TypeScript repository', required: false },
+    ]);
+  });
+
+  it('ignores button and !collapse siblings with digits in proposals_insights_v2 sections', () => {
+    const doc = parseHtmlDocument(`
+      <html><body><main>
+        <h1>Collapsed Noise Job</h1>
+        <div data-test="Description"><p class="multiline-text">Build API.</p></div>
+        <div data-test="proposals-insights-v2-job-activity">
+          <div data-test="proposals-insights-v2-job-activity-section">
+            <div><div><div>Interviews</div></div><button type="button">2</button></div>
+            <div data-ev-sublocation="!collapse"><div>1 to 5</div></div>
+          </div>
+          <div data-test="proposals-insights-v2-job-activity-section">
+            <div><div>Invites</div></div>
+            <div data-ev-sublocation="!collapse"><div>3</div></div>
+          </div>
+        </div>
+      </main></body></html>
+    `);
+    const res = extractJobDetail(doc, {
+      url: 'https://www.upwork.com/jobs/Noise_~0211223355/',
+    });
+    expect(res.ok).toBe(true);
+    expect(res.detail?.client_activity).toEqual({});
+  });
+
+  it('prefers legacy li.ca-item values over proposals_insights_v2 when both are present', () => {
+    const doc = parseHtmlDocument(`
+      <html><body><main>
+        <h1>Hybrid Activity Job</h1>
+        <div data-test="Description"><p class="multiline-text">Build API.</p></div>
+        <ul class="client-activity-items">
+          <li class="ca-item"><span class="title">Interviewing:</span><span class="value">5</span></li>
+          <li class="ca-item"><span class="title">Last viewed by client:</span><span class="value">2 minutes ago</span></li>
+        </ul>
+        <div data-test="proposals-insights-v2-job-activity">
+          <div data-test="proposals-insights-v2-job-activity-section">
+            <div><div><div>Interviews</div> <div>(1)</div></div></div>
+          </div>
+          <div data-test="proposals-insights-v2-job-activity-section">
+            <div><div><div>Invites</div> <div>(3)</div></div></div>
+          </div>
+          <div><span>Last viewed by client:</span> <span>12 min ago</span></div>
+        </div>
+      </main></body></html>
+    `);
+    const res = extractJobDetail(doc, {
+      url: 'https://www.upwork.com/jobs/Hybrid_~0211223344/',
+    });
+    expect(res.ok).toBe(true);
+    expect(res.detail?.client_activity).toEqual({
+      interviewing: 5,
+      invites_sent: 3,
+      last_viewed: '2 minutes ago',
+    });
+  });
 });

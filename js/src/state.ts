@@ -351,8 +351,15 @@ export class StateManager {
       skills: job.skills,
       proposal: job.proposal,
       time_estimate: job.time_estimate,
+      ...(job.workload_division !== undefined ? { workload_division: job.workload_division } : {}),
+      ...(job.questions_for_client !== undefined
+        ? { questions_for_client: job.questions_for_client }
+        : {}),
+      ...(job.tips_and_advice !== undefined ? { tips_and_advice: job.tips_and_advice } : {}),
       execution_prompt: job.execution_prompt,
       tone_analysis: job.tone_analysis,
+      ...(result.score !== undefined ? { score: result.score } : {}),
+      ...(result.fit_label !== undefined ? { fit_label: result.fit_label } : {}),
       created_at: result.created_at,
     };
     this.savedJobs.unshift(savedJob);
