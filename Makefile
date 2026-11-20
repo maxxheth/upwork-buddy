@@ -5,9 +5,18 @@ all: build vet test
 
 build:
 	@echo "Building Go backend..."
-	@go build -o ./dist/upwork-buddy ./cmd/api/main.go
+	@go build -ldflags="-s -w" -o ./dist/upwork-buddy ./cmd/api
 	@chmod +x ./dist/upwork-buddy
 	@echo "Build completed: ./dist/upwork-buddy"
+
+build-native-host:
+	@echo "Building Chrome Native Messaging Host..."
+	@go build -o ./dist/upwork-buddy-native-host ./cmd/native-host/main.go
+	@chmod +x ./dist/upwork-buddy-native-host
+	@echo "Build completed: ./dist/upwork-buddy-native-host"
+
+install-native-host: build-native-host
+	@./scripts/install-native-host.sh $(ARGS)
 
 # Run the application
 run:
@@ -117,4 +126,4 @@ verify-db:
 		TEST_DATABASE_URL="postgres://verify_user:verify_pass@127.0.0.1:5444/upwork_buddy_verify?sslmode=disable" go test -race -v ./internal/database/service/... ./internal/server/...; \
 	'
 
-.PHONY: all build run test vet lint vuln clean watch docker-run docker-down apply diff atlas-apply atlas-diff atlas-status atlas-hash atlas-validate verify-db start stop
+.PHONY: all build build-native-host install-native-host run test vet lint vuln clean watch docker-run docker-down apply diff atlas-apply atlas-diff atlas-status atlas-hash atlas-validate verify-db start stop

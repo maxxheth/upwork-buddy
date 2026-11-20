@@ -1,0 +1,17 @@
+[Unit]
+Description=Upwork Buddy Local Daemon & MCP Server
+After=network.target
+
+[Service]
+Type=simple
+WorkingDirectory=/var/www/upwork-buddy
+Environment=APP_HOST=127.0.0.1
+Environment=APP_PORT=9090
+EnvironmentFile=-/var/www/upwork-buddy/.env
+EnvironmentFile=-%h/.config/upwork-buddy/env
+ExecStart=/var/www/upwork-buddy/dist/upwork-buddy serve
+Restart=on-failure
+RestartSec=3
+
+[Install]
+WantedBy=default.target
