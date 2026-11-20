@@ -15,6 +15,12 @@ build-native-host:
 	@chmod +x ./dist/upwork-buddy-native-host
 	@echo "Build completed: ./dist/upwork-buddy-native-host"
 
+build-agy-gateway:
+	@echo "Building AGY Gateway..."
+	@go build -ldflags="-s -w" -o ./dist/agy-gateway ./cmd/agy-gateway
+	@chmod +x ./dist/agy-gateway
+	@echo "Build completed: ./dist/agy-gateway"
+
 install-native-host: build-native-host
 	@./scripts/install-native-host.sh $(ARGS)
 
@@ -126,4 +132,4 @@ verify-db:
 		TEST_DATABASE_URL="postgres://verify_user:verify_pass@127.0.0.1:5444/upwork_buddy_verify?sslmode=disable" go test -race -v ./internal/database/service/... ./internal/server/...; \
 	'
 
-.PHONY: all build build-native-host install-native-host run test vet lint vuln clean watch docker-run docker-down apply diff atlas-apply atlas-diff atlas-status atlas-hash atlas-validate verify-db start stop
+.PHONY: all build build-native-host build-agy-gateway install-native-host run test vet lint vuln clean watch docker-run docker-down apply diff atlas-apply atlas-diff atlas-status atlas-hash atlas-validate verify-db start stop

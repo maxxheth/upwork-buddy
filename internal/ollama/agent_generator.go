@@ -1,13 +1,9 @@
 package ollama
 
 import (
-	"bytes"
 	"context"
-	"encoding/json"
 	"fmt"
-	"io"
 	"log"
-	"net/http"
 	"regexp"
 	"strings"
 )
@@ -135,11 +131,17 @@ func (s *Service) GenerateAgent(ctx context.Context, req GenerateAgentRequest) (
 		systemPrompt = formatSystemPrompts["claude"]
 	}
 
-	log.Printf("🤖 Generating %s agent: template=%q agent=%q", format, req.TemplateName, req.AgentName)
+	log.Printf("🤖 Generating %s agent: template=%q agent=%q provider=%q model=%q", format, req.TemplateName, req.AgentName, s.providerLabel(), s.model)
 	log.Printf("🤖 Prompt length: %d characters", len(prompt))
 
-	payload, err := json.Marshal(chatRequest{
-		Model: s.model,
+	effort := ""
+	if s.provider == "agy" {
+		effort = s.effort
+	}
+
+	chatResp, err := s.doChat(ctx, chatRequest{
+		Model:  s.model,
+		Effort: effort,
 		Messages: []chatMessage{
 			{Role: "system", Content: systemPrompt},
 			{Role: "user", Content: prompt},
@@ -147,40 +149,7 @@ func (s *Service) GenerateAgent(ctx context.Context, req GenerateAgentRequest) (
 		Stream: false,
 	})
 	if err != nil {
-		return nil, fmt.Errorf("failed to encode Ollama request: %w", err)
-	}
-
-	httpReq, err := http.NewRequestWithContext(ctx, http.MethodPost, s.host+"/api/chat", bytes.NewReader(payload))
-	if err != nil {
-		return nil, fmt.Errorf("failed to create Ollama request: %w", err)
-	}
-	httpReq.Header.Set("Content-Type", "application/json")
-	httpReq.Header.Set("Accept", "application/json")
-	httpReq.Header.Set("Authorization", "Bearer "+s.apiKey)
-
-	resp, err := s.client.Do(httpReq)
-	if err != nil {
-		log.Printf("🤖 Ollama agent generation request failed: %v", err)
-		return nil, fmt.Errorf("failed to call Ollama API for agent generation: %w", err)
-	}
-	defer resp.Body.Close()
-
-	respBody, err := io.ReadAll(resp.Body)
-	if err != nil {
-		return nil, fmt.Errorf("failed to read Ollama response: %w", err)
-	}
-
-	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
-		log.Printf("🤖 Ollama agent generation failed: status=%d body=%s", resp.StatusCode, truncateForLog(string(respBody), 500))
-		return nil, fmt.Errorf("ollama API returned %s", resp.Status)
-	}
-
-	var chatResp chatResponse
-	if err := json.Unmarshal(respBody, &chatResp); err != nil {
-		return nil, fmt.Errorf("failed to decode Ollama response: %w", err)
-	}
-	if chatResp.Error != "" {
-		return nil, fmt.Errorf("ollama API error: %s", chatResp.Error)
+		return nil, err
 	}
 
 	content := chatResp.Message.Content
