@@ -27,7 +27,7 @@ tmp/
 
 # Project build
 main
-dist/
+/dist/
 *templ.go
 
 # Air build logs

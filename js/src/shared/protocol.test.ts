@@ -18,6 +18,8 @@ import {
   MessageItemSchema,
   MessageThreadSchema,
   ProposalDraftSchema,
+  SearchRunFiltersSchema,
+  SearchRunRequestSchema,
 } from './schemas';
 import { BUNDLED_SELECTORS, SelectorConfigSchema } from './selectors';
 
@@ -185,5 +187,55 @@ describe('M3 Shared Zod v4 Protocol & Schemas', () => {
         apiToken: 'tok-123',
       }).success,
     ).toBe(true);
+  });
+
+  it('validates M2 SearchRunFiltersSchema and SearchRunRequestSchema criteria and bounds', () => {
+    expect(
+      SearchRunFiltersSchema.safeParse({
+        hourly_rate_min: 60,
+        hourly_rate_max: 120,
+        payment_verified_only: true,
+      }).success,
+    ).toBe(true);
+
+    expect(
+      SearchRunFiltersSchema.safeParse({
+        hourly_rate_min: 120,
+        hourly_rate_max: 60,
+      }).success,
+    ).toBe(false);
+
+    const parsed = SearchRunRequestSchema.safeParse({
+      queries: ['Go PostgreSQL'],
+      hourly_rate_min: 0,
+      hourly_rate_max: 95.5,
+      payment_verified_only: true,
+      run_label: 'Nightly sweep',
+      skip_auto_detail_enrich: true,
+      from_active_projects: true,
+      active_project_keys: ['upwork-buddy'],
+      active_project_tiers: ['active', 'recent'],
+    });
+    expect(parsed.success).toBe(true);
+    if (parsed.success) {
+      expect(parsed.data.run_label).toBe('Nightly sweep');
+      expect(parsed.data.skip_auto_detail_enrich).toBe(true);
+      expect(parsed.data.from_active_projects).toBe(true);
+      expect(parsed.data.active_project_keys).toEqual(['upwork-buddy']);
+      expect(parsed.data.active_project_tiers).toEqual(['active', 'recent']);
+    }
+
+    expect(
+      SearchRunRequestSchema.safeParse({
+        hourly_rate_min: -5,
+      }).success,
+    ).toBe(false);
+
+    expect(
+      SearchRunRequestSchema.safeParse({
+        hourly_rate_min: 100,
+        hourly_rate_max: 50,
+      }).success,
+    ).toBe(false);
   });
 });

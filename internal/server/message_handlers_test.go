@@ -960,3 +960,40 @@ func TestMessageCommit_R5_CrossRoomMessageIDRejected_AndTokenlessDoesNotHijackPe
 		t.Fatalf("expected pending_approval draft untouched, got status=%q body=%q tok=%q", preservedDraft.Status, preservedDraft.Body, preservedDraft.ApprovalToken)
 	}
 }
+
+func TestMessageHandlers_IDBoundsValidation_WithDB(t *testing.T) {
+	s := setupTestServer(t)
+	router := s.RegisterRoutes()
+	ctx := context.Background()
+
+	for _, badID := range []string{"0", "9223372036854775808", "18446744073709551615"} {
+		for _, path := range []string{
+			"/api/messages/" + badID + "/approve",
+			"/api/messages/" + badID + "/reject",
+		} {
+			req := httptest.NewRequest(http.MethodPost, path, strings.NewReader(`{}`))
+			req.Header.Set("Authorization", "Bearer "+s.apiToken)
+			req.Header.Set("Content-Type", "application/json")
+			w := httptest.NewRecorder()
+			router.ServeHTTP(w, req)
+			if w.Result().StatusCode != http.StatusBadRequest {
+				t.Fatalf("POST %s status = %d, want 400; body=%s", path, w.Result().StatusCode, w.Body.String())
+			}
+			var errBody map[string]any
+			_ = json.NewDecoder(w.Body).Decode(&errBody)
+			if errBody["error_code"] != "INVALID_PARAMS" {
+				t.Fatalf("POST %s expected INVALID_PARAMS, got %+v", path, errBody)
+			}
+		}
+	}
+
+	// CommitMessage rejects MessageID == 0 or > math.MaxInt64
+	for _, badMsgID := range []uint{0, uint(uint64(1) << 63), ^uint(0)} {
+		idCopy := badMsgID
+		_, err := s.CommitMessage(ctx, CommitMessageInput{MessageID: &idCopy}, false)
+		var se *ServiceError
+		if !errors.As(err, &se) || se.HTTPStatus != http.StatusBadRequest || se.Code != "INVALID_PARAMS" {
+			t.Fatalf("CommitMessage(MessageID=%d) expected 400 INVALID_PARAMS, got %v", badMsgID, err)
+		}
+	}
+}

@@ -1,0 +1,28 @@
+{
+  "compilerOptions": {
+    "target": "ESNext",
+    "module": "Preserve",
+    "moduleResolution": "Bundler",
+    "lib": ["ESNext", "DOM", "DOM.Iterable"],
+    "types": [],
+    "strict": true,
+    "verbatimModuleSyntax": true,
+    "allowImportingTsExtensions": true,
+    "noEmit": true,
+    "skipLibCheck": true,
+    "noUnusedLocals": true,
+    "noUnusedParameters": true,
+    "noImplicitReturns": true,
+    "noFallthroughCasesInSwitch": true,
+    "noUncheckedIndexedAccess": false
+  },
+  "include": [
+    "web/**/*",
+    "src/ui/jobs-table.ts",
+    "src/ui/job-inspector-drawer.ts",
+    "src/ui/dashboard-controller.ts",
+    "src/types.ts",
+    "src/utils.ts",
+    "src/shared/schemas.ts"
+  ]
+}

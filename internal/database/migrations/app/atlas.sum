@@ -1,4 +1,4 @@
-h1:sb8Puv3uitIG/32aDl4MUCjOx9v3Z3IpO/nwXgg72zo=
+h1:nCoj/2UA3xY6gYJyKeXlzxaxe4/BhmjUkWhR/doRleg=
 20251114190124_initial_schema.sql h1:k8n3qEW4DjCPAt2Gcx+yLfAomMWKNRVGyfSPEXdJbeY=
 20260409002751.sql h1:6lFnr+qi5I8Q4QGiFEZT7z/At7+Zhp6/8/3HFkJsoMg=
 20260409100000.sql h1:g5s/Mo2xu+vQsHUCBiQcka0z1qy4vKMcVfTIGQ5HWyo=
@@ -6,3 +6,5 @@ h1:sb8Puv3uitIG/32aDl4MUCjOx9v3Z3IpO/nwXgg72zo=
 20261120030419_policy_and_tokens.sql h1:6nWlYFsEpNbNQwpilzqfn0Hwdg7P0Kwjyz1b7LyGq3Q=
 20261120034138_message_thread_upwork_job_id.sql h1:d9eGwZZUYTTu5uIeba7Ot1AO4OLeAbhEzTeb9cMkKTw=
 20261120160855_ui_diagnostic_captures.sql h1:CbiFJDHdz5vnzq71Ki6bGE6rv2HDqgzoAVaGtOdLfTM=
+20261121000855_active_projects.sql h1:VRMYK1rIAmN8exx9FzICaXPsblDXeszKRNyIpxd7kJQ=
+20261121022554_search_runs_and_enrichment_batches.sql h1:/GwHH9UY41ut5/hib0bBglWe35GkM9KTfJpe19Fl1Sc=

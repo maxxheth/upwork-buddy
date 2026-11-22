@@ -1408,4 +1408,110 @@ describe('Extension UI Pages (Side Panel, Popup, Options)', () => {
       'Rolled back selectors to v2.0',
     );
   });
+
+  it('PopupController openJobsTableBtn sends OPEN_JOBS_DASHBOARD', async () => {
+    document.body.innerHTML = `
+      <span id="daemon-status"></span>
+      <strong id="policy-mode"></strong>
+      <strong id="pending-approvals-count"></strong>
+      <div id="human-action-banner" hidden></div>
+      <button id="open-sidepanel-btn" type="button"></button>
+      <button id="open-jobs-table-btn" data-testid="open-jobs-table-btn" type="button"></button>
+      <button id="kill-switch-btn" type="button"></button>
+      <button id="start-server-btn" type="button"></button>
+      <button id="open-options-btn" type="button"></button>
+      <p id="popup-feedback"></p>
+    `;
+
+    const sendSpy = vi.spyOn(fakeBrowser.runtime, 'sendMessage').mockImplementation(async (msg) => {
+      const m = msg as { type?: string };
+      if (m.type === 'OPEN_JOBS_DASHBOARD') {
+        return { ok: true, mode: 'tab' };
+      }
+      return { wsConnected: false };
+    });
+
+    const controller = new PopupController({
+      daemonStatusEl: mustEl('daemon-status'),
+      policyModeEl: mustEl('policy-mode'),
+      pendingCountEl: mustEl('pending-approvals-count'),
+      challengeBannerEl: mustEl('human-action-banner'),
+      openSidePanelBtn: document.getElementById('open-sidepanel-btn') as HTMLButtonElement,
+      openJobsTableBtn: document.getElementById('open-jobs-table-btn') as HTMLButtonElement,
+      killSwitchBtn: document.getElementById('kill-switch-btn') as HTMLButtonElement,
+      startServerBtn: document.getElementById('start-server-btn') as HTMLButtonElement,
+      openOptionsBtn: document.getElementById('open-options-btn') as HTMLButtonElement,
+      feedbackEl: mustEl('popup-feedback'),
+    });
+
+    await controller.init();
+    document.getElementById('open-jobs-table-btn')?.click();
+    await new Promise((resolve) => setTimeout(resolve, 10));
+    expect(sendSpy).toHaveBeenCalledWith({ type: 'OPEN_JOBS_DASHBOARD' });
+  });
+
+  it('SidePanelController renders AI status badge on .sp-card and Open Full Table launcher', async () => {
+    document.body.innerHTML = `
+      <span id="sp-connection-pill"></span>
+      <span id="sp-policy-badge"></span>
+      <button id="sp-kill-switch-btn" type="button"></button>
+      <span id="sp-approvals-badge"></span>
+      <span id="sp-unread-badge"></span>
+      <button class="sp-tab" data-tab="pipeline"></button>
+      <main id="sidepanel-content"></main>
+    `;
+
+    const sendSpy = vi.spyOn(fakeBrowser.runtime, 'sendMessage').mockImplementation(async () => ({
+      ok: true,
+      wsConnected: true,
+      policyMode: 'confirm_in_ui',
+    }));
+
+    const mockTransport = vi.fn(async (url: string) => {
+      if (url.startsWith('/api/jobs')) {
+        return new Response(
+          JSON.stringify({
+            jobs: [
+              {
+                id: 55,
+                job_title: 'Go Pipeline Job',
+                job_description: 'Desc',
+                score: 90,
+                fit_label: 'hot',
+                budget: '$2,000',
+                ai_enrichment_status: 'completed',
+              },
+            ],
+          }),
+          { status: 200 },
+        );
+      }
+      return new Response(JSON.stringify({ profiles: [] }), { status: 200 });
+    });
+
+    const sp = new SidePanelController(
+      {
+        root: document,
+        connectionPill: mustEl('sp-connection-pill'),
+        policyBadge: mustEl('sp-policy-badge'),
+        killSwitchBtn: document.getElementById('sp-kill-switch-btn') as HTMLButtonElement,
+        approvalsBadge: mustEl('sp-approvals-badge'),
+        unreadBadge: mustEl('sp-unread-badge'),
+        tabButtons: Array.from(document.querySelectorAll<HTMLButtonElement>('.sp-tab')),
+        contentEl: mustEl('sidepanel-content'),
+      },
+      { proxyTransport: mockTransport },
+    );
+
+    await sp.init();
+    const badge = document.querySelector('.sp-card [data-testid="sp-ai-badge"]');
+    expect(badge?.textContent).toContain('AI Enriched');
+    const openBtn = document.querySelector<HTMLButtonElement>(
+      '[data-testid="open-full-table-btn"]',
+    );
+    expect(openBtn).not.toBeNull();
+    openBtn?.click();
+    await new Promise((resolve) => setTimeout(resolve, 10));
+    expect(sendSpy).toHaveBeenCalledWith(expect.objectContaining({ type: 'OPEN_JOBS_DASHBOARD' }));
+  });
 });

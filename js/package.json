@@ -12,10 +12,11 @@
     "dev:firefox": "wxt -b firefox",
     "build": "wxt build",
     "build:firefox": "wxt build -b firefox",
+    "build:web": "vite build --config vite.web.config.ts",
     "zip": "wxt zip",
     "zip:firefox": "wxt zip -b firefox",
     "postinstall": "wxt prepare",
-    "type-check": "tsc --noEmit",
+    "type-check": "tsc --noEmit && tsc --noEmit -p tsconfig.web.json",
     "lint": "biome check .",
     "lint:fix": "biome check --write .",
     "check": "npm run lint && npm run type-check",
@@ -33,6 +34,7 @@
   ],
   "license": "MIT",
   "dependencies": {
+    "@tanstack/table-core": "^8.21.3",
     "zod": "^4.6.7"
   },
   "devDependencies": {

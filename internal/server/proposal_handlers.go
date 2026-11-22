@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"math"
 	"math/rand/v2"
 	"net/http"
 	"sort"
@@ -127,7 +128,11 @@ func extractProposalIDParam(r *http.Request) (uint64, error) {
 		}
 		idStr = strings.TrimSpace(path)
 	}
-	return strconv.ParseUint(idStr, 10, 64)
+	idVal, err := strconv.ParseUint(idStr, 10, 64)
+	if err != nil || idVal == 0 || idVal > math.MaxInt64 {
+		return 0, errors.New("invalid proposal ID")
+	}
+	return idVal, nil
 }
 
 func firstNonEmptyRawJSON(candidates ...json.RawMessage) json.RawMessage {
@@ -391,6 +396,9 @@ func (s *Server) ListProposals(ctx context.Context, filter ListProposalsFilter) 
 		db = db.Where("status IN ?", filter.Statuses)
 	}
 	if filter.JobID != nil {
+		if *filter.JobID == 0 || *filter.JobID > math.MaxInt64 {
+			return nil, &ServiceError{Code: "INVALID_PARAMS", HTTPStatus: http.StatusBadRequest, Message: "Invalid job_id parameter"}
+		}
 		db = db.Where("job_id = ?", *filter.JobID)
 	}
 	if upworkJobID := strings.TrimSpace(filter.UpworkJobID); upworkJobID != "" {
@@ -430,7 +438,7 @@ func (s *Server) GetProposal(ctx context.Context, id uint64) (*ProposalEntry, er
 	if s.db == nil || s.db.GetGorm() == nil {
 		return nil, &ServiceError{Code: "DB_UNAVAILABLE", HTTPStatus: http.StatusServiceUnavailable, Message: "Database unavailable"}
 	}
-	if id == 0 {
+	if id == 0 || id > math.MaxInt64 {
 		return nil, &ServiceError{Code: "INVALID_PARAMS", HTTPStatus: http.StatusBadRequest, Message: "Invalid proposal ID"}
 	}
 
@@ -498,8 +506,8 @@ func (s *Server) SaveProposal(ctx context.Context, req SaveProposalInput, actor 
 				return nil, false, &ServiceError{Code: "INVALID_PARAMS", HTTPStatus: http.StatusBadRequest, Message: "Invalid job_id"}
 			}
 			strID = strings.TrimSpace(strID)
-			if numID, numErr := strconv.ParseUint(strID, 10, 64); numErr == nil {
-				if numID == 0 {
+			if numID, numErr := strconv.ParseUint(strID, 10, 64); numErr == nil || errors.Is(numErr, strconv.ErrRange) {
+				if numErr != nil || numID == 0 || numID > math.MaxInt64 {
 					return nil, false, &ServiceError{Code: "INVALID_PARAMS", HTTPStatus: http.StatusBadRequest, Message: "Invalid job_id"}
 				}
 				var j dbservice.Job
@@ -539,8 +547,8 @@ func (s *Server) SaveProposal(ctx context.Context, req SaveProposalInput, actor 
 				}
 			}
 		} else {
-			var numID uint
-			if err := json.Unmarshal(rawJobID, &numID); err != nil || numID == 0 {
+			var numID uint64
+			if err := json.Unmarshal(rawJobID, &numID); err != nil || numID == 0 || numID > math.MaxInt64 {
 				return nil, false, &ServiceError{Code: "INVALID_PARAMS", HTTPStatus: http.StatusBadRequest, Message: "Invalid job_id"}
 			}
 			var j dbservice.Job
@@ -577,6 +585,9 @@ func (s *Server) SaveProposal(ctx context.Context, req SaveProposalInput, actor 
 		}
 	}
 
+	if req.ID != nil && uint64(*req.ID) > math.MaxInt64 {
+		return nil, false, &ServiceError{Code: "INVALID_PARAMS", HTTPStatus: http.StatusBadRequest, Message: "Invalid proposal ID"}
+	}
 	status := strings.TrimSpace(req.Status)
 	isCreateReq := req.ID == nil || *req.ID == 0
 	if status == "" {
@@ -792,7 +803,7 @@ func (s *Server) FillProposal(ctx context.Context, id uint64, body FillProposalI
 	if s.db == nil || s.db.GetGorm() == nil {
 		return nil, &ServiceError{Code: "DB_UNAVAILABLE", HTTPStatus: http.StatusServiceUnavailable, Message: "Database unavailable"}
 	}
-	if id == 0 {
+	if id == 0 || id > math.MaxInt64 {
 		return nil, &ServiceError{Code: "INVALID_PARAMS", HTTPStatus: http.StatusBadRequest, Message: "Invalid proposal ID"}
 	}
 	if s.bridgeHub == nil || !s.bridgeHub.IsConnected() {
@@ -1044,7 +1055,7 @@ func (s *Server) CommitProposal(ctx context.Context, id uint64, req CommitPropos
 	if s.db == nil || s.db.GetGorm() == nil {
 		return nil, &ServiceError{Code: "DB_UNAVAILABLE", HTTPStatus: http.StatusServiceUnavailable, Message: "Database unavailable"}
 	}
-	if id == 0 {
+	if id == 0 || id > math.MaxInt64 {
 		return nil, &ServiceError{Code: "INVALID_PARAMS", HTTPStatus: http.StatusBadRequest, Message: "Invalid proposal ID"}
 	}
 
@@ -1593,8 +1604,8 @@ func (s *Server) listProposalsHandler(w http.ResponseWriter, r *http.Request) {
 	}
 	if jobIDRaw := strings.TrimSpace(q.Get("job_id")); jobIDRaw != "" {
 		jobID, err := strconv.ParseUint(jobIDRaw, 10, 64)
-		if err != nil {
-			respondWithError(w, http.StatusBadRequest, "Invalid job_id parameter")
+		if err != nil || jobID == 0 || jobID > math.MaxInt64 {
+			respondInvalidParams(w, "Invalid job_id parameter")
 			return
 		}
 		filter.JobID = &jobID
@@ -1631,7 +1642,7 @@ func (s *Server) getProposalHandler(w http.ResponseWriter, r *http.Request) {
 	}
 	id, err := extractProposalIDParam(r)
 	if err != nil || id == 0 {
-		respondWithError(w, http.StatusBadRequest, "Invalid proposal ID")
+		respondInvalidParams(w, "Invalid proposal ID")
 		return
 	}
 	entry, getErr := s.GetProposal(r.Context(), id)
@@ -1677,7 +1688,7 @@ func (s *Server) fillProposalHandler(w http.ResponseWriter, r *http.Request) {
 	}
 	id, err := extractProposalIDParam(r)
 	if err != nil || id == 0 {
-		respondWithError(w, http.StatusBadRequest, "Invalid proposal ID")
+		respondInvalidParams(w, "Invalid proposal ID")
 		return
 	}
 
@@ -1723,7 +1734,7 @@ func (s *Server) executeProposalCommit(w http.ResponseWriter, r *http.Request, h
 	}
 	id, err := extractProposalIDParam(r)
 	if err != nil || id == 0 {
-		respondWithError(w, http.StatusBadRequest, "Invalid proposal ID")
+		respondInvalidParams(w, "Invalid proposal ID")
 		return
 	}
 
@@ -1751,7 +1762,7 @@ func (s *Server) rejectProposalHandler(w http.ResponseWriter, r *http.Request) {
 	}
 	id, err := extractProposalIDParam(r)
 	if err != nil || id == 0 {
-		respondWithError(w, http.StatusBadRequest, "Invalid proposal ID")
+		respondInvalidParams(w, "Invalid proposal ID")
 		return
 	}
 

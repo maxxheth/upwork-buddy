@@ -2,6 +2,8 @@
  * Core type definitions for Upwork Buddy
  */
 
+export type ApiTransport = (url: string, init?: RequestInit) => Promise<Response>;
+
 // ── Environment-aware configuration ──────────────────────────────────
 
 export type EnvironmentName = 'development' | 'staging' | 'production';
@@ -265,6 +267,41 @@ export interface AnalysisCache {
   cacheKey: string;
 }
 
+export type AIEnrichmentStatus =
+  | 'none'
+  | 'queued'
+  | 'scraping_details'
+  | 'analyzing'
+  | 'completed'
+  | 'failed';
+
+export interface PortfolioReferenceEntry {
+  source: 'portfolio' | 'active_project' | string;
+  display_name: string;
+  visibility: 'public' | 'anonymized' | string;
+  link?: string;
+  summary?: string;
+  activity_tier?: string;
+  tech_stack?: string[];
+}
+
+export interface ScoreBreakdownData {
+  rate_budget?: number;
+  skill_match?: number;
+  client_spend?: number;
+  client_hires?: number;
+  proposal_count?: number;
+  recency?: number;
+  description_quality?: number;
+  payment_verified_mod?: number;
+  client_hire_rate_mod?: number;
+  connects_mod?: number;
+  matched_skills?: string[];
+  matched_portfolio?: string[];
+  matched_active_projects?: string[];
+  [key: string]: unknown;
+}
+
 export interface SavedJob {
   id: number;
   job_title: string;
@@ -295,6 +332,10 @@ export interface SavedJob {
   attachments?: Array<{ filename: string; url: string }>;
   qualifications?: Array<{ name: string; value: string; met?: boolean | null }>;
   proposal: string;
+  proposal_subject?: string;
+  proposal_tone?: string;
+  proposal_json?: unknown;
+  portfolio_references?: PortfolioReferenceEntry[];
   time_estimate: string;
   workload_division?: unknown;
   questions_for_client?: unknown;
@@ -302,9 +343,10 @@ export interface SavedJob {
   execution_prompt: string;
   tone_analysis: string;
   score?: number | null;
-  score_breakdown?: Record<string, unknown>;
+  score_breakdown?: ScoreBreakdownData;
   score_reasoning?: string;
   fit_label?: string;
+  fit_assessment?: string;
   client_country?: string;
   client_rating?: number | null;
   client_reviews?: number | null;
@@ -321,12 +363,21 @@ export interface SavedJob {
     avg_hourly_rate_paid?: string;
   };
   last_enriched_at?: string | null;
+  ai_enrichment_status?: AIEnrichmentStatus | string;
+  ai_enriched_at?: string | null;
+  ai_enrichment_error?: string;
+  ai_model?: string;
+  ai_effort?: string;
+  ai_tokens_used?: number | null;
+  last_search_run_id?: number | null;
+  applied_at?: string | null;
   created_at: string;
   updated_at?: string;
 }
 
 export interface SavedJobsResponse {
   jobs: SavedJob[];
+  total?: number;
 }
 
 export interface SaveJobRequest {
@@ -373,7 +424,7 @@ export interface SaveJobRequest {
     last_viewed?: string;
     avg_hourly_rate_paid?: string;
   };
-  last_enriched_at?: string;
+  last_enriched_at?: string | null;
   proposal: string;
   time_estimate: string;
   workload_division?: unknown;
@@ -439,4 +490,229 @@ export interface DownloadAgentsRequest {
   agent_names: string[];
   template_name?: string;
   format?: string;
+}
+
+// ── Search Runs, Async Batch Enrichment & Dashboard DTOs ──────────────
+
+export type EnrichmentMode = 'full' | 'ai_only' | 'detail_only';
+export type AIEffortLevel = '' | 'low' | 'medium' | 'high' | 'xhigh';
+
+export interface EnrichmentConfig {
+  max_batch_size: number;
+  default_mode: EnrichmentMode;
+  default_force: boolean;
+  skip_detail_if_present: boolean;
+  require_details: boolean;
+  max_concurrency: number;
+  default_model: string;
+  default_effort: AIEffortLevel;
+  confirm_threshold: number;
+  wait_timeout_seconds: number;
+  web_ui_enabled: boolean;
+  web_session_ttl_minutes: number;
+}
+
+export interface SearchRunSummary {
+  id: number;
+  label: string;
+  source: string;
+  triggered_by: string;
+  profile_id?: number;
+  project_keys: string[];
+  queries: string[];
+  criteria?: unknown;
+  total_scraped: number;
+  filtered_count: number;
+  persisted_count: number;
+  detail_enriched_count: number;
+  stopped_reason: string;
+  created_at: string;
+}
+
+export interface SearchRunsListResponse {
+  search_runs: SearchRunSummary[];
+  total: number;
+}
+
+export interface SearchRunDetailResponse {
+  search_run: SearchRunSummary;
+  jobs: SavedJob[];
+}
+
+export type EnrichmentBatchStatus =
+  | 'queued'
+  | 'running'
+  | 'completed'
+  | 'completed_with_errors'
+  | 'canceled'
+  | 'failed';
+
+export type EnrichmentBatchItemStatus =
+  | 'queued'
+  | 'scraping_details'
+  | 'analyzing'
+  | 'completed'
+  | 'skipped'
+  | 'failed'
+  | 'canceled';
+
+export interface EnrichmentBatchSummary {
+  id: number;
+  mode: EnrichmentMode | string;
+  triggered_by: string;
+  model?: string;
+  effort?: string;
+  force: boolean;
+  status: EnrichmentBatchStatus | string;
+  total_count: number;
+  queued_count: number;
+  running_count: number;
+  completed_count: number;
+  skipped_count: number;
+  failed_count: number;
+  canceled_count: number;
+  total_tokens_used: number;
+  created_at: string;
+  started_at?: string | null;
+  completed_at?: string | null;
+  updated_at: string;
+}
+
+export interface EnrichmentBatchItemEntry {
+  id: number;
+  batch_id: number;
+  job_id: number;
+  status: EnrichmentBatchItemStatus | string;
+  detail_fetched: boolean;
+  llm_invoked: boolean;
+  model?: string;
+  effort?: string;
+  input_tokens: number;
+  output_tokens: number;
+  thought_tokens: number;
+  total_tokens: number;
+  error_code?: string;
+  error_message?: string;
+  started_at?: string | null;
+  completed_at?: string | null;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface EnrichmentBatchesListResponse {
+  batches: EnrichmentBatchSummary[];
+  total: number;
+}
+
+export interface EnrichmentBatchDetailResponse {
+  batch: EnrichmentBatchSummary;
+  items: EnrichmentBatchItemEntry[];
+  dashboard_url?: string;
+}
+
+export interface BatchEnrichRequest {
+  job_ids: Array<number | string>;
+  mode?: EnrichmentMode;
+  force?: boolean;
+  skip_detail_if_present?: boolean;
+  require_details?: boolean;
+  model?: string;
+  effort?: AIEffortLevel | string;
+  max_concurrency?: number;
+  wait?: boolean;
+  wait_timeout_seconds?: number;
+  triggered_by?: string;
+}
+
+export interface ActiveProjectEntry {
+  id: number;
+  project_key: string;
+  slug: string;
+  name: string;
+  path: string;
+  group_name: string;
+  activity_tier: 'active' | 'recent' | 'paused' | 'archived' | string;
+  status: string;
+  client: string;
+  proposal_visibility: 'public' | 'anonymized' | 'private' | string;
+  public_alias: string;
+  tech_stack: string[];
+  summary: string;
+  pinned: boolean;
+  last_activity_at?: string | null;
+  created_at?: string;
+  updated_at?: string;
+}
+
+export interface ActiveProjectsListResponse {
+  projects: ActiveProjectEntry[];
+  count: number;
+}
+
+export interface TokenUsage {
+  inputTokens?: number;
+  outputTokens?: number;
+  thoughtTokens?: number;
+  totalTokens?: number;
+}
+
+export interface AnalyzeSavedJobResponse {
+  job: SavedJob;
+  score: number;
+  fit_label: string;
+  score_breakdown: ScoreBreakdownData;
+  reasons: string[];
+  matched_projects?: PortfolioReferenceEntry[];
+  llm_analysis?: AnalysisResponse;
+  llm_error?: string;
+  usage?: TokenUsage;
+  ai_enriched_at?: string | null;
+  ai_model?: string;
+  ai_effort?: string;
+  ai_tokens_used?: number | null;
+}
+
+export interface ProposalEntry {
+  id: number;
+  job_id?: number | null;
+  upwork_job_id: string;
+  job_title?: string;
+  cover_letter: string;
+  bid_type: string;
+  bid_amount?: number | null;
+  rate_increase?: string;
+  connects_required?: number | null;
+  boost_connects?: number | null;
+  total_connects: number;
+  portfolio_refs_json?: unknown;
+  status: string;
+  approval_token?: string;
+  approved_at?: string | null;
+  submitted_at?: string | null;
+  upwork_proposal_url?: string;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface SaveProposalRequest {
+  job_id?: number | string;
+  upwork_job_id?: string;
+  cover_letter: string;
+  bid_type?: 'hourly' | 'fixed' | '';
+  bid_amount?: number | null;
+  rate_increase?: string;
+  connects_required?: number | null;
+  portfolio_refs?: PortfolioReferenceEntry[] | unknown;
+  status?: string;
+}
+
+export interface WebTicketResponse {
+  ticket: string;
+  dashboard_url: string;
+  expires_at: string;
+}
+
+export interface WebSessionExchangeResponse {
+  session_token: string;
+  expires_at: string;
 }

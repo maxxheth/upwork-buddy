@@ -32,6 +32,7 @@ const SAMPLE_SEARCH_HTML = `
         </div>
         <small data-test="job-pubilshed-date"><span>Posted 2 hours ago</span></small>
         <span data-qa="payment-verified">Payment Verified</span>
+        <span data-test="payment-verified-badge">Payment verified</span>
         <span data-qa="client-rating">4.9 of 5 stars</span>
         <span data-test="proposals-tier"><strong>5 to 10</strong></span>
     </article>
@@ -153,7 +154,7 @@ describe('UI Drift Auditor & DOM Blueprinting', () => {
     expect(proposalsEntry?.sample_extracted_value).toBe('5 to 10');
 
     const candidateNames = report.discovered_candidates.map((c) => c.hook_name);
-    expect(candidateNames).toContain('payment-verified');
+    expect(candidateNames).toContain('payment-verified-badge');
 
     // Mutated HTML: job-pubilshed-date fixed -> BROKEN with replacement [data-test='job-published-date'] span
     const mutatedBp = buildPageBlueprint(SAMPLE_MUTATED_HTML, {
@@ -414,5 +415,69 @@ describe('UI Drift Auditor & DOM Blueprinting', () => {
     expect(containerAudit?.status).toBe('HEALTHY');
     expect(containerAudit?.matched_count).toBe(1);
     expect(containerAudit?.registered_selector).toBe('.job-details-content');
+  });
+
+  it('classifies fragile Vue data-v- fallback as FRAGILE with stable non-hash suggested_replacement and HEALTHY when v2 primary matches', () => {
+    const upworkYamlSkillsConfig: SelectorConfig = {
+      ...BUNDLED_SELECTORS,
+      views: {
+        ...BUNDLED_SELECTORS.views,
+        job_detail: {
+          ...BUNDLED_SELECTORS.views.job_detail,
+          fields: {
+            ...BUNDLED_SELECTORS.views.job_detail.fields,
+            skills: {
+              selectors: [
+                "[data-test='proposals-insights-v2-skill-chip'] .air3-line-clamp",
+                "[data-test='proposals-insights-v2-skills-matching'] .air3-badge-skill .air3-line-clamp",
+                'section[data-v-3b2c2248] .skills-list .air3-line-clamp',
+                '.skills-list .air3-line-clamp',
+                "[data-test='Skill'] .air3-line-clamp",
+                "[data-test='Skill'] span",
+                '.air3-badge-highlight .air3-line-clamp',
+              ],
+              extract: 'list',
+            },
+          },
+        },
+      },
+    };
+
+    const detailBp = buildPageBlueprint(SAMPLE_JOB_DETAIL_HTML, {
+      url: 'https://www.upwork.com/jobs/~01abc123/',
+      isAuthenticated: true,
+    });
+    const legacyReport = new DriftAuditor(
+      detailBp,
+      SAMPLE_JOB_DETAIL_HTML,
+      upworkYamlSkillsConfig,
+    ).audit();
+    const legacySkills = legacyReport.audits.find((a) => a.target_field === 'skills');
+    expect(legacySkills?.status).toBe('FRAGILE');
+    expect(legacySkills?.suggested_replacement).toBe('.skills-list .air3-line-clamp');
+    expect(legacySkills?.notes).toContain('fragile Vue hash fallback');
+
+    const v2Html = `
+      <!DOCTYPE html>
+      <html><body><main>
+        <div class="job-details-content">
+          <div class="job-details-card"><h4><span class="flex-1">Test Job</span></h4></div>
+          <div data-test="proposals-insights-v2-skill-chip">
+            <div class="air3-line-clamp">Go</div>
+          </div>
+          <div data-test="proposals-insights-v2-skill-chip">
+            <div class="air3-line-clamp">PostgreSQL</div>
+          </div>
+        </div>
+      </main></body></html>
+    `;
+    const v2Bp = buildPageBlueprint(v2Html, {
+      url: 'https://www.upwork.com/jobs/~01abc123/',
+      isAuthenticated: true,
+    });
+    const v2Report = new DriftAuditor(v2Bp, v2Html, upworkYamlSkillsConfig).audit();
+    const v2Skills = v2Report.audits.find((a) => a.target_field === 'skills');
+    expect(v2Skills?.status).toBe('HEALTHY');
+    expect(v2Skills?.suggested_replacement).toBeNull();
   });
 });

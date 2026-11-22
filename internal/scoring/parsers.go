@@ -1,6 +1,7 @@
 package scoring
 
 import (
+	"math"
 	"regexp"
 	"strconv"
 	"strings"
@@ -29,6 +30,7 @@ var (
 	reProposalsExact  = regexp.MustCompile(`^(\d+)(?:\s+proposals?)?$`)
 
 	reDollarAmount = regexp.MustCompile(`\$([0-9]+(?:\.[0-9]+)?)`)
+	reHourlyRange  = regexp.MustCompile(`(?i)\$([0-9]+(?:\.[0-9]+)?)\s*(?:-|–|\x{2014}|to)\s*\$?([0-9]+(?:\.[0-9]+)?)`)
 	reClientSpend  = regexp.MustCompile(`\$?\s*([0-9]+(?:\.[0-9]+)?)(?:\s*([KM])(?:[^A-Z]|$))?`)
 )
 
@@ -230,6 +232,57 @@ func ParseBudgetAmount(budget string) *float64 {
 		return nil
 	}
 	return &val
+}
+
+// ParseHourlyRateRange parses an hourly rate string like "$40.00 - $80.00/hr" or "$50/hr"
+// into normalized (min, max) dollar bounds. Returns (nil, nil) for empty, non-rate, or fixed-price strings.
+func ParseHourlyRateRange(raw string) (*float64, *float64) {
+	trimmed := strings.TrimSpace(raw)
+	if trimmed == "" || strings.Contains(strings.ToLower(trimmed), "fixed") {
+		return nil, nil
+	}
+	cleaned := strings.ReplaceAll(trimmed, ",", "")
+	if m := reHourlyRange.FindStringSubmatch(cleaned); len(m) == 3 {
+		v1, err1 := strconv.ParseFloat(m[1], 64)
+		v2, err2 := strconv.ParseFloat(m[2], 64)
+		if err1 == nil && err2 == nil && !math.IsNaN(v1) && !math.IsNaN(v2) {
+			if v1 > v2 {
+				v1, v2 = v2, v1
+			}
+			return &v1, &v2
+		}
+	}
+
+	matches := reDollarAmount.FindAllStringSubmatch(cleaned, -1)
+	if len(matches) == 0 {
+		return nil, nil
+	}
+	var minVal, maxVal float64
+	found := false
+	for _, m := range matches {
+		if len(m) != 2 {
+			continue
+		}
+		v, err := strconv.ParseFloat(m[1], 64)
+		if err != nil || math.IsNaN(v) {
+			continue
+		}
+		if !found {
+			minVal, maxVal = v, v
+			found = true
+			continue
+		}
+		if v < minVal {
+			minVal = v
+		}
+		if v > maxVal {
+			maxVal = v
+		}
+	}
+	if !found {
+		return nil, nil
+	}
+	return &minVal, &maxVal
 }
 
 // ParseClientSpend parses a client spend string like "$1.9K", "10k", "$1M", or "$25.5K total spent"

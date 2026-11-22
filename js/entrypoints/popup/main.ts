@@ -8,6 +8,9 @@ document.addEventListener('DOMContentLoaded', () => {
   const openSidePanelBtn = document.getElementById(
     'open-sidepanel-btn',
   ) as HTMLButtonElement | null;
+  const openJobsTableBtn = document.getElementById(
+    'open-jobs-table-btn',
+  ) as HTMLButtonElement | null;
   const killSwitchBtn = document.getElementById('kill-switch-btn') as HTMLButtonElement | null;
   const startServerBtn = document.getElementById('start-server-btn') as HTMLButtonElement | null;
   const openOptionsBtn = document.getElementById('open-options-btn') as HTMLButtonElement | null;
@@ -33,6 +36,7 @@ document.addEventListener('DOMContentLoaded', () => {
     pendingCountEl,
     challengeBannerEl,
     openSidePanelBtn,
+    openJobsTableBtn,
     killSwitchBtn,
     startServerBtn,
     openOptionsBtn,

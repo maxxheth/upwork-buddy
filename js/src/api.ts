@@ -4,24 +4,34 @@
 
 import { browser } from 'wxt/browser';
 import type {
+  ActiveProjectsListResponse,
   AnalysisResponse,
+  ApiTransport,
+  BatchEnrichRequest,
   DownloadAgentsRequest,
+  EnrichmentBatchDetailResponse,
+  EnrichmentBatchesListResponse,
+  EnrichmentConfig,
   GenerateAgentsRequest,
   GenerateAgentsResponse,
   GeneratedAgent,
   JobInfo,
   ProfileApiResponse,
   ProfileState,
+  ProposalEntry,
   SavedJob,
   SavedJobsResponse,
   SaveJobRequest,
+  SaveProposalRequest,
+  SearchRunDetailResponse,
+  SearchRunsListResponse,
   SyncedProfile,
   TemplateCategory,
   TemplatesListResponse,
 } from './types';
 import { CONFIG } from './types';
 
-export type ApiTransport = (url: string, init?: RequestInit) => Promise<Response>;
+export type { ApiTransport } from './types';
 
 export interface ApiProxyRequestMessage {
   type: 'API_PROXY_REQUEST';
@@ -324,6 +334,132 @@ export class ApiClient {
     if (!response.ok && response.status !== 204) {
       throw new Error(`Delete job failed: ${response.status} ${response.statusText}`);
     }
+  }
+
+  /**
+   * Load saved jobs with filter query params and total count
+   */
+  async listJobsWithTotal(
+    queryParams?: Record<string, string | number | boolean>,
+  ): Promise<SavedJobsResponse> {
+    const params = new URLSearchParams();
+    if (queryParams) {
+      for (const [key, val] of Object.entries(queryParams)) {
+        if (val !== undefined && val !== '') {
+          params.set(key, String(val));
+        }
+      }
+    }
+    const qs = params.toString();
+    const response = await this.request(`${CONFIG.jobsApiEndpoint}${qs ? `?${qs}` : ''}`, {
+      method: 'GET',
+    });
+    if (!response.ok) {
+      throw new Error(`List jobs failed: ${response.status} ${response.statusText}`);
+    }
+    return response.json();
+  }
+
+  async getEnrichmentConfig(): Promise<EnrichmentConfig> {
+    const response = await this.request(`${CONFIG.apiBaseUrl}/api/enrichment-config`, {
+      method: 'GET',
+    });
+    if (!response.ok) {
+      throw new Error(`Get enrichment config failed: ${response.status} ${response.statusText}`);
+    }
+    return response.json();
+  }
+
+  async listSearchRuns(limit = 50, offset = 0): Promise<SearchRunsListResponse> {
+    const response = await this.request(
+      `${CONFIG.apiBaseUrl}/api/search-runs?limit=${limit}&offset=${offset}`,
+      { method: 'GET' },
+    );
+    if (!response.ok) {
+      throw new Error(`List search runs failed: ${response.status} ${response.statusText}`);
+    }
+    return response.json();
+  }
+
+  async getSearchRun(id: number): Promise<SearchRunDetailResponse> {
+    const response = await this.request(`${CONFIG.apiBaseUrl}/api/search-runs/${id}`, {
+      method: 'GET',
+    });
+    if (!response.ok) {
+      throw new Error(`Get search run failed: ${response.status} ${response.statusText}`);
+    }
+    return response.json();
+  }
+
+  async startEnrichmentBatch(req: BatchEnrichRequest): Promise<EnrichmentBatchDetailResponse> {
+    const response = await this.request(`${CONFIG.apiBaseUrl}/api/jobs/enrich`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(req),
+    });
+    if (!response.ok) {
+      throw new Error(`Start enrichment batch failed: ${response.status} ${response.statusText}`);
+    }
+    return response.json();
+  }
+
+  async listEnrichmentBatches(status?: string): Promise<EnrichmentBatchesListResponse> {
+    const qs = status ? `?status=${encodeURIComponent(status)}` : '';
+    const response = await this.request(`${CONFIG.apiBaseUrl}/api/enrichment-batches${qs}`, {
+      method: 'GET',
+    });
+    if (!response.ok) {
+      throw new Error(`List enrichment batches failed: ${response.status} ${response.statusText}`);
+    }
+    return response.json();
+  }
+
+  async getEnrichmentBatch(id: number): Promise<EnrichmentBatchDetailResponse> {
+    const response = await this.request(`${CONFIG.apiBaseUrl}/api/enrichment-batches/${id}`, {
+      method: 'GET',
+    });
+    if (!response.ok) {
+      throw new Error(`Get enrichment batch failed: ${response.status} ${response.statusText}`);
+    }
+    return response.json();
+  }
+
+  async cancelEnrichmentBatch(id: number): Promise<EnrichmentBatchDetailResponse> {
+    const response = await this.request(
+      `${CONFIG.apiBaseUrl}/api/enrichment-batches/${id}/cancel`,
+      {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({}),
+      },
+    );
+    if (!response.ok) {
+      throw new Error(`Cancel enrichment batch failed: ${response.status} ${response.statusText}`);
+    }
+    return response.json();
+  }
+
+  async listActiveProjects(tier?: string): Promise<ActiveProjectsListResponse> {
+    const qs = tier ? `?tier=${encodeURIComponent(tier)}` : '';
+    const response = await this.request(`${CONFIG.apiBaseUrl}/api/active-projects${qs}`, {
+      method: 'GET',
+    });
+    if (!response.ok) {
+      throw new Error(`List active projects failed: ${response.status} ${response.statusText}`);
+    }
+    return response.json();
+  }
+
+  async saveProposalDraft(req: SaveProposalRequest): Promise<{ proposal: ProposalEntry }> {
+    const response = await this.request(`${CONFIG.apiBaseUrl}/api/proposals`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(req),
+    });
+    if (!response.ok) {
+      throw new Error(`Save proposal draft failed: ${response.status} ${response.statusText}`);
+    }
+    return response.json();
   }
 
   /**

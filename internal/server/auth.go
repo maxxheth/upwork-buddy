@@ -190,7 +190,7 @@ func ExtractBearerToken(r *http.Request) (string, bool) {
 func (s *Server) authMiddleware(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		tok, ok := ExtractBearerToken(r)
-		if !ok || !s.ValidateToken(tok) {
+		if !ok || (!s.ValidateToken(tok) && !s.ValidateWebSessionToken(tok)) {
 			w.Header().Set("WWW-Authenticate", "Bearer")
 			respondWithError(w, http.StatusUnauthorized, "Unauthorized")
 			return

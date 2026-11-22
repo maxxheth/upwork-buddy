@@ -105,6 +105,13 @@ describe('Selector ETag Caching & Proxy Header Forwarding', () => {
         BUNDLED_SELECTORS.views[viewName]?.fields.client_spent?.selectors ?? [];
       expect(spendSelectors[0]).toBe("[data-qa='client-spend']");
       expect(spendSelectors[1]).toBe("[data-test='client-spend']");
+
+      const paymentSelectors =
+        BUNDLED_SELECTORS.views[viewName]?.fields.payment_verified?.selectors ?? [];
+      expect(paymentSelectors[0]).toBe("strong[data-test='payment-verification-status']");
+      expect(paymentSelectors).toContain('.air3-badge-tagline-sm.is-verified');
+      expect(paymentSelectors).toContain("[data-qa='payment-verified']");
+      expect(paymentSelectors).toContain("[data-test='payment-verified']");
     }
   });
 });

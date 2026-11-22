@@ -15,14 +15,21 @@ const (
 
 // FilterConfig specifies deterministic job candidate filters matching SearchProfileConfig.Filters.
 type FilterConfig struct {
-	RequiredKeywords []string `json:"required_keywords,omitempty"`
-	ExcludeKeywords  []string `json:"exclude_keywords,omitempty"`
-	MinScore         *int     `json:"min_score,omitempty"`
-	MaxPostedAgeDays *int     `json:"max_posted_age_days,omitempty"`
-	MaxProposals     *int     `json:"max_proposals,omitempty"`
-	BudgetMin        *float64 `json:"budget_min,omitempty"`
-	BudgetMax        *float64 `json:"budget_max,omitempty"`
-	SortByScore      bool     `json:"sort_by_score,omitempty"`
+	RequiredKeywords    []string `json:"required_keywords,omitempty"`
+	ExcludeKeywords     []string `json:"exclude_keywords,omitempty"`
+	MinScore            *int     `json:"min_score,omitempty"`
+	MaxPostedAgeDays    *int     `json:"max_posted_age_days,omitempty"`
+	MaxProposals        *int     `json:"max_proposals,omitempty"`
+	BudgetMin           *float64 `json:"budget_min,omitempty"`
+	BudgetMax           *float64 `json:"budget_max,omitempty"`
+	HourlyRateMin       *float64 `json:"hourly_rate_min,omitempty"`
+	HourlyRateMax       *float64 `json:"hourly_rate_max,omitempty"`
+	PaymentVerifiedOnly bool     `json:"payment_verified_only,omitempty"`
+	SortByScore         bool     `json:"sort_by_score,omitempty"`
+}
+
+func isFixedPriceLabel(raw string) bool {
+	return strings.Contains(strings.ToLower(strings.TrimSpace(raw)), "fixed")
 }
 
 func jobHaystack(j JobInput) string {
@@ -88,7 +95,7 @@ func FilterCandidates(jobs []JobInput, filters FilterConfig, stage FilterStage, 
 		if filters.BudgetMin != nil || filters.BudgetMax != nil {
 			isHourlyJob := strings.TrimSpace(j.Budget) == "" &&
 				strings.TrimSpace(j.HourlyRate) != "" &&
-				!strings.EqualFold(strings.TrimSpace(j.HourlyRate), "Fixed price")
+				!isFixedPriceLabel(j.HourlyRate)
 			if !isHourlyJob {
 				amt := ParseBudgetAmount(j.Budget)
 				if amt == nil {
@@ -107,10 +114,42 @@ func FilterCandidates(jobs []JobInput, filters FilterConfig, stage FilterStage, 
 			}
 		}
 
+		// 6. Hourly rate range filter (overlap semantics; fixed-price jobs unaffected)
+		if filters.HourlyRateMin != nil || filters.HourlyRateMax != nil {
+			minRate, maxRate := ParseHourlyRateRange(j.HourlyRate)
+			if minRate == nil && maxRate == nil {
+				isFixedJob := strings.TrimSpace(j.Budget) != "" || isFixedPriceLabel(j.HourlyRate)
+				if !isFixedJob && stage == StagePostEnrichment {
+					continue
+				}
+			} else {
+				if filters.HourlyRateMin != nil && filters.HourlyRateMax != nil && *filters.HourlyRateMin > *filters.HourlyRateMax {
+					continue
+				}
+				if filters.HourlyRateMin != nil && *maxRate < *filters.HourlyRateMin {
+					continue
+				}
+				if filters.HourlyRateMax != nil && *minRate > *filters.HourlyRateMax {
+					continue
+				}
+			}
+		}
+
+		// 7. Payment verified filter (pre-enrichment drops explicit false and keeps nil; post-enrichment requires true)
+		if filters.PaymentVerifiedOnly {
+			if j.PaymentVerified == nil {
+				if stage == StagePostEnrichment {
+					continue
+				}
+			} else if !*j.PaymentVerified {
+				continue
+			}
+		}
+
 		filtered = append(filtered, j)
 	}
 
-	// 6. MinScore filtering (post-enrichment) and optional score sorting
+	// 8. MinScore filtering (post-enrichment) and optional score sorting
 	if (stage == StagePostEnrichment && filters.MinScore != nil) || filters.SortByScore {
 		type scoredJob struct {
 			score int

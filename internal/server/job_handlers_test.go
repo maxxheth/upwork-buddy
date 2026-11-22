@@ -2,9 +2,12 @@ package server
 
 import (
 	"bytes"
+	"context"
 	"database/sql"
 	"encoding/json"
+	"errors"
 	"fmt"
+	"math"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
@@ -16,6 +19,7 @@ import (
 	"time"
 
 	dbservice "upwork-buddy/internal/database/service"
+	"upwork-buddy/internal/scoring"
 
 	_ "github.com/jackc/pgx/v5/stdlib"
 	"gorm.io/driver/postgres"
@@ -928,6 +932,585 @@ func TestSaveJobHandler_PreservesAppliedStatusOnReingest(t *testing.T) {
 		second := post(fmt.Sprintf(`{"upwork_job_id":%q,"job_title":"Go Role","job_description":"Desc","status":"new"}`, uid))
 		if second.ID != first.ID || second.Status != st {
 			t.Fatalf("expected %s status preserved on re-ingest, got %+v", st, second)
+		}
+	}
+}
+
+func TestMergeIncomingJob_PreservesAIEnrichmentAndUpdatesSearchRunID_WithDB(t *testing.T) {
+	s := setupTestServer(t)
+	gormDB := s.db.GetGorm()
+
+	run1 := dbservice.SearchRun{Label: "Run 1", Source: "search", TriggeredBy: "api"}
+	run2 := dbservice.SearchRun{Label: "Run 2", Source: "search", TriggeredBy: "api"}
+	if err := gormDB.Create(&run1).Error; err != nil {
+		t.Fatalf("create run1: %v", err)
+	}
+	if err := gormDB.Create(&run2).Error; err != nil {
+		t.Fatalf("create run2: %v", err)
+	}
+
+	enrichedAt := time.Date(2026, 11, 20, 14, 0, 0, 0, time.UTC)
+	tokens := 1420
+
+	for _, status := range []string{"completed", "analyzing", "queued", "scraping_details", "failed"} {
+		uid := "~01merge_" + status
+		errMsg := ""
+		if status == "failed" {
+			errMsg = "upstream timeout"
+		}
+		initial := dbservice.Job{
+			UpworkJobID:         &uid,
+			Title:               "Original Title",
+			Description:         "Original detailed description for " + status,
+			Proposal:            "Existing tailored cover letter",
+			ProposalSubject:     "Tailored subject",
+			ProposalTone:        "confident",
+			ProposalJSON:        dbservice.JSONB(`{"cover_letter":"Existing"}`),
+			PortfolioReferences: dbservice.JSONB(`[{"source":"active_project","display_name":"Core Platform"}]`),
+			TimeEstimate:        "3 weeks",
+			WorkloadDivision:    "AI 50 / Human 50",
+			QuestionsForClient:  "Any existing API?",
+			TipsAndAdvice:       "Highlight Go experience",
+			ExecutionPrompt:     "Keep execution prompt",
+			ToneAnalysis:        "Direct",
+			AIEnrichmentStatus:  status,
+			AIEnrichedAt:        &enrichedAt,
+			AIEnrichmentError:   errMsg,
+			AIModel:             "gemini-4-neon-high",
+			AIEffort:            "high",
+			AITokensUsed:        &tokens,
+			LastSearchRunID:     &run1.ID,
+		}
+		if err := gormDB.Create(&initial).Error; err != nil {
+			t.Fatalf("seed job %s: %v", uid, err)
+		}
+
+		// Simulate search card re-ingest attempting to overwrite fields and moving LastSearchRunID -> run2.ID
+		incoming := dbservice.Job{
+			UpworkJobID:        &uid,
+			Title:              "Updated Card Title",
+			Description:        "Short card snippet",
+			Proposal:           "Clobber attempt",
+			ExecutionPrompt:    "Clobber prompt",
+			AIEnrichmentStatus: "none",
+			AIModel:            "wrong-model",
+			LastSearchRunID:    &run2.ID,
+		}
+		saved, didUpsert, err := upsertJobRecord(gormDB, incoming, nil, false)
+		if err != nil || !didUpsert {
+			t.Fatalf("upsertJobRecord(%s) failed: didUpsert=%v err=%v", status, didUpsert, err)
+		}
+		if saved.AIEnrichmentStatus != status {
+			t.Fatalf("[%s] expected ai_enrichment_status=%q preserved, got %q", status, status, saved.AIEnrichmentStatus)
+		}
+		if saved.AIEnrichedAt == nil || !saved.AIEnrichedAt.Equal(enrichedAt) {
+			t.Fatalf("[%s] expected ai_enriched_at preserved, got %v", status, saved.AIEnrichedAt)
+		}
+		if saved.AIModel != "gemini-4-neon-high" || saved.AIEffort != "high" || saved.AITokensUsed == nil || *saved.AITokensUsed != tokens {
+			t.Fatalf("[%s] expected ai_model/ai_effort/ai_tokens_used preserved, got model=%q effort=%q tokens=%v", status, saved.AIModel, saved.AIEffort, saved.AITokensUsed)
+		}
+		if saved.AIEnrichmentError != errMsg {
+			t.Fatalf("[%s] expected ai_enrichment_error=%q preserved, got %q", status, errMsg, saved.AIEnrichmentError)
+		}
+		if saved.Proposal != "Existing tailored cover letter" || saved.ExecutionPrompt != "Keep execution prompt" {
+			t.Fatalf("[%s] expected proposal & execution_prompt preserved, got proposal=%q exec=%q", status, saved.Proposal, saved.ExecutionPrompt)
+		}
+		if saved.LastSearchRunID == nil || *saved.LastSearchRunID != run2.ID {
+			t.Fatalf("[%s] expected last_search_run_id updated to %d, got %v", status, run2.ID, saved.LastSearchRunID)
+		}
+		if saved.Title != "Updated Card Title" {
+			t.Fatalf("[%s] expected card title updated, got %q", status, saved.Title)
+		}
+	}
+}
+
+func TestListJobsWithTotal_FiltersSortingPaginationAndValidation_WithDB(t *testing.T) {
+	s := setupTestServer(t)
+	router := s.RegisterRoutes()
+	gormDB := s.db.GetGorm()
+
+	run1 := dbservice.SearchRun{Label: "Run 1", Source: "search", TriggeredBy: "api"}
+	run2 := dbservice.SearchRun{Label: "Run 2", Source: "search", TriggeredBy: "api"}
+	if err := gormDB.Create(&run1).Error; err != nil {
+		t.Fatalf("create run1: %v", err)
+	}
+	if err := gormDB.Create(&run2).Error; err != nil {
+		t.Fatalf("create run2: %v", err)
+	}
+
+	tOld := time.Date(2026, 11, 18, 10, 0, 0, 0, time.UTC)
+	tMid := time.Date(2026, 11, 19, 10, 0, 0, 0, time.UTC)
+	tNew := time.Date(2026, 11, 20, 10, 0, 0, 0, time.UTC)
+	detailTime := time.Date(2026, 11, 20, 12, 0, 0, 0, time.UTC)
+	aiTime1 := time.Date(2026, 11, 20, 13, 0, 0, 0, time.UTC)
+	aiTime2 := time.Date(2026, 11, 20, 15, 0, 0, 0, time.UTC)
+	toks := 950
+
+	uid1, uid2, uid3, uid4, uid5 := "~01f900", "~02f2200", "~03h80100", "~04h4060", "~05unk"
+	score1, score2, score3, score4, score5 := 65, 90, 82, 55, 40
+
+	jobs := []dbservice.Job{
+		{
+			UpworkJobID:        &uid1,
+			Title:              "Fixed Small Go API",
+			Description:        "Build REST service in Go",
+			Skills:             "Go, PostgreSQL",
+			ContractType:       "fixed",
+			Budget:             "$900",
+			BudgetAmount:       "$900",
+			SourceQuery:        "golang",
+			Score:              &score1,
+			PostedAtEst:        &tOld,
+			AIEnrichmentStatus: "none",
+			LastSearchRunID:    &run2.ID, // moved to run2, also linked to run1 via SearchRunJob
+		},
+		{
+			UpworkJobID:         &uid2,
+			Title:               "Fixed Large Go Platform",
+			Description:         "Architect Go + .NET bridge",
+			Skills:              "Go, .NET, Docker",
+			ContractType:        "fixed",
+			Budget:              "$2,200.00",
+			BudgetAmount:        "$2,200.00",
+			SourceQuery:         "golang",
+			Score:               &score2,
+			ScoreBreakdown:      dbservice.JSONB(`{"matched_active_projects":["Upwork Buddy"]}`),
+			PostedAtEst:         &tMid,
+			AIEnrichmentStatus:  "completed",
+			AIEnrichedAt:        &aiTime2,
+			AIModel:             "gemini-4-neon-high",
+			AIEffort:            "high",
+			AITokensUsed:        &toks,
+			Proposal:            "Generated proposal",
+			LastSearchRunID:     &run1.ID,
+		},
+		{
+			UpworkJobID:         &uid3,
+			Title:               "Hourly Senior Architect",
+			Description:         "High-rate Go microservices",
+			Skills:              "Go, Kubernetes",
+			ContractType:        "hourly",
+			Budget:              "$80 - $100/hr",
+			RateRange:           "$80 - $100",
+			SourceQuery:         "go microservices",
+			Score:               &score3,
+			PortfolioReferences: dbservice.JSONB(`[{"source":"active_project","display_name":"Client Portal"}]`),
+			PostedAtEst:         &tNew,
+			LastEnrichedAt:      &detailTime,
+			AIEnrichmentStatus:  "none", // detail_only derived!
+			LastSearchRunID:     &run1.ID,
+		},
+		{
+			UpworkJobID:        &uid4,
+			Title:              "Hourly Mid WordPress",
+			Description:        "WordPress maintenance",
+			Skills:             "WordPress, PHP",
+			ContractType:       "hourly",
+			RateRange:          "$40 - $60",
+			SourceQuery:        "wordpress",
+			Score:              &score4,
+			PostedAtEst:        &tMid,
+			AIEnrichmentStatus: "completed",
+			AIEnrichedAt:       &aiTime1,
+			Proposal:           "WP proposal",
+			LastSearchRunID:    &run2.ID,
+		},
+		{
+			UpworkJobID:        &uid5,
+			Title:              "Unknown Budget Role",
+			Description:        "Legacy PHP migration",
+			Skills:             "PHP",
+			ContractType:       "fixed",
+			Budget:             "Fixed price",
+			SourceQuery:        "php",
+			Score:              &score5,
+			PostedAtEst:        &tOld,
+			AIEnrichmentStatus: "failed",
+			AIEnrichmentError:  "model error",
+			LastSearchRunID:    &run2.ID,
+		},
+	}
+	for i := range jobs {
+		if err := gormDB.Create(&jobs[i]).Error; err != nil {
+			t.Fatalf("seed job %d: %v", i, err)
+		}
+	}
+	// Link job0 (~01f900) to run1 as well so search_run_id=run1 finds it via search_run_jobs!
+	if err := gormDB.Create(&dbservice.SearchRunJob{SearchRunID: run1.ID, JobID: jobs[0].ID}).Error; err != nil {
+		t.Fatalf("link job0 to run1: %v", err)
+	}
+
+	doList := func(query string) (int, map[string]any, listJobsResponse) {
+		req := httptest.NewRequest(http.MethodGet, "/api/jobs"+query, nil)
+		req.Header.Set("Authorization", "Bearer "+s.apiToken)
+		w := httptest.NewRecorder()
+		router.ServeHTTP(w, req)
+		var raw map[string]any
+		var parsed listJobsResponse
+		b := w.Body.Bytes()
+		_ = json.Unmarshal(b, &raw)
+		_ = json.Unmarshal(b, &parsed)
+		return w.Result().StatusCode, raw, parsed
+	}
+
+	// 1. search_run_id=run1 finds job0 (via search_run_jobs), job1, job2 + accurate total
+	code, _, run1Resp := doList("?search_run_id=" + uintToStr(run1.ID) + "&sort=budget_desc")
+	if code != http.StatusOK || run1Resp.Total != 3 || len(run1Resp.Jobs) != 3 {
+		t.Fatalf("search_run_id=run1 unexpected: code=%d total=%d len=%d", code, run1Resp.Total, len(run1Resp.Jobs))
+	}
+	// Numeric budget_desc: $2,200 (~02f2200) > $900 (~01f900) > $100/hr (~03h80100)
+	if run1Resp.Jobs[0].UpworkJobID != "~02f2200" || run1Resp.Jobs[1].UpworkJobID != "~01f900" || run1Resp.Jobs[2].UpworkJobID != "~03h80100" {
+		t.Fatalf("budget_desc ordering wrong: got [%s, %s, %s]", run1Resp.Jobs[0].UpworkJobID, run1Resp.Jobs[1].UpworkJobID, run1Resp.Jobs[2].UpworkJobID)
+	}
+	if run1Resp.Jobs[0].AIModel != "gemini-4-neon-high" || run1Resp.Jobs[0].AITokensUsed == nil || *run1Resp.Jobs[0].AITokensUsed != toks {
+		t.Fatalf("expected AI metadata on JobEntry, got %+v", run1Resp.Jobs[0])
+	}
+
+	// 2. Pagination with budget_desc reports pre-pagination total=5 and slice len=2
+	code, _, pageResp := doList("?sort=budget_desc&limit=2&offset=1")
+	if code != http.StatusOK || pageResp.Total != 5 || len(pageResp.Jobs) != 2 {
+		t.Fatalf("pagination total mismatch: code=%d total=%d len=%d", code, pageResp.Total, len(pageResp.Jobs))
+	}
+	if pageResp.Jobs[0].UpworkJobID != "~01f900" || pageResp.Jobs[1].UpworkJobID != "~03h80100" {
+		t.Fatalf("unexpected page slice: [%s, %s]", pageResp.Jobs[0].UpworkJobID, pageResp.Jobs[1].UpworkJobID)
+	}
+
+	// 3. contract_type=hourly & hourly_rate_min=70 -> only ~03h80100
+	code, _, hourlyResp := doList("?contract_type=hourly&hourly_rate_min=70")
+	if code != http.StatusOK || hourlyResp.Total != 1 || hourlyResp.Jobs[0].UpworkJobID != "~03h80100" {
+		t.Fatalf("hourly_rate_min=70 failed: code=%d total=%d jobs=%+v", code, hourlyResp.Total, hourlyResp.Jobs)
+	}
+
+	// 4. budget_min=1000 & include_unknown_budget=false -> only ~02f2200 (fixed) + hourly jobs unaffected unless contract_type=fixed
+	code, _, budgetResp := doList("?contract_type=fixed&budget_min=1000&include_unknown_budget=false")
+	if code != http.StatusOK || budgetResp.Total != 1 || budgetResp.Jobs[0].UpworkJobID != "~02f2200" {
+		t.Fatalf("fixed budget_min=1000 failed: code=%d total=%d jobs=%+v", code, budgetResp.Total, budgetResp.Jobs)
+	}
+	code, _, budgetUnkResp := doList("?contract_type=fixed&budget_min=1000&include_unknown_budget=true")
+	if code != http.StatusOK || budgetUnkResp.Total != 2 {
+		t.Fatalf("fixed budget_min=1000&include_unknown_budget=true expected total=2, got code=%d total=%d", code, budgetUnkResp.Total)
+	}
+
+	// 5. source_query, required_keywords (.net), exclude_keywords (PHP)
+	code, _, sqResp := doList("?source_query=Go+Microservices")
+	if code != http.StatusOK || sqResp.Total != 1 || sqResp.Jobs[0].UpworkJobID != "~03h80100" {
+		t.Fatalf("source_query filter failed: code=%d total=%d", code, sqResp.Total)
+	}
+	code, _, kwResp := doList("?required_keywords=.net,Kubernetes&exclude_keywords=PHP")
+	if code != http.StatusOK || kwResp.Total != 2 {
+		t.Fatalf("keyword filters failed: code=%d total=%d", code, kwResp.Total)
+	}
+
+	// 6. enrichment_status: none vs detail_only vs completed vs failed, and has_ai_analysis
+	code, _, noneResp := doList("?enrichment_status=none")
+	if code != http.StatusOK || noneResp.Total != 1 || noneResp.Jobs[0].UpworkJobID != "~01f900" {
+		t.Fatalf("enrichment_status=none failed: code=%d total=%d jobs=%+v", code, noneResp.Total, noneResp.Jobs)
+	}
+	code, _, detailOnlyResp := doList("?enrichment_status=detail_only")
+	if code != http.StatusOK || detailOnlyResp.Total != 1 || detailOnlyResp.Jobs[0].UpworkJobID != "~03h80100" {
+		t.Fatalf("enrichment_status=detail_only failed: code=%d total=%d jobs=%+v", code, detailOnlyResp.Total, detailOnlyResp.Jobs)
+	}
+	code, _, failedResp := doList("?enrichment_status=failed")
+	if code != http.StatusOK || failedResp.Total != 1 || failedResp.Jobs[0].UpworkJobID != "~05unk" {
+		t.Fatalf("enrichment_status=failed failed: code=%d total=%d", code, failedResp.Total)
+	}
+	code, _, aiTrueResp := doList("?has_ai_analysis=true&sort=enriched_desc")
+	if code != http.StatusOK || aiTrueResp.Total != 2 || aiTrueResp.Jobs[0].UpworkJobID != "~02f2200" {
+		t.Fatalf("has_ai_analysis=true&sort=enriched_desc failed: code=%d total=%d jobs=%+v", code, aiTrueResp.Total, aiTrueResp.Jobs)
+	}
+	code, _, aiFalseResp := doList("?has_ai_analysis=false")
+	if code != http.StatusOK || aiFalseResp.Total != 3 {
+		t.Fatalf("has_ai_analysis=false expected total=3, got code=%d total=%d", code, aiFalseResp.Total)
+	}
+
+	// 7. matched_project (from ScoreBreakdown and PortfolioReferences)
+	code, _, proj1Resp := doList("?matched_project=Upwork+Buddy")
+	if code != http.StatusOK || proj1Resp.Total != 1 || proj1Resp.Jobs[0].UpworkJobID != "~02f2200" {
+		t.Fatalf("matched_project ScoreBreakdown failed: code=%d total=%d", code, proj1Resp.Total)
+	}
+	code, _, proj2Resp := doList("?matched_project=Client+Portal")
+	if code != http.StatusOK || proj2Resp.Total != 1 || proj2Resp.Jobs[0].UpworkJobID != "~03h80100" {
+		t.Fatalf("matched_project PortfolioReferences failed: code=%d total=%d", code, proj2Resp.Total)
+	}
+
+	// 8. sort=posted_desc -> ~03h80100 (tNew) first
+	code, _, postedResp := doList("?sort=posted_desc")
+	if code != http.StatusOK || postedResp.Jobs[0].UpworkJobID != "~03h80100" {
+		t.Fatalf("sort=posted_desc failed: code=%d first=%+v", code, postedResp.Jobs[0].UpworkJobID)
+	}
+
+	// 9. Negative 400 INVALID_PARAMS checks
+	for _, badQuery := range []string{
+		"?search_run_id=0",
+		"?search_run_id=abc",
+		"?search_run_id=9223372036854775808",
+		"?search_run_id=18446744073709551615",
+		"?contract_type=milestone",
+		"?enrichment_status=unknown_state",
+		"?sort=invalid_sort",
+		"?budget_min=-10",
+		"?budget_min=500&budget_max=100",
+		"?hourly_rate_min=-5",
+		"?hourly_rate_min=100&hourly_rate_max=50",
+		"?has_ai_analysis=maybe",
+	} {
+		badCode, badRaw, _ := doList(badQuery)
+		if badCode != http.StatusBadRequest || badRaw["error_code"] != "INVALID_PARAMS" {
+			t.Fatalf("GET /api/jobs%s expected 400 INVALID_PARAMS, got code=%d body=%+v", badQuery, badCode, badRaw)
+		}
+	}
+}
+
+func TestJobHandlers_RemediationRegressions_WithDB(t *testing.T) {
+	s := setupTestServer(t)
+	router := s.RegisterRoutes()
+	gormDB := s.db.GetGorm()
+
+	doAuthReq := func(method, path, body string) *httptest.ResponseRecorder {
+		var rBody *strings.Reader
+		if body != "" {
+			rBody = strings.NewReader(body)
+		} else {
+			rBody = strings.NewReader("")
+		}
+		req := httptest.NewRequest(method, path, rBody)
+		req.Header.Set("Authorization", "Bearer "+s.apiToken)
+		if body != "" {
+			req.Header.Set("Content-Type", "application/json")
+		}
+		w := httptest.NewRecorder()
+		router.ServeHTTP(w, req)
+		return w
+	}
+
+	// 1. Finding 2: uint64 > math.MaxInt64 (and 0) ID overflow returns 400 INVALID_PARAMS (never 500 DB_ERROR)
+	for _, badID := range []string{"0", "9223372036854775808", "18446744073709551615"} {
+		for _, tc := range []struct {
+			method string
+			path   string
+			body   string
+		}{
+			{http.MethodGet, "/api/jobs/" + badID, ""},
+			{http.MethodPatch, "/api/jobs/" + badID, `{"status":"applied"}`},
+			{http.MethodDelete, "/api/jobs/" + badID, ""},
+			{http.MethodPost, "/api/jobs/" + badID + "/analyze", `{}`},
+		} {
+			w := doAuthReq(tc.method, tc.path, tc.body)
+			if w.Result().StatusCode != http.StatusBadRequest {
+				t.Fatalf("%s %s status = %d, want 400; body=%s", tc.method, tc.path, w.Result().StatusCode, w.Body.String())
+			}
+			var errBody map[string]any
+			_ = json.NewDecoder(w.Body).Decode(&errBody)
+			if errBody["error_code"] != "INVALID_PARAMS" {
+				t.Fatalf("%s %s expected INVALID_PARAMS, got %+v", tc.method, tc.path, errBody)
+			}
+		}
+	}
+
+	// 2. Finding 5: Empty {} job rejected with 400 INVALID_PARAMS; minimal valid jobs succeed
+	wEmpty := doAuthReq(http.MethodPost, "/api/jobs", `{}`)
+	if wEmpty.Result().StatusCode != http.StatusBadRequest {
+		t.Fatalf("POST /api/jobs {} status = %d, want 400; body=%s", wEmpty.Result().StatusCode, wEmpty.Body.String())
+	}
+	var emptyErr map[string]any
+	_ = json.NewDecoder(wEmpty.Body).Decode(&emptyErr)
+	if emptyErr["error_code"] != "INVALID_PARAMS" {
+		t.Fatalf("POST /api/jobs {} expected INVALID_PARAMS, got %+v", emptyErr)
+	}
+
+	for _, minBody := range []string{
+		`{"upwork_job_id":"~09minidonly1"}`,
+		`{"url":"https://www.upwork.com/jobs/~09minurlonly1/"}`,
+		`{"job_title":"Title Only Job"}`,
+	} {
+		wMin := doAuthReq(http.MethodPost, "/api/jobs", minBody)
+		if wMin.Result().StatusCode != http.StatusOK {
+			t.Fatalf("POST /api/jobs %s status = %d, want 200; body=%s", minBody, wMin.Result().StatusCode, wMin.Body.String())
+		}
+	}
+
+	// 3. Finding 3: rate_min/rate_max scoring & ListJobsWithTotal budget filter exemption for hourly jobs
+	wRate := doAuthReq(http.MethodPost, "/api/jobs", `{
+		"upwork_job_id": "~09hourlymm1",
+		"job_title": "Hourly Go Consultant",
+		"job_description": "Go microservices",
+		"contract_type": "hourly",
+		"rate_min": "60",
+		"rate_max": "90"
+	}`)
+	if wRate.Result().StatusCode != http.StatusOK {
+		t.Fatalf("POST /api/jobs rate_min/max status = %d; body=%s", wRate.Result().StatusCode, wRate.Body.String())
+	}
+	var savedHourly dbservice.Job
+	if err := gormDB.Where("upwork_job_id = ?", "~09hourlymm1").First(&savedHourly).Error; err != nil {
+		t.Fatalf("load ~09hourlymm1: %v", err)
+	}
+	var sb scoring.ScoreBreakdown
+	if err := json.Unmarshal(savedHourly.ScoreBreakdown, &sb); err != nil {
+		t.Fatalf("unmarshal breakdown: %v", err)
+	}
+	if sb.RateBudget != 25 {
+		t.Fatalf("expected RateBudget=25 for $60-$90/hr via rate_min/rate_max, got %d", sb.RateBudget)
+	}
+
+	// Hourly job with empty rate_range/budget (only rate_min/rate_max or contract_type=hourly) must NOT be dropped by budget_min&include_unknown_budget=false
+	budgetMin := 500.0
+	entries, _, err := s.ListJobsWithTotal(context.Background(), ListJobsFilter{
+		BudgetMin:            &budgetMin,
+		IncludeUnknownBudget: false,
+	})
+	if err != nil {
+		t.Fatalf("ListJobsWithTotal(budget_min) failed: %v", err)
+	}
+	foundHourly := false
+	for _, e := range entries {
+		if e.UpworkJobID == "~09hourlymm1" {
+			foundHourly = true
+			break
+		}
+	}
+	if !foundHourly {
+		t.Fatalf("expected hourly job ~09hourlymm1 with rate_min/rate_max to remain unaffected by budget_min filter")
+	}
+
+	// 4. Finding 4: matched_project=<project_key> resolves non-private project keys, never leaks private project keys
+	if err := gormDB.Create(&dbservice.ActiveProject{
+		ProjectKey:         "edfx/public-go-platform",
+		Name:               "Public Go Automation Platform",
+		ActivityTier:       "active",
+		Status:             "active",
+		ProposalVisibility: "public",
+		TechStackJSON:      dbservice.JSONB(`["Go","PostgreSQL"]`),
+	}).Error; err != nil {
+		t.Fatalf("seed public project: %v", err)
+	}
+	if err := gormDB.Create(&dbservice.ActiveProject{
+		ProjectKey:         "edfx/anon-saas",
+		Name:               "ConfidentialClientAlpha",
+		ActivityTier:       "active",
+		Status:             "active",
+		ProposalVisibility: "anonymized",
+		TechStackJSON:      dbservice.JSONB(`["Rust","WebAssembly"]`),
+	}).Error; err != nil {
+		t.Fatalf("seed anonymized project: %v", err)
+	}
+	if err := gormDB.Create(&dbservice.ActiveProject{
+		ProjectKey:         "edfx/private-stealth",
+		Name:               "PrivateStealthName",
+		ActivityTier:       "active",
+		Status:             "active",
+		ProposalVisibility: "private",
+		TechStackJSON:      dbservice.JSONB(`["Rust","WebAssembly"]`),
+	}).Error; err != nil {
+		t.Fatalf("seed private project: %v", err)
+	}
+
+	pubUID, anonUID := "~09projpub1", "~09projanon1"
+	pubJob := dbservice.Job{
+		UpworkJobID:    &pubUID,
+		Title:          "Public Go Platform Job",
+		ScoreBreakdown: dbservice.JSONB(`{"matched_active_projects":["Public Go Automation Platform"]}`),
+	}
+	anonJob := dbservice.Job{
+		UpworkJobID:    &anonUID,
+		Title:          "Anon Rust Job",
+		ScoreBreakdown: dbservice.JSONB(`{"matched_active_projects":["Active client project (Rust, WebAssembly)"]}`),
+	}
+	for _, j := range []*dbservice.Job{&pubJob, &anonJob} {
+		if err := gormDB.Create(j).Error; err != nil {
+			t.Fatalf("seed matched job: %v", err)
+		}
+	}
+
+	// Non-private public project_key matches pubJob
+	wPub := doAuthReq(http.MethodGet, "/api/jobs?matched_project="+url.QueryEscape("edfx/public-go-platform"), "")
+	if wPub.Result().StatusCode != http.StatusOK {
+		t.Fatalf("GET matched_project public key status = %d", wPub.Result().StatusCode)
+	}
+	var pubResp listJobsResponse
+	_ = json.NewDecoder(wPub.Body).Decode(&pubResp)
+	if pubResp.Total != 1 || pubResp.Jobs[0].UpworkJobID != pubUID {
+		t.Fatalf("expected 1 job for public project_key, got total=%d jobs=%+v", pubResp.Total, pubResp.Jobs)
+	}
+
+	// Non-private anonymized project_key resolves to sanitized label ("Active client project (Rust, WebAssembly)"), NOT confidential Name
+	wAnon := doAuthReq(http.MethodGet, "/api/jobs?matched_project="+url.QueryEscape("edfx/anon-saas"), "")
+	if wAnon.Result().StatusCode != http.StatusOK {
+		t.Fatalf("GET matched_project anon key status = %d", wAnon.Result().StatusCode)
+	}
+	var anonResp listJobsResponse
+	_ = json.NewDecoder(wAnon.Body).Decode(&anonResp)
+	if anonResp.Total != 1 || anonResp.Jobs[0].UpworkJobID != anonUID {
+		t.Fatalf("expected 1 job for anonymized project_key, got total=%d jobs=%+v", anonResp.Total, anonResp.Jobs)
+	}
+
+	// CRITICAL NDA INVARIANT: private project_key must NEVER resolve to "Active client project (...)" or match external jobs!
+	wPriv := doAuthReq(http.MethodGet, "/api/jobs?matched_project="+url.QueryEscape("edfx/private-stealth"), "")
+	if wPriv.Result().StatusCode != http.StatusOK {
+		t.Fatalf("GET matched_project private key status = %d", wPriv.Result().StatusCode)
+	}
+	var privResp listJobsResponse
+	_ = json.NewDecoder(wPriv.Body).Decode(&privResp)
+	if privResp.Total != 0 || len(privResp.Jobs) != 0 {
+		t.Fatalf("NDA VIOLATION: expected 0 jobs for private project_key, got total=%d jobs=%+v", privResp.Total, privResp.Jobs)
+	}
+}
+
+func TestResolveJobRef_RejectsFractionalFloatsAndInvalidBounds_WithDB(t *testing.T) {
+	s := setupTestServer(t)
+	gormDB := s.db.GetGorm()
+
+	// Seed job id=1 (or check its actual ID) to verify float64(1.5) NEVER truncates to id=1
+	uid := "~09floatprobe1"
+	job := dbservice.Job{
+		UpworkJobID: &uid,
+		Title:       "Float Truncation Guard Job",
+	}
+	if err := gormDB.Create(&job).Error; err != nil {
+		t.Fatalf("seed job: %v", err)
+	}
+	if job.ID == 0 {
+		t.Fatalf("expected seeded job ID > 0")
+	}
+
+	// Whole float64 matching seeded ID must resolve
+	resolved, err := s.ResolveJobRef(context.Background(), float64(job.ID), "")
+	if err != nil || resolved.ID != job.ID {
+		t.Fatalf("expected whole float64(%d) to resolve, got resolved=%+v err=%v", job.ID, resolved, err)
+	}
+
+	invalidRefs := []any{
+		float64(job.ID) + 0.5,
+		float64(1.5),
+		float64(0),
+		float64(-1),
+		float64(-1.5),
+		math.NaN(),
+		math.Inf(1),
+		math.Inf(-1),
+		float64(uint64(1) << 63),
+		float32(1.5),
+		float32(0),
+		uint(0),
+		uint(uint64(1) << 63),
+		uint64(0),
+		uint64(uint64(1) << 63),
+		uint64(math.MaxUint64),
+		uint32(0),
+		int(0),
+		int(-1),
+		int64(0),
+		int64(-5),
+		int32(0),
+		json.Number("1.5"),
+		json.Number("0"),
+		json.Number("9223372036854775808"),
+	}
+	for _, badRef := range invalidRefs {
+		got, rErr := s.ResolveJobRef(context.Background(), badRef, "")
+		var se *ServiceError
+		if !errors.As(rErr, &se) || se.HTTPStatus != http.StatusBadRequest || se.Code != "INVALID_PARAMS" {
+			t.Fatalf("ResolveJobRef(%#v) expected 400 INVALID_PARAMS, got job=%+v err=%v", badRef, got, rErr)
 		}
 	}
 }

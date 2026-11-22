@@ -312,4 +312,91 @@ describe('Search & Authenticated Feeds Adapter', () => {
     expect(res.jobs[0].payment_verified).toBe(true);
     expect(res.jobs[0].proposals_tier).toBe('Less than 5');
   });
+
+  it('encodes hourly_rate and payment_verified query facets cleanly and rejects invalid bounds', () => {
+    const bothUrl = new URL(
+      buildSearchUrl({
+        source: 'search',
+        query: 'go',
+        hourly_rate_min: 70,
+        hourly_rate_max: 130,
+        payment_verified_only: true,
+      }),
+    );
+    expect(bothUrl.searchParams.get('hourly_rate')).toBe('70-130');
+    expect(bothUrl.searchParams.get('payment_verified')).toBe('1');
+
+    const minOnlyUrl = new URL(
+      buildSearchUrl({
+        source: 'search',
+        query: 'go',
+        hourly_rate_min: 72.5,
+      }),
+    );
+    expect(minOnlyUrl.searchParams.get('hourly_rate')).toBe('72.5-');
+    expect(minOnlyUrl.searchParams.has('payment_verified')).toBe(false);
+
+    const maxOnlyUrl = new URL(
+      buildSearchUrl({
+        source: 'search',
+        query: 'go',
+        hourly_rate_max: 130,
+        payment_verified_only: false,
+      }),
+    );
+    expect(maxOnlyUrl.searchParams.get('hourly_rate')).toBe('-130');
+    expect(maxOnlyUrl.searchParams.has('payment_verified')).toBe(false);
+
+    const zeroMinUrl = new URL(buildSearchUrl({ source: 'search', hourly_rate_min: 0 }));
+    expect(zeroMinUrl.searchParams.get('hourly_rate')).toBe('0-');
+
+    const zeroMaxUrl = new URL(buildSearchUrl({ source: 'search', hourly_rate_max: 0 }));
+    expect(zeroMaxUrl.searchParams.get('hourly_rate')).toBe('-0');
+
+    const zeroBothUrl = new URL(
+      buildSearchUrl({ source: 'search', hourly_rate_min: 0, hourly_rate_max: 0 }),
+    );
+    expect(zeroBothUrl.searchParams.get('hourly_rate')).toBe('0-0');
+
+    expect(() => buildSearchUrl({ hourly_rate_min: -1 })).toThrow(/non-negative/i);
+    expect(() => buildSearchUrl({ hourly_rate_max: -5 })).toThrow(/non-negative/i);
+    expect(() => buildSearchUrl({ hourly_rate_min: Number.NaN })).toThrow(/finite/i);
+    expect(() => buildSearchUrl({ hourly_rate_max: Number.POSITIVE_INFINITY })).toThrow(/finite/i);
+    expect(() => buildSearchUrl({ hourly_rate_min: 150, hourly_rate_max: 80 })).toThrow(/exceed/i);
+  });
+
+  it('extracts payment_verified from [data-qa="payment-verified"] and [data-test="payment-verified"] and returns undefined when absent', () => {
+    const html = `
+      <!DOCTYPE html>
+      <html><body><main>
+        <article class="job-tile" data-test="JobTile">
+          <a data-test="job-tile-title-link" href="/jobs/QA-Verified_~022115332344639180/">QA Verified</a>
+          <div data-test="JobDescription"><p>Desc 1</p></div>
+          <span data-qa="payment-verified">Payment Verified</span>
+        </article>
+        <article class="job-tile" data-test="JobTile">
+          <a data-test="job-tile-title-link" href="/jobs/Test-Verified_~022115332344639181/">Test Verified</a>
+          <div data-test="JobDescription"><p>Desc 2</p></div>
+          <span data-test="payment-verified">Payment verified</span>
+        </article>
+        <article class="job-tile" data-test="JobTile">
+          <a data-test="job-tile-title-link" href="/jobs/Missing-Verified_~022115332344639182/">Missing Verified</a>
+          <div data-test="JobDescription"><p>Desc 3</p></div>
+        </article>
+      </main></body></html>
+    `;
+    const res = extractSearchListings(parseHtmlDocument(html), {
+      source: 'search',
+      query: 'wordpress',
+      location: {
+        href: 'https://www.upwork.com/nx/search/jobs/?q=wordpress',
+        pathname: '/nx/search/jobs/',
+      },
+    });
+    expect(res.ok).toBe(true);
+    expect(res.jobs).toHaveLength(3);
+    expect(res.jobs[0].payment_verified).toBe(true);
+    expect(res.jobs[1].payment_verified).toBe(true);
+    expect(res.jobs[2].payment_verified).toBeUndefined();
+  });
 });

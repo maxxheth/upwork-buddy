@@ -648,6 +648,14 @@ export const BackgroundCommandMessageSchema = z.discriminatedUnion('type', [
     tabId: z.number().int().optional(),
     tab: SidePanelTabSchema.optional(),
   }),
+  z.object({
+    type: z.literal('OPEN_JOBS_DASHBOARD'),
+    queryString: z.string().optional(),
+    runId: z.number().int().positive().optional(),
+    fit: z.string().optional(),
+    q: z.string().optional(),
+    batchId: z.number().int().positive().optional(),
+  }),
   z.object({ type: z.literal('BG_GET_PENDING_SIDEPANEL_TAB') }),
   z.object({
     type: z.literal('PASSIVE_TAP_PAYLOAD'),

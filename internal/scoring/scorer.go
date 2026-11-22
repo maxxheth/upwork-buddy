@@ -3,7 +3,6 @@ package scoring
 import (
 	"fmt"
 	"math"
-	"strconv"
 	"strings"
 )
 
@@ -50,27 +49,40 @@ type PortfolioRef struct {
 	Description string `json:"description"`
 }
 
+// ActiveProjectRef represents a tracked active project for informational job matching.
+type ActiveProjectRef struct {
+	Key                string   `json:"key"`
+	Name               string   `json:"name"`
+	PublicAlias        string   `json:"public_alias,omitempty"`
+	ProposalVisibility string   `json:"proposal_visibility"`
+	ActivityTier       string   `json:"activity_tier"`
+	Summary            string   `json:"summary,omitempty"`
+	TechStack          []string `json:"tech_stack,omitempty"`
+}
+
 // ScoringProfile configures skill and portfolio matching from the persisted Profile.
 type ScoringProfile struct {
-	Description    string         `json:"description"`
-	Skills         []string       `json:"skills"` // empty => fallback to DefaultPortfolioKeywords
-	PortfolioItems []PortfolioRef `json:"portfolio_items,omitempty"`
+	Description    string             `json:"description"`
+	Skills         []string           `json:"skills"` // empty => fallback to DefaultPortfolioKeywords
+	PortfolioItems []PortfolioRef     `json:"portfolio_items,omitempty"`
+	ActiveProjects []ActiveProjectRef `json:"active_projects,omitempty"`
 }
 
 // ScoreBreakdown records each scoring component and modifier contribution.
 type ScoreBreakdown struct {
-	RateBudget         int      `json:"rate_budget"`          // 0..25
-	SkillMatch         int      `json:"skill_match"`          // 0..25
-	ClientSpend        int      `json:"client_spend"`         // 0..15
-	ClientHires        int      `json:"client_hires"`         // 0..10
-	ProposalCount      int      `json:"proposal_count"`       // 0..10 (nil => 8)
-	Recency            int      `json:"recency"`              // 0..10
-	DescriptionQuality int      `json:"description_quality"`  // 0..5
-	PaymentVerifiedMod int      `json:"payment_verified_mod"` // +5 / -5 / 0
-	ClientHireRateMod  int      `json:"client_hire_rate_mod"` // +5 / +2 / -3 / 0
-	ConnectsMod        int      `json:"connects_mod"`         // +2 / -3 / 0
-	MatchedSkills      []string `json:"matched_skills,omitempty"`
-	MatchedPortfolio   []string `json:"matched_portfolio,omitempty"`
+	RateBudget            int      `json:"rate_budget"`          // 0..25
+	SkillMatch            int      `json:"skill_match"`          // 0..25
+	ClientSpend           int      `json:"client_spend"`         // 0..15
+	ClientHires           int      `json:"client_hires"`         // 0..10
+	ProposalCount         int      `json:"proposal_count"`       // 0..10 (nil => 8)
+	Recency               int      `json:"recency"`              // 0..10
+	DescriptionQuality    int      `json:"description_quality"`  // 0..5
+	PaymentVerifiedMod    int      `json:"payment_verified_mod"` // +5 / -5 / 0
+	ClientHireRateMod     int      `json:"client_hire_rate_mod"` // +5 / +2 / -3 / 0
+	ConnectsMod           int      `json:"connects_mod"`         // +2 / -3 / 0
+	MatchedSkills         []string `json:"matched_skills,omitempty"`
+	MatchedPortfolio      []string `json:"matched_portfolio,omitempty"`
+	MatchedActiveProjects []string `json:"matched_active_projects,omitempty"`
 }
 
 // ScoreResult is the full deterministic score evaluation output.
@@ -96,19 +108,11 @@ func FitLabelForScore(score int) string {
 }
 
 func extractHourlyMaxRate(hourlyRate string) float64 {
-	cleaned := strings.ReplaceAll(hourlyRate, ",", "")
-	matches := reDollarAmount.FindAllStringSubmatch(cleaned, -1)
-	maxRate := 0.0
-	for _, m := range matches {
-		if len(m) != 2 {
-			continue
-		}
-		v, err := strconv.ParseFloat(m[1], 64)
-		if err == nil && !math.IsNaN(v) && v > maxRate {
-			maxRate = v
-		}
+	_, maxRate := ParseHourlyRateRange(hourlyRate)
+	if maxRate == nil || math.IsNaN(*maxRate) {
+		return 0
 	}
-	return maxRate
+	return *maxRate
 }
 
 func normalizeSkillList(raw []string) []string {
@@ -247,6 +251,21 @@ func ScoreJob(job JobInput, profile *ScoringProfile) ScoreResult {
 	}
 	if len(matchedPortfolio) > 0 {
 		reasons = append(reasons, fmt.Sprintf("Matching portfolio items: %s.", strings.Join(matchedPortfolio, ", ")))
+	}
+
+	// Informational active project matching (does NOT affect numeric score or breakdown.SkillMatch).
+	if profile != nil && len(profile.ActiveProjects) > 0 {
+		jobHaystack := strings.TrimSpace(job.Title + " " + job.Description + " " + strings.Join(job.Skills, " "))
+		searchTerms := make([]string, 0, len(job.Skills)+len(matchedSkills))
+		searchTerms = append(searchTerms, job.Skills...)
+		searchTerms = append(searchTerms, matchedSkills...)
+		searchTerms = normalizeSkillList(searchTerms)
+
+		matchedActive := matchActiveProjects(jobHaystack, keywords, searchTerms, profile.ActiveProjects)
+		if len(matchedActive) > 0 {
+			breakdown.MatchedActiveProjects = matchedActive
+			reasons = append(reasons, fmt.Sprintf("Relevant active projects: %s.", strings.Join(matchedActive, ", ")))
+		}
 	}
 
 	// 3. Client spend (0..15)
@@ -398,4 +417,95 @@ func ScoreJob(job JobInput, profile *ScoringProfile) ScoreResult {
 		Breakdown: breakdown,
 		Reasons:   finalReasons,
 	}
+}
+
+func matchActiveProjects(jobHaystack string, keywords, searchTerms []string, projects []ActiveProjectRef) []string {
+	if jobHaystack == "" && len(searchTerms) == 0 {
+		return nil
+	}
+	matched := make([]string, 0)
+	seenLabels := make(map[string]struct{})
+	for _, proj := range projects {
+		vis := strings.ToLower(strings.TrimSpace(proj.ProposalVisibility))
+		if vis == "private" {
+			continue
+		}
+		if strings.EqualFold(strings.TrimSpace(proj.ActivityTier), "archived") {
+			continue
+		}
+
+		parts := []string{
+			strings.Join(proj.TechStack, " "),
+			proj.Summary,
+			proj.PublicAlias,
+		}
+		if vis == "public" {
+			parts = append(parts, proj.Name)
+		}
+		projText := strings.TrimSpace(strings.Join(parts, " "))
+		if projText == "" {
+			continue
+		}
+
+		isMatch := false
+		for _, term := range searchTerms {
+			if KeywordMatches(term, projText) {
+				isMatch = true
+				break
+			}
+		}
+		if !isMatch && jobHaystack != "" {
+			for _, tech := range proj.TechStack {
+				if t := strings.TrimSpace(tech); t != "" && KeywordMatches(t, jobHaystack) {
+					isMatch = true
+					break
+				}
+			}
+		}
+		if !isMatch && jobHaystack != "" {
+			for _, kw := range keywords {
+				if KeywordMatches(kw, projText) && KeywordMatches(kw, jobHaystack) {
+					isMatch = true
+					break
+				}
+			}
+		}
+		if isMatch {
+			label := activeProjectDisplayLabel(proj)
+			if _, exists := seenLabels[label]; !exists {
+				seenLabels[label] = struct{}{}
+				matched = append(matched, label)
+			}
+		}
+	}
+	return matched
+}
+
+func activeProjectDisplayLabel(proj ActiveProjectRef) string {
+	vis := strings.ToLower(strings.TrimSpace(proj.ProposalVisibility))
+	alias := strings.TrimSpace(proj.PublicAlias)
+	if vis == "public" {
+		if alias != "" {
+			return alias
+		}
+		if name := strings.TrimSpace(proj.Name); name != "" {
+			return name
+		}
+	}
+	if alias != "" {
+		return alias
+	}
+	top3 := make([]string, 0, 3)
+	for _, tech := range proj.TechStack {
+		if t := strings.TrimSpace(tech); t != "" {
+			top3 = append(top3, t)
+			if len(top3) == 3 {
+				break
+			}
+		}
+	}
+	if len(top3) > 0 {
+		return "Active client project (" + strings.Join(top3, ", ") + ")"
+	}
+	return "Active client project"
 }

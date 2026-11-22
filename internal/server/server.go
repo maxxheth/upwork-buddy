@@ -1,6 +1,7 @@
 package server
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"log"
@@ -69,6 +70,12 @@ type Server struct {
 	policyEngine    *policy.Engine
 	mcpHookMu       sync.Mutex
 	mcpShutdownHook func()
+
+	enrichmentMgrMu sync.Mutex
+	enrichmentMgr   *EnrichmentManager
+
+	webSessionMu  sync.Mutex
+	webSessionMgr *webSessionManager
 
 	db service.DatabaseService
 }
@@ -224,6 +231,12 @@ func NewServerInstance() (*http.Server, *Server) {
 	appServer.bridgeHub = bridgeHub
 	appServer.wsHandler = bridgeHub
 
+	recoverCtx, recoverCancel := context.WithTimeout(context.Background(), 15*time.Second)
+	if recErr := appServer.getEnrichmentManager().RecoverInterruptedBatches(recoverCtx); recErr != nil {
+		log.Printf("⚠️ Failed to recover interrupted enrichment batches on startup: %v", recErr)
+	}
+	recoverCancel()
+
 	addr := net.JoinHostPort(appServer.host, strconv.Itoa(appServer.port))
 	log.Printf("🚀 Server configured: addr=%s, env=%s, mcp_enabled=%t, token_source=%q, cors_allowed_origins=%q",
 		addr, env, mcpEnabled, tokenSource, corsAllowedOrigins)
@@ -345,13 +358,30 @@ func (s *Server) PolicyEngine() *policy.Engine {
 	return policy.NewEngine(nil)
 }
 
-// Close releases underlying server resources (including MCP sessions, WebSocket bridge, and database pool).
+// CloseEnrichment cancels active enrichment batches and waits for background workers to exit.
+func (s *Server) CloseEnrichment() error {
+	if s == nil {
+		return nil
+	}
+	s.enrichmentMgrMu.Lock()
+	mgr := s.enrichmentMgr
+	s.enrichmentMgrMu.Unlock()
+	if mgr == nil {
+		return nil
+	}
+	return mgr.Close()
+}
+
+// Close releases underlying server resources (including MCP sessions, enrichment workers, WebSocket bridge, and database pool).
 func (s *Server) Close() error {
 	if s == nil {
 		return nil
 	}
 	s.CloseMCPSessions()
 	var errs []error
+	if err := s.CloseEnrichment(); err != nil {
+		errs = append(errs, err)
+	}
 	if s.bridgeHub != nil {
 		if err := s.bridgeHub.Close(); err != nil {
 			errs = append(errs, err)
@@ -377,4 +407,33 @@ func (s *Server) SetWSHandler(h http.Handler) {
 	if s != nil {
 		s.wsHandler = h
 	}
+}
+
+// EnrichmentManager returns the server's async batch enrichment manager.
+func (s *Server) EnrichmentManager() *EnrichmentManager {
+	return s.getEnrichmentManager()
+}
+
+func (s *Server) getEnrichmentManager() *EnrichmentManager {
+	if s == nil {
+		return nil
+	}
+	s.enrichmentMgrMu.Lock()
+	defer s.enrichmentMgrMu.Unlock()
+	if s.enrichmentMgr == nil {
+		s.enrichmentMgr = NewEnrichmentManager(s)
+	}
+	return s.enrichmentMgr
+}
+
+func (s *Server) getWebSessionManager() *webSessionManager {
+	if s == nil {
+		return nil
+	}
+	s.webSessionMu.Lock()
+	defer s.webSessionMu.Unlock()
+	if s.webSessionMgr == nil {
+		s.webSessionMgr = newWebSessionManager()
+	}
+	return s.webSessionMgr
 }

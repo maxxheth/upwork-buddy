@@ -267,4 +267,17 @@ func TestDiagnosticHandlers_FullCaptureDryRunApplyReloadAndRollbackLifecycle(t *
 	if travW.Code != http.StatusForbidden {
 		t.Fatalf("expected 403 Forbidden for BundleDir outside %s, got %d body=%s", diagDir, travW.Code, travW.Body.String())
 	}
+
+	// 8. Numeric ID bounds validation on GET /api/diagnostics/captures/{id}
+	for _, badID := range []string{"0", "9223372036854775808", "18446744073709551615"} {
+		badW := doReq(http.MethodGet, "/api/diagnostics/captures/"+badID, nil)
+		if badW.Code != http.StatusBadRequest {
+			t.Fatalf("GET /api/diagnostics/captures/%s status = %d, want 400; body=%s", badID, badW.Code, badW.Body.String())
+		}
+		var errBody map[string]any
+		_ = json.NewDecoder(badW.Body).Decode(&errBody)
+		if errBody["error_code"] != "INVALID_PARAMS" {
+			t.Fatalf("GET /api/diagnostics/captures/%s expected INVALID_PARAMS, got %+v", badID, errBody)
+		}
+	}
 }

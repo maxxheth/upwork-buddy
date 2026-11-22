@@ -9,6 +9,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"math"
 	"math/rand/v2"
 	"net/http"
 	"sort"
@@ -224,7 +225,11 @@ func extractMessageIDParam(r *http.Request) (uint64, error) {
 		}
 		idStr = strings.TrimSpace(path)
 	}
-	return strconv.ParseUint(idStr, 10, 64)
+	idVal, err := strconv.ParseUint(idStr, 10, 64)
+	if err != nil || idVal == 0 || idVal > math.MaxInt64 {
+		return 0, errors.New("invalid message ID")
+	}
+	return idVal, nil
 }
 
 func parseFlexibleTimestamp(raw string) *time.Time {
@@ -924,7 +929,10 @@ func (s *Server) CommitMessage(ctx context.Context, req CommitMessageInput, huma
 	}
 
 	var targetMessageID uint64
-	if req.MessageID != nil && *req.MessageID > 0 {
+	if req.MessageID != nil {
+		if *req.MessageID == 0 || uint64(*req.MessageID) > math.MaxInt64 {
+			return nil, &ServiceError{Code: "INVALID_PARAMS", HTTPStatus: http.StatusBadRequest, Message: "Invalid message ID"}
+		}
 		targetMessageID = uint64(*req.MessageID)
 	}
 	if humanApproved && targetMessageID == 0 {
@@ -1444,7 +1452,7 @@ func (s *Server) executeMessageCommit(w http.ResponseWriter, r *http.Request, hu
 	if humanApproved {
 		targetID, idErr := extractMessageIDParam(r)
 		if idErr != nil || targetID == 0 {
-			respondWithError(w, http.StatusBadRequest, "Invalid message ID")
+			respondInvalidParams(w, "Invalid message ID")
 			return
 		}
 		uid := uint(targetID)
@@ -1476,7 +1484,7 @@ func (s *Server) rejectMessageHandler(w http.ResponseWriter, r *http.Request) {
 	}
 	id, err := extractMessageIDParam(r)
 	if err != nil || id == 0 {
-		respondWithError(w, http.StatusBadRequest, "Invalid message ID")
+		respondInvalidParams(w, "Invalid message ID")
 		return
 	}
 

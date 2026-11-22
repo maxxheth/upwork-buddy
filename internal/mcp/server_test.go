@@ -625,13 +625,13 @@ func defaultMockHandler() mockRPCHandler {
 	}
 }
 
-func TestMCP_InMemory_All22ToolsAnd7Resources(t *testing.T) {
+func TestMCP_InMemory_All26ToolsAnd10Resources(t *testing.T) {
 	backend, mcpSrv := setupTestMCPServer(t)
 	_, _ = startMockWSServerAndClient(t, backend, defaultMockHandler())
 	session := connectInMemoryClient(t, mcpSrv)
 	ctx := context.Background()
 
-	// 1. Verify exact 22 tools
+	// 1. Verify exact 26 tools
 	toolsRes, err := session.ListTools(ctx, &mcp.ListToolsParams{})
 	if err != nil {
 		t.Fatalf("ListTools failed: %v", err)
@@ -659,6 +659,10 @@ func TestMCP_InMemory_All22ToolsAnd7Resources(t *testing.T) {
 		"upwork_send_message":            true,
 		"upwork_profile":                 true,
 		"upwork_generate_project_agents": true,
+		"upwork_active_projects":         true,
+		"upwork_save_jobs":               true,
+		"upwork_enrich_jobs":             true,
+		"upwork_enrichment_batches":      true,
 	}
 	if len(toolsRes.Tools) != len(expectedTools) {
 		t.Fatalf("expected %d tools, got %d", len(expectedTools), len(toolsRes.Tools))
@@ -672,7 +676,7 @@ func TestMCP_InMemory_All22ToolsAnd7Resources(t *testing.T) {
 		}
 	}
 
-	// 2. Verify exact 7 resources
+	// 2. Verify exact 10 resources
 	resList, err := session.ListResources(ctx, &mcp.ListResourcesParams{})
 	if err != nil {
 		t.Fatalf("ListResources failed: %v", err)
@@ -685,6 +689,9 @@ func TestMCP_InMemory_All22ToolsAnd7Resources(t *testing.T) {
 		"upwork://messages/unread",
 		"upwork://selectors/health",
 		"upwork://diagnostics/latest",
+		"upwork://projects/active",
+		"upwork://jobs/search-runs",
+		"upwork://jobs/enrichment-batches",
 	}
 	if len(resList.Resources) != len(expectedResources) {
 		t.Fatalf("expected %d resources, got %d", len(expectedResources), len(resList.Resources))
@@ -1059,7 +1066,42 @@ func TestMCP_InMemory_All22ToolsAnd7Resources(t *testing.T) {
 		t.Fatalf("expected reloaded_extension=true & bumped new_version, got %+v", applyPatchMap)
 	}
 
-	// 13. Verify all 7 resources return valid non-empty JSON
+	// 12b. upwork_active_projects (sync via backend, list + update via MCP)
+	if _, syncErr := backend.SyncActiveProjects(ctx, server.SyncActiveProjectsRequest{
+		Projects: []server.SyncActiveProjectItem{
+			{
+				ProjectKey:   "edfx-labs/mcp-proj",
+				Slug:         "mcp-proj",
+				Name:         "MCP Project",
+				GroupName:    "edfx-labs",
+				ActivityTier: "active",
+				TechStack:    []string{"Go"},
+			},
+		},
+	}); syncErr != nil {
+		t.Fatalf("SyncActiveProjects failed: %v", syncErr)
+	}
+	apList, err := session.CallTool(ctx, &mcp.CallToolParams{
+		Name:      "upwork_active_projects",
+		Arguments: map[string]any{"action": "list", "tier": "active"},
+	})
+	if err != nil || apList.IsError || !strings.Contains(toolErrorText(apList), "edfx-labs/mcp-proj") {
+		t.Fatalf("upwork_active_projects list failed: res=%+v err=%v", apList, err)
+	}
+	apUpd, err := session.CallTool(ctx, &mcp.CallToolParams{
+		Name: "upwork_active_projects",
+		Arguments: map[string]any{
+			"action":              "update",
+			"id":                  "edfx-labs/mcp-proj",
+			"proposal_visibility": "anonymized",
+			"public_alias":        "Go Automation Service",
+		},
+	})
+	if err != nil || apUpd.IsError || !strings.Contains(toolErrorText(apUpd), "Go Automation Service") {
+		t.Fatalf("upwork_active_projects update failed: res=%+v err=%v", apUpd, err)
+	}
+
+	// 13. Verify all 10 resources return valid non-empty JSON
 	for _, uri := range expectedResources {
 		rr, rErr := session.ReadResource(ctx, &mcp.ReadResourceParams{URI: uri})
 		if rErr != nil || len(rr.Contents) == 0 {
@@ -1411,11 +1453,11 @@ func TestMCP_StdioSubprocess_ProxyAndEmbeddedFallback(t *testing.T) {
 		}
 
 		toolsRes, err := cliSession.ListTools(ctx, &mcp.ListToolsParams{})
-		if err != nil || len(toolsRes.Tools) != 22 {
+		if err != nil || len(toolsRes.Tools) != 26 {
 			t.Fatalf("stdio ListTools failed: len=%d err=%v", len(toolsRes.Tools), err)
 		}
 		resList, err := cliSession.ListResources(ctx, &mcp.ListResourcesParams{})
-		if err != nil || len(resList.Resources) != 7 {
+		if err != nil || len(resList.Resources) != 10 {
 			t.Fatalf("stdio ListResources failed: len=%d err=%v", len(resList.Resources), err)
 		}
 
@@ -1440,6 +1482,36 @@ func TestMCP_StdioSubprocess_ProxyAndEmbeddedFallback(t *testing.T) {
 		} else {
 			if !tabsRes.IsError || !strings.Contains(toolErrorText(tabsRes), "EXTENSION_DISCONNECTED") {
 				t.Fatalf("expected EXTENSION_DISCONNECTED in embedded fallback, got %+v", tabsRes)
+			}
+			// Regression: GORM DB queries (including gorm.ErrRecordNotFound and malformed batch JSONB)
+			// must log to stderr and never emit non-JSON lines onto stdout.
+			missingBatchRes, mbErr := cliSession.CallTool(ctx, &mcp.CallToolParams{
+				Name:      "upwork_enrichment_batches",
+				Arguments: map[string]any{"action": "get", "batch_id": 999999},
+			})
+			if mbErr != nil {
+				t.Fatalf("stdio upwork_enrichment_batches(get missing) RPC error: %v", mbErr)
+			}
+			if !missingBatchRes.IsError || !strings.Contains(toolErrorText(missingBatchRes), "NOT_FOUND") {
+				t.Fatalf("expected NOT_FOUND for missing batch_id 999999, got %+v", missingBatchRes)
+			}
+
+			badSaveRes, bsErr := cliSession.CallTool(ctx, &mcp.CallToolParams{
+				Name: "upwork_save_jobs",
+				Arguments: map[string]any{
+					"jobs": []map[string]any{
+						{
+							"upwork_job_id": "x",
+							"proposal_json": "{bad-json",
+						},
+					},
+				},
+			})
+			if bsErr != nil {
+				t.Fatalf("stdio upwork_save_jobs(bad proposal_json) RPC error: %v", bsErr)
+			}
+			if !badSaveRes.IsError || !strings.Contains(toolErrorText(badSaveRes), "INVALID_PARAMS") {
+				t.Fatalf("expected INVALID_PARAMS for malformed proposal_json, got %+v", badSaveRes)
 			}
 		}
 
@@ -2604,3 +2676,826 @@ func TestMCP_R5_ApprovalTokenDoesNotBypassAutoWithGuardrailsAndDraftNotHijacked(
 }
 
 func strPtr(s string) *string { return &s }
+
+func TestMCP_Unit_CompactProjectionAndToolRegistration(t *testing.T) {
+	backend := server.NewServerWithDeps(server.ServerDeps{
+		Host: "127.0.0.1",
+		Port: 0,
+	})
+	t.Cleanup(func() { _ = backend.Close() })
+
+	mcpSrv := NewServer(backend)
+	session := connectInMemoryClient(t, mcpSrv)
+	ctx := context.Background()
+
+	toolsRes, err := session.ListTools(ctx, &mcp.ListToolsParams{})
+	if err != nil {
+		t.Fatalf("ListTools failed: %v", err)
+	}
+	expectedTools := map[string]bool{
+		"upwork_session_status":          true,
+		"upwork_audit_selectors":         true,
+		"upwork_list_tabs":               true,
+		"upwork_capture_ui_diagnostic":   true,
+		"upwork_get_ui_diagnostic":       true,
+		"upwork_test_selector_patch":     true,
+		"upwork_apply_selector_patch":    true,
+		"upwork_search_jobs":             true,
+		"upwork_get_job_details":         true,
+		"upwork_list_saved_jobs":         true,
+		"upwork_analyze_job":             true,
+		"upwork_manage_search_profiles":  true,
+		"upwork_draft_proposal":          true,
+		"upwork_fill_proposal_form":      true,
+		"upwork_submit_proposal":         true,
+		"upwork_sync_proposals":          true,
+		"upwork_list_conversations":      true,
+		"upwork_get_conversation":        true,
+		"upwork_draft_message":           true,
+		"upwork_send_message":            true,
+		"upwork_profile":                 true,
+		"upwork_generate_project_agents": true,
+		"upwork_active_projects":         true,
+		"upwork_save_jobs":               true,
+		"upwork_enrich_jobs":             true,
+		"upwork_enrichment_batches":      true,
+	}
+	if len(toolsRes.Tools) != len(expectedTools) {
+		t.Fatalf("expected %d tools, got %d", len(expectedTools), len(toolsRes.Tools))
+	}
+	for _, tool := range toolsRes.Tools {
+		if !expectedTools[tool.Name] {
+			t.Fatalf("unexpected tool %q", tool.Name)
+		}
+		if tool.InputSchema == nil {
+			t.Fatalf("tool %q missing InputSchema", tool.Name)
+		}
+	}
+
+	resList, err := session.ListResources(ctx, &mcp.ListResourcesParams{})
+	if err != nil {
+		t.Fatalf("ListResources failed: %v", err)
+	}
+	expectedURIs := map[string]bool{
+		"upwork://profile":                    true,
+		"upwork://jobs/hot":                   true,
+		"upwork://proposals/pending-approval": true,
+		"upwork://proposals/active":           true,
+		"upwork://messages/unread":            true,
+		"upwork://selectors/health":           true,
+		"upwork://diagnostics/latest":         true,
+		"upwork://projects/active":            true,
+		"upwork://jobs/search-runs":           true,
+		"upwork://jobs/enrichment-batches":    true,
+	}
+	if len(resList.Resources) != len(expectedURIs) {
+		t.Fatalf("expected %d resources, got %d", len(expectedURIs), len(resList.Resources))
+	}
+	for _, r := range resList.Resources {
+		if !expectedURIs[r.URI] {
+			t.Fatalf("unexpected resource URI %q", r.URI)
+		}
+	}
+
+	// Verify compact projection truncates description < 200 chars and omits heavy JSONB/AI prose.
+	scoreVal := 88
+	tokensVal := 850
+	runID := uint(14)
+	enrichedAt := "2026-11-21T03:00:00Z"
+	longDesc := strings.Repeat("Go PostgreSQL Playwright backend architecture ", 12)
+	compacted := toCompactJobEntries([]server.JobEntry{
+		{
+			ID:                  42,
+			UpworkJobID:         "~0991234567890",
+			JobTitle:            "Compact Projection Check",
+			JobDescription:      longDesc,
+			ContractType:        "hourly",
+			RateRange:           "$90-$120/hr",
+			Skills:              "Go, PostgreSQL",
+			Score:               &scoreVal,
+			FitLabel:            "hot",
+			AIEnrichmentStatus:  "completed",
+			AIEnrichedAt:        &enrichedAt,
+			AIModel:             "gemini-pro-orchestrator-neon",
+			AIEffort:            "medium",
+			AITokensUsed:        &tokensVal,
+			LastSearchRunID:     &runID,
+			ScoreBreakdown:      json.RawMessage(`{"skills":40}`),
+			ScoreReasoning:      "Long reasoning text",
+			Qualifications:      json.RawMessage(`{"location":"US"}`),
+			ScreeningQuestions:  json.RawMessage(`[{"prompt":"Q1"}]`),
+			Attachments:         json.RawMessage(`[{"name":"spec.pdf"}]`),
+			ClientActivity:      json.RawMessage(`{"hires":12}`),
+			Proposal:            "Full cover letter",
+			ProposalSubject:     "Subject",
+			ProposalTone:        "Direct",
+			ProposalJSON:        json.RawMessage(`{"draft":"text"}`),
+			PortfolioReferences: json.RawMessage(`[{"title":"Ref"}]`),
+			TimeEstimate:        "2 weeks",
+			WorkloadDivision:    "Backend",
+			QuestionsForClient:  "Q?",
+			TipsAndAdvice:       "Tip",
+			ExecutionPrompt:     "Prompt",
+			ToneAnalysis:        "Tone",
+			CreatedAt:           "2026-11-21T02:00:00Z",
+		},
+	})
+	if len(compacted) != 1 {
+		t.Fatalf("expected 1 compact entry, got %d", len(compacted))
+	}
+	rawBytes, err := json.Marshal(compacted[0])
+	if err != nil {
+		t.Fatalf("marshal compact entry: %v", err)
+	}
+	var decoded map[string]any
+	if err := json.Unmarshal(rawBytes, &decoded); err != nil {
+		t.Fatalf("unmarshal compact entry: %v", err)
+	}
+	desc, _ := decoded["job_description"].(string)
+	if len([]rune(desc)) >= 200 || !strings.HasSuffix(desc, "...") {
+		t.Fatalf("expected truncated description < 200 chars with ..., got len=%d (%q)", len([]rune(desc)), desc)
+	}
+	for _, omitted := range []string{
+		"score_breakdown", "score_reasoning", "qualifications", "screening_questions",
+		"attachments", "client_activity", "proposal", "proposal_subject", "proposal_tone",
+		"proposal_json", "portfolio_references", "time_estimate", "workload_division",
+		"questions_for_client", "tips_and_advice", "execution_prompt", "tone_analysis",
+	} {
+		if _, exists := decoded[omitted]; exists {
+			t.Fatalf("expected heavy field %q to be omitted in compact entry", omitted)
+		}
+	}
+	for _, retained := range []string{
+		"id", "upwork_job_id", "job_title", "job_description", "contract_type",
+		"rate_range", "skills", "score", "fit_label", "ai_enrichment_status",
+		"ai_enriched_at", "ai_model", "ai_effort", "ai_tokens_used", "last_search_run_id",
+	} {
+		if _, exists := decoded[retained]; !exists {
+			t.Fatalf("expected retained field %q in compact entry", retained)
+		}
+	}
+
+	// Verify INVALID_PARAMS guards without DB
+	emptySaveRes, err := session.CallTool(ctx, &mcp.CallToolParams{
+		Name:      "upwork_save_jobs",
+		Arguments: map[string]any{"jobs": []any{}},
+	})
+	if err != nil || !emptySaveRes.IsError || !strings.Contains(toolErrorText(emptySaveRes), "INVALID_PARAMS") {
+		t.Fatalf("expected INVALID_PARAMS on empty upwork_save_jobs, got res=%+v err=%v", emptySaveRes, err)
+	}
+
+	badBatchAction, err := session.CallTool(ctx, &mcp.CallToolParams{
+		Name:      "upwork_enrichment_batches",
+		Arguments: map[string]any{"action": "bogus"},
+	})
+	if err != nil || !badBatchAction.IsError || !strings.Contains(toolErrorText(badBatchAction), "INVALID_PARAMS") {
+		t.Fatalf("expected INVALID_PARAMS on invalid batch action, got res=%+v err=%v", badBatchAction, err)
+	}
+
+	missingBatchID, err := session.CallTool(ctx, &mcp.CallToolParams{
+		Name:      "upwork_enrichment_batches",
+		Arguments: map[string]any{"action": "get"},
+	})
+	if err != nil || !missingBatchID.IsError || !strings.Contains(toolErrorText(missingBatchID), "INVALID_PARAMS") {
+		t.Fatalf("expected INVALID_PARAMS on missing batch_id, got res=%+v err=%v", missingBatchID, err)
+	}
+}
+
+func TestMCP_M5_SearchSaveEnrichAndBatches(t *testing.T) {
+	backend, mcpSrv := setupTestMCPServer(t)
+
+	// Clear ambient LLM / enrichment env so test is completely hermetic.
+	t.Setenv("OLLAMA_HOST", "")
+	t.Setenv("OLLAMA_API_KEY", "")
+	t.Setenv("AGY_API_KEY", "")
+	t.Setenv("ENRICHMENT_MAX_BATCH_SIZE", "")
+	t.Setenv("ENRICHMENT_DEFAULT_MODE", "")
+	t.Setenv("ENRICHMENT_DEFAULT_FORCE", "")
+	t.Setenv("ENRICHMENT_SKIP_DETAIL_IF_PRESENT", "")
+	t.Setenv("ENRICHMENT_REQUIRE_DETAILS", "")
+	t.Setenv("ENRICHMENT_MAX_CONCURRENCY", "")
+	t.Setenv("ENRICHMENT_DEFAULT_MODEL", "")
+	t.Setenv("ENRICHMENT_DEFAULT_EFFORT", "")
+	t.Setenv("WEB_UI_ENABLED", "true")
+
+	var llmCalls atomic.Int32
+	var llmDelayMs atomic.Int64
+	var lastLLMPrompt atomic.Value
+	mockLLM := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var body struct {
+			Model    string `json:"model"`
+			Effort   string `json:"effort"`
+			Messages []struct {
+				Role    string `json:"role"`
+				Content string `json:"content"`
+			} `json:"messages"`
+		}
+		_ = json.NewDecoder(r.Body).Decode(&body)
+		var promptParts []string
+		for _, m := range body.Messages {
+			promptParts = append(promptParts, m.Content)
+		}
+		lastLLMPrompt.Store(strings.Join(promptParts, "\n"))
+		llmCalls.Add(1)
+
+		if d := llmDelayMs.Load(); d > 0 {
+			time.Sleep(time.Duration(d) * time.Millisecond)
+		}
+
+		model := body.Model
+		if model == "" {
+			model = "gemini-pro-orchestrator-neon"
+		}
+		effort := body.Effort
+		if effort == "" {
+			effort = "medium"
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = fmt.Fprintf(w, `{
+			"model": %q,
+			"applied_effort": %q,
+			"usage": {"inputTokens": 400, "outputTokens": 250, "thoughtTokens": 50, "totalTokens": 700},
+			"message": {"role": "assistant", "content": "{\"proposal\":\"Tailored Go & PostgreSQL proposal\",\"execution_prompt\":\"Build and verify\",\"time_estimate\":\"1-2 weeks\",\"workload_division\":\"Backend 70%% / QA 30%%\",\"questions_for_client\":[\"Any staging DB?\"],\"tips_and_advice\":[\"Highlight Postgres migrations\"],\"tone_analysis\":\"Direct\"}"}
+		}`, model, effort)
+	}))
+	defer mockLLM.Close()
+
+	t.Setenv("LLM_PROVIDER", "agy")
+	t.Setenv("AGY_ENDPOINT_URL", mockLLM.URL)
+
+	var searchRPCQueries []string
+	var searchRPCMu sync.Mutex
+	var detailCalls atomic.Int32
+	longCardDesc := strings.Repeat("Build scalable Go microservices and PostgreSQL pipelines with strict Playwright E2E coverage. ", 5)
+
+	_, _ = startMockWSServerAndClient(t, backend, func(method string, params json.RawMessage) (any, *mockRPCError) {
+		switch method {
+		case "jobs.search":
+			searchRPCMu.Lock()
+			searchRPCQueries = append(searchRPCQueries, string(params))
+			searchRPCMu.Unlock()
+			return map[string]any{
+				"ok":             true,
+				"stopped_reason": "completed",
+				"jobs": []map[string]any{
+					{
+						"upwork_job_id":    "~0550000000000000001",
+						"job_title":        "Hourly Go & PostgreSQL Architect",
+						"job_description":  longCardDesc,
+						"url":              "https://www.upwork.com/jobs/~0550000000000000001/",
+						"contract_type":    "hourly",
+						"rate_range":       "$90.00 - $125.00/hr",
+						"skills":           []string{"Go", "PostgreSQL"},
+						"payment_verified": true,
+						"proposals_count":  4,
+						"source_query":     "Go",
+						"score_breakdown":  map[string]any{"skills": 45},
+						"qualifications":   map[string]any{"location": "United States"},
+					},
+					{
+						"upwork_job_id":    "~0550000000000000002",
+						"job_title":        "Low-Rate Unverified Gig",
+						"job_description":  "Cheap quick fix.",
+						"url":              "https://www.upwork.com/jobs/~0550000000000000002/",
+						"contract_type":    "hourly",
+						"rate_range":       "$15.00 - $20.00/hr",
+						"skills":           []string{"PHP"},
+						"payment_verified": false,
+						"proposals_count":  25,
+					},
+				},
+			}, nil
+		case "jobs.detail":
+			detailCalls.Add(1)
+			var p struct {
+				URL         string `json:"url"`
+				UpworkJobID string `json:"upwork_job_id"`
+			}
+			_ = json.Unmarshal(params, &p)
+			uid := p.UpworkJobID
+			if uid == "" {
+				uid = "~0550000000000000001"
+			}
+			return map[string]any{
+				"ok":             true,
+				"stopped_reason": "completed",
+				"job": map[string]any{
+					"upwork_job_id":     uid,
+					"job_title":         "Hourly Go & PostgreSQL Architect",
+					"job_description":   "Full detailed description mentioning Core Web Vitals and 30+ hrs/week.",
+					"url":               fmt.Sprintf("https://www.upwork.com/jobs/%s/", uid),
+					"contract_type":     "hourly",
+					"rate_range":        "$90.00 - $125.00/hr",
+					"skills":            []string{"Go", "PostgreSQL"},
+					"payment_verified":  true,
+					"hours_per_week":    "30+ hrs/week",
+					"duration":          "3 to 6 months",
+					"connects_required": 10,
+					"screening_questions": []map[string]any{
+						{"index": 0, "prompt": "Describe your Go concurrency experience", "required": true},
+					},
+				},
+			}, nil
+		default:
+			return defaultMockHandler()(method, params)
+		}
+	})
+
+	session := connectInMemoryClient(t, mcpSrv)
+	ctx := context.Background()
+
+	// Seed profile & NDA active projects
+	targetRate := 95.0
+	if _, err := backend.SaveProfile(ctx, server.SaveProfileInput{
+		Description: "Senior Go & PostgreSQL architect.",
+		Skills: server.FlexibleSkills{
+			Text:  "Go, PostgreSQL, TypeScript",
+			Slice: []string{"Go", "PostgreSQL", "TypeScript"},
+			Set:   true,
+		},
+		TargetRate: &targetRate,
+	}); err != nil {
+		t.Fatalf("SaveProfile failed: %v", err)
+	}
+	if _, err := backend.SyncActiveProjects(ctx, server.SyncActiveProjectsRequest{
+		Projects: []server.SyncActiveProjectItem{
+			{
+				ProjectKey:         "edfx/nda-go-core",
+				Slug:               "nda-go-core",
+				Name:               "TopSecretClientPortal",
+				Client:             "SecretClientCorp",
+				GroupName:          "confidential-group",
+				Path:               "/srv/nda/secret-client-path",
+				ActivityTier:       "active",
+				Status:             "active",
+				ProposalVisibility: "anonymized",
+				PublicAlias:        "Enterprise Go Platform",
+				TechStack:          []string{"Go", "PostgreSQL"},
+				Summary:            "Confidential proprietary summary.",
+			},
+			{
+				ProjectKey:         "edfx/private-vault",
+				Slug:               "private-vault",
+				Name:               "PrivateVaultApp",
+				Client:             "PrivateVaultCorp",
+				ActivityTier:       "active",
+				Status:             "active",
+				ProposalVisibility: "private",
+				TechStack:          []string{"PrivateOnlyStack"},
+				Summary:            "Strictly private.",
+			},
+		},
+	}); err != nil {
+		t.Fatalf("SyncActiveProjects failed: %v", err)
+	}
+
+	// 1. upwork_search_jobs with 0 LLM tokens, skip_auto_detail_enrich, hourly_rate_min, payment_verified_only, compact=true
+	searchRes, err := session.CallTool(ctx, &mcp.CallToolParams{
+		Name: "upwork_search_jobs",
+		Arguments: map[string]any{
+			"source":                  "search",
+			"query":                   "Go",
+			"max_pages":               1,
+			"hourly_rate_min":         70,
+			"payment_verified_only":   true,
+			"skip_auto_detail_enrich": true,
+			"run_label":               "m5-zero-token-go",
+			"compact":                 true,
+		},
+	})
+	if err != nil || searchRes.IsError {
+		t.Fatalf("upwork_search_jobs failed: res=%+v err=%v", searchRes, err)
+	}
+	if llmCalls.Load() != 0 {
+		t.Fatalf("expected 0 LLM calls during upwork_search_jobs, got %d", llmCalls.Load())
+	}
+	if detailCalls.Load() != 0 {
+		t.Fatalf("expected 0 detail RPC calls with skip_auto_detail_enrich=true, got %d", detailCalls.Load())
+	}
+	searchJSON := parseToolJSON(t, searchRes)
+	runIDFloat, ok := searchJSON["search_run_id"].(float64)
+	if !ok || runIDFloat <= 0 {
+		t.Fatalf("expected search_run_id > 0, got %+v", searchJSON["search_run_id"])
+	}
+	searchRunID := uint(runIDFloat)
+	dashURL, _ := searchJSON["dashboard_url"].(string)
+	if !strings.Contains(dashURL, "/dashboard/") || !strings.Contains(dashURL, "ticket=") {
+		t.Fatalf("expected dashboard_url with /dashboard/ and ticket=, got %q", dashURL)
+	}
+	searchJobsSlice, _ := searchJSON["jobs"].([]any)
+	if len(searchJobsSlice) != 1 {
+		t.Fatalf("expected 1 surviving job after hourly/payment filter, got %d (%+v)", len(searchJobsSlice), searchJobsSlice)
+	}
+	firstSearchJob := searchJobsSlice[0].(map[string]any)
+	if desc, _ := firstSearchJob["job_description"].(string); len([]rune(desc)) >= 200 {
+		t.Fatalf("expected compact job_description < 200 chars, got %d", len([]rune(desc)))
+	}
+	for _, omitted := range []string{"score_breakdown", "qualifications", "screening_questions", "attachments"} {
+		if _, exists := firstSearchJob[omitted]; exists {
+			t.Fatalf("expected %q omitted in compact upwork_search_jobs output", omitted)
+		}
+	}
+
+	// 2. upwork_search_jobs with from_active_projects=true (NDA-safe verification)
+	searchRPCMu.Lock()
+	searchRPCQueries = nil
+	searchRPCMu.Unlock()
+
+	ndaSearchRes, err := session.CallTool(ctx, &mcp.CallToolParams{
+		Name: "upwork_search_jobs",
+		Arguments: map[string]any{
+			"from_active_projects":    true,
+			"skip_auto_detail_enrich": true,
+			"run_label":               "m5-nda-seeded",
+			"compact":                 true,
+		},
+	})
+	if err != nil || ndaSearchRes.IsError {
+		t.Fatalf("upwork_search_jobs(from_active_projects) failed: res=%+v err=%v", ndaSearchRes, err)
+	}
+	searchRPCMu.Lock()
+	joinedRPC := strings.ToLower(strings.Join(searchRPCQueries, "\n"))
+	searchRPCMu.Unlock()
+	if !strings.Contains(joinedRPC, "go") && !strings.Contains(joinedRPC, "postgresql") {
+		t.Fatalf("expected active project tech_stack queries in jobs.search RPC, got %q", joinedRPC)
+	}
+	for _, forbidden := range []string{
+		"edfx/nda-go-core", "edfx/private-vault", "topsecretclientportal",
+		"secretclientcorp", "confidential-group", "/srv/nda/secret-client-path",
+		"enterprise go platform", "confidential proprietary summary",
+		"privateonlystack", "privatevaultapp", "privatevaultcorp",
+	} {
+		if strings.Contains(joinedRPC, forbidden) {
+			t.Fatalf("NDA leakage detected (%q) in jobs.search RPC: %s", forbidden, joinedRPC)
+		}
+	}
+
+	// 3. upwork_list_saved_jobs with new filters + dashboard_url + WEB_UI_ENABLED=false omission
+	listRes, err := session.CallTool(ctx, &mcp.CallToolParams{
+		Name: "upwork_list_saved_jobs",
+		Arguments: map[string]any{
+			"search_run_id":     searchRunID,
+			"contract_type":     "hourly",
+			"hourly_rate_min":   70,
+			"enrichment_status": "none",
+			"matched_project":   "Enterprise Go Platform",
+			"sort":              "enriched_desc",
+			"compact":           true,
+		},
+	})
+	if err != nil || listRes.IsError {
+		t.Fatalf("upwork_list_saved_jobs failed: res=%+v err=%v", listRes, err)
+	}
+	listJSON := parseToolJSON(t, listRes)
+	if total, _ := listJSON["total"].(float64); total != 1 {
+		t.Fatalf("expected total=1, got %+v", listJSON["total"])
+	}
+	listDashURL, _ := listJSON["dashboard_url"].(string)
+	if !strings.Contains(listDashURL, "/dashboard/") || !strings.Contains(listDashURL, "run=") || !strings.Contains(listDashURL, "ticket=") {
+		t.Fatalf("expected dashboard_url with run= and ticket=, got %q", listDashURL)
+	}
+
+	t.Setenv("WEB_UI_ENABLED", "false")
+	listNoWebRes, err := session.CallTool(ctx, &mcp.CallToolParams{
+		Name:      "upwork_list_saved_jobs",
+		Arguments: map[string]any{"search_run_id": searchRunID, "compact": true},
+	})
+	if err != nil || listNoWebRes.IsError {
+		t.Fatalf("upwork_list_saved_jobs(WEB_UI_ENABLED=false) failed: res=%+v err=%v", listNoWebRes, err)
+	}
+	listNoWebJSON := parseToolJSON(t, listNoWebRes)
+	if _, hasDash := listNoWebJSON["dashboard_url"]; hasDash {
+		t.Fatalf("expected dashboard_url omitted when WEB_UI_ENABLED=false, got %+v", listNoWebJSON["dashboard_url"])
+	}
+	t.Setenv("WEB_UI_ENABLED", "true")
+
+	// 4. upwork_analyze_job with ensure_details=true + use_llm=true
+	analyzeRes, err := session.CallTool(ctx, &mcp.CallToolParams{
+		Name: "upwork_analyze_job",
+		Arguments: map[string]any{
+			"job_id":         "~0550000000000000001",
+			"ensure_details": true,
+			"use_llm":        true,
+		},
+	})
+	if err != nil || analyzeRes.IsError {
+		t.Fatalf("upwork_analyze_job failed: res=%+v err=%v", analyzeRes, err)
+	}
+	if detailCalls.Load() != 1 || llmCalls.Load() != 1 {
+		t.Fatalf("expected 1 detail call and 1 LLM call, got detail=%d llm=%d", detailCalls.Load(), llmCalls.Load())
+	}
+	promptStr, _ := lastLLMPrompt.Load().(string)
+	if !strings.Contains(promptStr, "30+ hrs/week") {
+		t.Fatalf("expected detail signals injected into LLM prompt, got %q", promptStr)
+	}
+	analyzeJSON := parseToolJSON(t, analyzeRes)
+	analyzedJob := analyzeJSON["job"].(map[string]any)
+	if analyzedJob["ai_enrichment_status"] != "completed" {
+		t.Fatalf("expected ai_enrichment_status=completed, got %+v", analyzedJob["ai_enrichment_status"])
+	}
+	if analyzeJSON["ai_model"] == "" || analyzeJSON["ai_effort"] == "" || analyzeJSON["ai_enriched_at"] == "" {
+		t.Fatalf("expected ai_model, ai_effort, ai_enriched_at on analyze response: %+v", analyzeJSON)
+	}
+	usageMap, _ := analyzeJSON["usage"].(map[string]any)
+	if totalTok, _ := usageMap["total_tokens"].(float64); totalTok <= 0 {
+		t.Fatalf("expected usage.total_tokens > 0, got %+v", usageMap)
+	}
+
+	// Verify has_ai_analysis=true filter on upwork_list_saved_jobs
+	hasAI := true
+	aiListRes, err := session.CallTool(ctx, &mcp.CallToolParams{
+		Name: "upwork_list_saved_jobs",
+		Arguments: map[string]any{
+			"has_ai_analysis":   hasAI,
+			"enrichment_status": "completed",
+			"compact":           true,
+		},
+	})
+	if err != nil || aiListRes.IsError {
+		t.Fatalf("upwork_list_saved_jobs(has_ai_analysis) failed: res=%+v err=%v", aiListRes, err)
+	}
+	if total, _ := parseToolJSON(t, aiListRes)["total"].(float64); total != 1 {
+		t.Fatalf("expected 1 AI-analyzed job, got %+v", parseToolJSON(t, aiListRes))
+	}
+
+	// 5. upwork_save_jobs (dedup + sort_by_score + compact + 0 LLM tokens + INVALID_PARAMS on malformed JSONB)
+	saveRes, err := session.CallTool(ctx, &mcp.CallToolParams{
+		Name: "upwork_save_jobs",
+		Arguments: map[string]any{
+			"run_label":     "m5-curated-save",
+			"source":        "curated",
+			"sort_by_score": true,
+			"compact":       true,
+			"jobs": []map[string]any{
+				{
+					"upwork_job_id":    "~0660000000000000001",
+					"job_title":        "Curated Go & PostgreSQL Backend",
+					"job_description":  longCardDesc,
+					"url":              "https://www.upwork.com/jobs/~0660000000000000001/",
+					"contract_type":    "fixed",
+					"budget_amount":    "$2,000.00",
+					"skills":           []string{"Go", "PostgreSQL"},
+					"payment_verified": true,
+				},
+				{
+					"upwork_job_id":    "~0660000000000000002",
+					"job_title":        "Curated TypeScript QA",
+					"job_description":  "TypeScript and Playwright test suite.",
+					"url":              "https://www.upwork.com/jobs/~0660000000000000002/",
+					"contract_type":    "hourly",
+					"rate_range":       "$90.00/hr",
+					"skills":           []string{"TypeScript", "Playwright"},
+					"payment_verified": true,
+				},
+				{
+					"upwork_job_id":   "~0660000000000000001",
+					"job_title":       "Curated Go & PostgreSQL Backend (dup)",
+					"job_description": "Duplicate job in same batch.",
+					"url":             "https://www.upwork.com/jobs/~0660000000000000001/",
+				},
+			},
+		},
+	})
+	if err != nil || saveRes.IsError {
+		t.Fatalf("upwork_save_jobs failed: res=%+v err=%v", saveRes, err)
+	}
+	if llmCalls.Load() != 1 {
+		t.Fatalf("expected upwork_save_jobs to spend 0 extra LLM calls, got %d", llmCalls.Load())
+	}
+	saveJSON := parseToolJSON(t, saveRes)
+	if saveJSON["total_received"] != float64(3) || saveJSON["deduplicated_count"] != float64(2) || saveJSON["persisted_count"] != float64(2) {
+		t.Fatalf("unexpected upwork_save_jobs counts: %+v", saveJSON)
+	}
+	if srID, _ := saveJSON["search_run_id"].(float64); srID <= 0 {
+		t.Fatalf("expected search_run_id > 0 from upwork_save_jobs, got %+v", saveJSON["search_run_id"])
+	}
+	if savedSlice, _ := saveJSON["jobs"].([]any); len(savedSlice) != 2 {
+		t.Fatalf("expected 2 saved jobs, got %d", len(savedSlice))
+	} else {
+		firstSaved := savedSlice[0].(map[string]any)
+		if d, _ := firstSaved["job_description"].(string); len([]rune(d)) >= 200 {
+			t.Fatalf("expected compact saved description < 200 chars, got %d", len([]rune(d)))
+		}
+	}
+
+	badJSONSaveRes, err := session.CallTool(ctx, &mcp.CallToolParams{
+		Name: "upwork_save_jobs",
+		Arguments: map[string]any{
+			"jobs": []map[string]any{
+				{
+					"upwork_job_id": "~0660000000000000099",
+					"job_title":     "Invalid JSONB Job",
+					"url":           "https://www.upwork.com/jobs/~0660000000000000099/",
+					"proposal_json": "{bad-json",
+				},
+			},
+		},
+	})
+	if err != nil || !badJSONSaveRes.IsError || !strings.Contains(toolErrorText(badJSONSaveRes), "INVALID_PARAMS") {
+		t.Fatalf("expected INVALID_PARAMS on malformed proposal_json, got res=%+v err=%v", badJSONSaveRes, err)
+	}
+
+	// 6. upwork_enrich_jobs: force=false skip-cached vs force=true + ENRICHMENT_MAX_BATCH_SIZE cap
+	enrichSkipRes, err := session.CallTool(ctx, &mcp.CallToolParams{
+		Name: "upwork_enrich_jobs",
+		Arguments: map[string]any{
+			"job_ids": []any{"~0550000000000000001", "~0660000000000000001"},
+			"mode":    "full",
+			"force":   false,
+			"wait":    true,
+		},
+	})
+	if err != nil || enrichSkipRes.IsError {
+		t.Fatalf("upwork_enrich_jobs(force=false) failed: res=%+v err=%v", enrichSkipRes, err)
+	}
+	skipBatch := parseToolJSON(t, enrichSkipRes)["batch"].(map[string]any)
+	if skipBatch["status"] != "completed" || skipBatch["skipped_count"] != float64(1) || skipBatch["completed_count"] != float64(1) {
+		t.Fatalf("unexpected force=false batch summary: %+v", skipBatch)
+	}
+	if llmCalls.Load() != 2 {
+		t.Fatalf("expected 1 additional LLM call (total 2) with force=false, got %d", llmCalls.Load())
+	}
+
+	enrichForceRes, err := session.CallTool(ctx, &mcp.CallToolParams{
+		Name: "upwork_enrich_jobs",
+		Arguments: map[string]any{
+			"job_ids": []any{"~0550000000000000001"},
+			"mode":    "ai_only",
+			"force":   true,
+			"wait":    true,
+		},
+	})
+	if err != nil || enrichForceRes.IsError {
+		t.Fatalf("upwork_enrich_jobs(force=true) failed: res=%+v err=%v", enrichForceRes, err)
+	}
+	forceBatch := parseToolJSON(t, enrichForceRes)["batch"].(map[string]any)
+	if forceBatch["skipped_count"] != float64(0) || forceBatch["completed_count"] != float64(1) || llmCalls.Load() != 3 {
+		t.Fatalf("unexpected force=true batch summary: %+v llmCalls=%d", forceBatch, llmCalls.Load())
+	}
+
+	t.Setenv("ENRICHMENT_MAX_BATCH_SIZE", "2")
+	capErrRes, err := session.CallTool(ctx, &mcp.CallToolParams{
+		Name: "upwork_enrich_jobs",
+		Arguments: map[string]any{
+			"job_ids": []any{"~0550000000000000001", "~0660000000000000001", "~0660000000000000002"},
+			"mode":    "ai_only",
+		},
+	})
+	if err != nil || !capErrRes.IsError || !strings.Contains(toolErrorText(capErrRes), "INVALID_PARAMS") {
+		t.Fatalf("expected INVALID_PARAMS when exceeding ENRICHMENT_MAX_BATCH_SIZE, got res=%+v err=%v", capErrRes, err)
+	}
+	t.Setenv("ENRICHMENT_MAX_BATCH_SIZE", "25")
+
+	// 7. Async upwork_enrich_jobs + upwork_enrichment_batches (cancel, get, list)
+	llmDelayMs.Store(350)
+	asyncRes, err := session.CallTool(ctx, &mcp.CallToolParams{
+		Name: "upwork_enrich_jobs",
+		Arguments: map[string]any{
+			"job_ids":         []any{"~0550000000000000001", "~0660000000000000001", "~0660000000000000002"},
+			"mode":            "ai_only",
+			"force":           true,
+			"max_concurrency": 1,
+			"wait":            false,
+		},
+	})
+	if err != nil || asyncRes.IsError {
+		t.Fatalf("async upwork_enrich_jobs failed: res=%+v err=%v", asyncRes, err)
+	}
+	asyncBatch := parseToolJSON(t, asyncRes)["batch"].(map[string]any)
+	asyncBatchID := uint(asyncBatch["id"].(float64))
+	if asyncBatchID == 0 {
+		t.Fatalf("expected async batch id > 0, got %+v", asyncBatch)
+	}
+
+	cancelRes, err := session.CallTool(ctx, &mcp.CallToolParams{
+		Name: "upwork_enrichment_batches",
+		Arguments: map[string]any{
+			"action":   "cancel",
+			"batch_id": asyncBatchID,
+		},
+	})
+	if err != nil || cancelRes.IsError {
+		t.Fatalf("upwork_enrichment_batches(cancel) failed: res=%+v err=%v", cancelRes, err)
+	}
+	cancelBatch := parseToolJSON(t, cancelRes)["batch"].(map[string]any)
+	if cancelBatch["status"] != "canceled" && cancelBatch["canceled_count"].(float64) < 1 {
+		t.Fatalf("expected canceled status or canceled items, got %+v", cancelBatch)
+	}
+
+	getRes, err := session.CallTool(ctx, &mcp.CallToolParams{
+		Name: "upwork_enrichment_batches",
+		Arguments: map[string]any{
+			"action":   "get",
+			"batch_id": asyncBatchID,
+		},
+	})
+	if err != nil || getRes.IsError {
+		t.Fatalf("upwork_enrichment_batches(get) failed: res=%+v err=%v", getRes, err)
+	}
+	getBatch := parseToolJSON(t, getRes)["batch"].(map[string]any)
+	if uint(getBatch["id"].(float64)) != asyncBatchID {
+		t.Fatalf("expected batch %d, got %+v", asyncBatchID, getBatch)
+	}
+
+	listBatchRes, err := session.CallTool(ctx, &mcp.CallToolParams{
+		Name: "upwork_enrichment_batches",
+		Arguments: map[string]any{
+			"action": "list",
+		},
+	})
+	if err != nil || listBatchRes.IsError {
+		t.Fatalf("upwork_enrichment_batches(list) failed: res=%+v err=%v", listBatchRes, err)
+	}
+	listBatchJSON := parseToolJSON(t, listBatchRes)
+	if total, _ := listBatchJSON["total"].(float64); total < 3 {
+		t.Fatalf("expected >= 3 enrichment batches, got %+v", listBatchJSON)
+	}
+
+	// 8. Verify new resources: upwork://jobs/search-runs and upwork://jobs/enrichment-batches
+	runsRR, err := session.ReadResource(ctx, &mcp.ReadResourceParams{URI: "upwork://jobs/search-runs"})
+	if err != nil || len(runsRR.Contents) == 0 {
+		t.Fatalf("ReadResource(upwork://jobs/search-runs) failed: %v", err)
+	}
+	runsText := runsRR.Contents[0].Text
+	if !strings.Contains(runsText, "m5-zero-token-go") || !strings.Contains(runsText, "m5-nda-seeded") || !strings.Contains(runsText, "m5-curated-save") {
+		t.Fatalf("expected search run labels in upwork://jobs/search-runs, got %s", runsText)
+	}
+
+	batchesRR, err := session.ReadResource(ctx, &mcp.ReadResourceParams{URI: "upwork://jobs/enrichment-batches"})
+	if err != nil || len(batchesRR.Contents) == 0 {
+		t.Fatalf("ReadResource(upwork://jobs/enrichment-batches) failed: %v", err)
+	}
+	if !strings.Contains(batchesRR.Contents[0].Text, fmt.Sprintf(`"id":%d`, asyncBatchID)) {
+		t.Fatalf("expected batch %d in upwork://jobs/enrichment-batches, got %s", asyncBatchID, batchesRR.Contents[0].Text)
+	}
+
+	// 9. Adversarial boundary regressions: ID overflow, float truncation, empty save job {}, and limit <= 0
+	for _, badID := range []any{"0", "9223372036854775808", "18446744073709551615", float64(18446744073709551615), float64(1.5), float64(0)} {
+		detErrRes, err := session.CallTool(ctx, &mcp.CallToolParams{
+			Name:      "upwork_get_job_details",
+			Arguments: map[string]any{"job_id": badID},
+		})
+		if err != nil || !detErrRes.IsError || !strings.Contains(toolErrorText(detErrRes), "INVALID_PARAMS") {
+			t.Fatalf("upwork_get_job_details(%#v) expected INVALID_PARAMS, got res=%+v err=%v", badID, detErrRes, err)
+		}
+
+		analyzeErrRes, err := session.CallTool(ctx, &mcp.CallToolParams{
+			Name:      "upwork_analyze_job",
+			Arguments: map[string]any{"job_id": badID, "use_llm": false},
+		})
+		if err != nil || !analyzeErrRes.IsError || !strings.Contains(toolErrorText(analyzeErrRes), "INVALID_PARAMS") {
+			t.Fatalf("upwork_analyze_job(%#v) expected INVALID_PARAMS, got res=%+v err=%v", badID, analyzeErrRes, err)
+		}
+	}
+
+	for _, action := range []string{"get", "cancel"} {
+		for _, badBatchID := range []uint64{0, 9223372036854775808} {
+			batchErrRes, err := session.CallTool(ctx, &mcp.CallToolParams{
+				Name:      "upwork_enrichment_batches",
+				Arguments: map[string]any{"action": action, "batch_id": badBatchID},
+			})
+			if err != nil || !batchErrRes.IsError || !strings.Contains(toolErrorText(batchErrRes), "INVALID_PARAMS") {
+				t.Fatalf("upwork_enrichment_batches(%s, %d) expected INVALID_PARAMS, got res=%+v err=%v", action, badBatchID, batchErrRes, err)
+			}
+		}
+	}
+
+	for _, action := range []string{"delete", "run"} {
+		for _, badProfID := range []uint64{0, 9223372036854775808} {
+			profErrRes, err := session.CallTool(ctx, &mcp.CallToolParams{
+				Name:      "upwork_manage_search_profiles",
+				Arguments: map[string]any{"action": action, "id": badProfID},
+			})
+			if err != nil || !profErrRes.IsError || !strings.Contains(toolErrorText(profErrRes), "INVALID_PARAMS") {
+				t.Fatalf("upwork_manage_search_profiles(%s, %d) expected INVALID_PARAMS, got res=%+v err=%v", action, badProfID, profErrRes, err)
+			}
+		}
+	}
+
+	emptyObjSaveRes, err := session.CallTool(ctx, &mcp.CallToolParams{
+		Name:      "upwork_save_jobs",
+		Arguments: map[string]any{"jobs": []map[string]any{{}}},
+	})
+	if err != nil || !emptyObjSaveRes.IsError || !strings.Contains(toolErrorText(emptyObjSaveRes), "INVALID_PARAMS") {
+		t.Fatalf("upwork_save_jobs([{}]) expected INVALID_PARAMS, got res=%+v err=%v", emptyObjSaveRes, err)
+	}
+
+	for _, badLimit := range []int{0, -1, -50} {
+		badLimitRes, err := session.CallTool(ctx, &mcp.CallToolParams{
+			Name:      "upwork_list_saved_jobs",
+			Arguments: map[string]any{"limit": badLimit},
+		})
+		if err != nil || !badLimitRes.IsError || !strings.Contains(toolErrorText(badLimitRes), "INVALID_PARAMS") {
+			t.Fatalf("upwork_list_saved_jobs(limit=%d) expected INVALID_PARAMS, got res=%+v err=%v", badLimit, badLimitRes, err)
+		}
+	}
+
+	// Omitted limit continues to default cleanly
+	omittedLimitRes, err := session.CallTool(ctx, &mcp.CallToolParams{
+		Name:      "upwork_list_saved_jobs",
+		Arguments: map[string]any{"compact": true},
+	})
+	if err != nil || omittedLimitRes.IsError {
+		t.Fatalf("upwork_list_saved_jobs(omitted limit) failed: res=%+v err=%v", omittedLimitRes, err)
+	}
+}

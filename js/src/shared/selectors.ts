@@ -135,6 +135,8 @@ const FEED_FIELDS: ViewSelectorConfig['fields'] = {
     selectors: [
       "strong[data-test='payment-verification-status']",
       '.air3-badge-tagline-sm.is-verified',
+      "[data-qa='payment-verified']",
+      "[data-test='payment-verified']",
     ],
     extract: 'text',
     auth_only: true,
@@ -344,6 +346,8 @@ export const BUNDLED_SELECTORS: SelectorConfig = {
           selectors: [
             "strong[data-test='payment-verification-status']",
             '.air3-badge-tagline-sm.is-verified',
+            "[data-qa='payment-verified']",
+            "[data-test='payment-verified']",
           ],
           extract: 'text',
           auth_only: true,

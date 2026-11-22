@@ -82,10 +82,12 @@ func (JSONB) GormDBDataType(db *gorm.DB, _ *schema.Field) string {
 func AllModels() []any {
 	return []any{
 		&User{},
+		&SearchProfile{},
+		&SearchRun{},
 		&Job{},
+		&SearchRunJob{},
 		&Profile{},
 		&PortfolioItem{},
-		&SearchProfile{},
 		&Proposal{},
 		&MessageThread{},
 		&Message{},
@@ -94,6 +96,9 @@ func AllModels() []any {
 		&UIDiagnosticCapture{},
 		&ActionAuditLog{},
 		&PolicyConfig{},
+		&ActiveProject{},
+		&EnrichmentBatch{},
+		&EnrichmentBatchItem{},
 	}
 }
 
@@ -171,6 +176,16 @@ type Job struct {
 	TipsAndAdvice       string `gorm:"type:text"`
 	ExecutionPrompt     string `gorm:"type:text"`
 	ToneAnalysis        string `gorm:"type:text"`
+
+	// AI Enrichment & Search Provenance
+	AIEnrichmentStatus string     `gorm:"type:text;not null;default:'none';index:idx_jobs_ai_enrichment_status"` // "none" | "queued" | "scraping_details" | "analyzing" | "completed" | "failed"
+	AIEnrichedAt       *time.Time `gorm:"type:timestamp(3);index:idx_jobs_ai_enriched_at"`
+	AIEnrichmentError  string     `gorm:"type:text;not null;default:''"`
+	AIModel            string     `gorm:"type:text;not null;default:''"`
+	AIEffort           string     `gorm:"type:text;not null;default:''"`
+	AITokensUsed       *int       `gorm:"type:integer"`
+	LastSearchRunID    *uint      `gorm:"index:idx_jobs_last_search_run_id"`
+	LastSearchRun      *SearchRun `gorm:"foreignKey:LastSearchRunID;constraint:OnDelete:SET NULL"`
 
 	// Workflow & Ownership
 	Status    string     `gorm:"type:text;index:idx_jobs_status"` // "new" | "ready" | "applied" | "rejected" | "archived"
@@ -349,4 +364,114 @@ type PolicyConfig struct {
 	KillSwitchActive    bool      `gorm:"type:boolean;not null;default:false"`
 	CreatedAt           time.Time `gorm:"type:timestamp(3);default:CURRENT_TIMESTAMP;not null"`
 	UpdatedAt           time.Time `gorm:"type:timestamp(3);not null"`
+}
+
+// ActiveProject stores synced workspace coding/client project telemetry and curated metadata.
+type ActiveProject struct {
+	ID                  uint       `gorm:"primaryKey;autoIncrement"`
+	ProjectKey          string     `gorm:"type:text;not null;uniqueIndex:idx_active_projects_key"`
+	Slug                string     `gorm:"type:text;not null;default:'';index:idx_active_projects_slug"`
+	Name                string     `gorm:"type:text;not null"`
+	Path                string     `gorm:"type:text;not null;default:''"`
+	GroupName           string     `gorm:"type:text;not null;default:'standalone';index:idx_active_projects_group_name"`
+	ActivityTier        string     `gorm:"type:text;not null;default:'paused';index:idx_active_projects_tier"` // "active" | "recent" | "paused"
+	Status              string     `gorm:"type:text;not null;default:'active';index:idx_active_projects_status"`
+	Client              string     `gorm:"type:text;not null;default:''"`
+	ProposalVisibility  string     `gorm:"type:text;not null;default:'anonymized';index:idx_active_projects_visibility"` // "public" | "anonymized" | "private"
+	PublicAlias         string     `gorm:"type:text;not null;default:''"`
+	TechStackJSON       JSONB      `gorm:"type:jsonb"`
+	Summary             string     `gorm:"type:text;not null;default:''"`
+	ReadmeHint          string     `gorm:"type:text;not null;default:''"`
+	NextActionsJSON     JSONB      `gorm:"type:jsonb"`
+	BlockersJSON        JSONB      `gorm:"type:jsonb"`
+	Notes               string     `gorm:"type:text;not null;default:''"`
+	Pinned              bool       `gorm:"type:boolean;not null;default:false"`
+	IsGitRepo           bool       `gorm:"type:boolean;not null;default:false"`
+	GitBranch           string     `gorm:"type:text;not null;default:''"`
+	GitHead             string     `gorm:"type:text;not null;default:''"`
+	GitDirtyCount       int        `gorm:"type:integer;not null;default:0"`
+	LastCommitAt        *time.Time `gorm:"type:timestamp(3)"`
+	LastCommitSubject   string     `gorm:"type:text;not null;default:''"`
+	Commits7d           int        `gorm:"type:integer;not null;default:0"`
+	LastClaudeSessionAt *time.Time `gorm:"type:timestamp(3)"`
+	LastAntigravityAt   *time.Time `gorm:"type:timestamp(3)"`
+	LastActivityAt      *time.Time `gorm:"type:timestamp(3);index:idx_active_projects_last_activity"`
+	CuratedUpdatedAt    *time.Time `gorm:"type:timestamp(3)"`
+	CuratedUpdatedBy    string     `gorm:"type:text;not null;default:''"`
+	CreatedAt           time.Time  `gorm:"type:timestamp(3);default:CURRENT_TIMESTAMP;not null"`
+	UpdatedAt           time.Time  `gorm:"type:timestamp(3);not null"`
+}
+
+// SearchRun records metadata and counts for a discovery/ingestion run (0 LLM tokens).
+type SearchRun struct {
+	ID                  uint      `gorm:"primaryKey;autoIncrement"`
+	Label               string    `gorm:"type:text;not null;default:''"`
+	Source              string    `gorm:"type:text;not null;default:''"`
+	TriggeredBy         string    `gorm:"type:text;not null;default:''"` // "api" | "mcp" | "ui" | "web" | "profile"
+	ProfileID           *uint     `gorm:"index:idx_search_runs_profile_id"`
+	ProjectKeysJSON     JSONB     `gorm:"type:jsonb"`
+	QueriesJSON         JSONB     `gorm:"type:jsonb"`
+	CriteriaJSON        JSONB     `gorm:"type:jsonb"`
+	TotalScraped        int       `gorm:"type:integer;not null;default:0"`
+	FilteredCount       int       `gorm:"type:integer;not null;default:0"`
+	PersistedCount      int       `gorm:"type:integer;not null;default:0"`
+	DetailEnrichedCount int       `gorm:"type:integer;not null;default:0"`
+	StoppedReason       string    `gorm:"type:text;not null;default:''"`
+	CreatedAt           time.Time `gorm:"type:timestamp(3);default:CURRENT_TIMESTAMP;not null;index:idx_search_runs_created_at"`
+}
+
+// SearchRunJob links persisted jobs to the search runs that discovered or touched them.
+type SearchRunJob struct {
+	SearchRunID uint       `gorm:"primaryKey;autoIncrement:false"`
+	JobID       uint       `gorm:"primaryKey;autoIncrement:false;index:idx_search_run_jobs_job_id"`
+	SearchRun   *SearchRun `gorm:"foreignKey:SearchRunID;constraint:OnDelete:CASCADE"`
+	Job         *Job       `gorm:"foreignKey:JobID;constraint:OnDelete:CASCADE"`
+	CreatedAt   time.Time  `gorm:"type:timestamp(3);default:CURRENT_TIMESTAMP;not null"`
+}
+
+// EnrichmentBatch tracks a cancelable async batch AI/detail enrichment job queue.
+type EnrichmentBatch struct {
+	ID              uint       `gorm:"primaryKey;autoIncrement"`
+	Mode            string     `gorm:"type:text;not null;default:'full'"` // "full" | "ai_only" | "detail_only"
+	TriggeredBy     string     `gorm:"type:text;not null;default:''"`     // "ui" | "web" | "mcp" | "api"
+	Model           string     `gorm:"type:text;not null;default:''"`
+	Effort          string     `gorm:"type:text;not null;default:''"`
+	Force           bool       `gorm:"type:boolean;not null;default:false"`
+	Status          string     `gorm:"type:text;not null;default:'queued';index:idx_enrichment_batches_status"` // "queued" | "running" | "completed" | "completed_with_errors" | "canceled" | "failed"
+	TotalCount      int        `gorm:"type:integer;not null;default:0"`
+	QueuedCount     int        `gorm:"type:integer;not null;default:0"`
+	RunningCount    int        `gorm:"type:integer;not null;default:0"`
+	CompletedCount  int        `gorm:"type:integer;not null;default:0"`
+	SkippedCount    int        `gorm:"type:integer;not null;default:0"`
+	FailedCount     int        `gorm:"type:integer;not null;default:0"`
+	CanceledCount   int        `gorm:"type:integer;not null;default:0"`
+	TotalTokensUsed int        `gorm:"type:integer;not null;default:0"`
+	CreatedAt       time.Time  `gorm:"type:timestamp(3);default:CURRENT_TIMESTAMP;not null;index:idx_enrichment_batches_created_at"`
+	StartedAt       *time.Time `gorm:"type:timestamp(3)"`
+	CompletedAt     *time.Time `gorm:"type:timestamp(3)"`
+	UpdatedAt       time.Time  `gorm:"type:timestamp(3);not null"`
+}
+
+// EnrichmentBatchItem tracks per-job execution status, token usage, and errors within a batch.
+type EnrichmentBatchItem struct {
+	ID            uint             `gorm:"primaryKey;autoIncrement"`
+	BatchID       uint             `gorm:"not null;index:idx_enrichment_batch_items_batch_id"`
+	Batch         *EnrichmentBatch `gorm:"foreignKey:BatchID;constraint:OnDelete:CASCADE"`
+	JobID         uint             `gorm:"not null;index:idx_enrichment_batch_items_job_id"`
+	Job           *Job             `gorm:"foreignKey:JobID;constraint:OnDelete:CASCADE"`
+	Status        string           `gorm:"type:text;not null;default:'queued';index:idx_enrichment_batch_items_status"` // "queued" | "scraping_details" | "analyzing" | "completed" | "skipped" | "failed" | "canceled"
+	DetailFetched bool             `gorm:"type:boolean;not null;default:false"`
+	LLMInvoked    bool             `gorm:"type:boolean;not null;default:false"`
+	Model         string           `gorm:"type:text;not null;default:''"`
+	Effort        string           `gorm:"type:text;not null;default:''"`
+	InputTokens   int              `gorm:"type:integer;not null;default:0"`
+	OutputTokens  int              `gorm:"type:integer;not null;default:0"`
+	ThoughtTokens int              `gorm:"type:integer;not null;default:0"`
+	TotalTokens   int              `gorm:"type:integer;not null;default:0"`
+	ErrorCode     string           `gorm:"type:text;not null;default:''"`
+	ErrorMessage  string           `gorm:"type:text;not null;default:''"`
+	StartedAt     *time.Time       `gorm:"type:timestamp(3)"`
+	CompletedAt   *time.Time       `gorm:"type:timestamp(3)"`
+	CreatedAt     time.Time        `gorm:"type:timestamp(3);default:CURRENT_TIMESTAMP;not null"`
+	UpdatedAt     time.Time        `gorm:"type:timestamp(3);not null"`
 }

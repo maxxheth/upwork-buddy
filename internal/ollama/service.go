@@ -44,22 +44,57 @@ type Service struct {
 	effort   string
 }
 
+// PortfolioContext represents a relevant portfolio entry included in LLM prompt context.
+type PortfolioContext struct {
+	Title       string `json:"title"`
+	Link        string `json:"link,omitempty"`
+	Description string `json:"description,omitempty"`
+}
+
+// ActiveProjectContext represents a sanitized active project included in LLM prompt context.
+type ActiveProjectContext struct {
+	DisplayName  string   `json:"display_name"`
+	Visibility   string   `json:"visibility"`
+	ActivityTier string   `json:"activity_tier,omitempty"`
+	Summary      string   `json:"summary,omitempty"`
+	RecentFocus  string   `json:"recent_focus,omitempty"`
+	TechStack    []string `json:"tech_stack,omitempty"`
+}
+
 // JobAnalysisRequest contains the job posting and user profile.
 type JobAnalysisRequest struct {
-	JobTitle        string `json:"job_title"`
-	JobDescription  string `json:"job_description"`
-	ContractType    string `json:"contract_type,omitempty"`
-	Budget          string `json:"budget,omitempty"`
-	RateRange       string `json:"rate_range,omitempty"`
-	RateMin         string `json:"rate_min,omitempty"`
-	RateMax         string `json:"rate_max,omitempty"`
-	BudgetAmount    string `json:"budget_amount,omitempty"`
-	Skills          string `json:"skills,omitempty"`
-	ExperienceLevel string `json:"experience_level,omitempty"`
-	UserProfile     string `json:"user_profile"`
-	UserSkills      string `json:"user_skills"`
-	Model           string `json:"model,omitempty"`
-	Effort          string `json:"effort,omitempty"`
+	JobTitle           string                 `json:"job_title"`
+	JobDescription     string                 `json:"job_description"`
+	ContractType       string                 `json:"contract_type,omitempty"`
+	Budget             string                 `json:"budget,omitempty"`
+	RateRange          string                 `json:"rate_range,omitempty"`
+	RateMin            string                 `json:"rate_min,omitempty"`
+	RateMax            string                 `json:"rate_max,omitempty"`
+	BudgetAmount       string                 `json:"budget_amount,omitempty"`
+	Skills             string                 `json:"skills,omitempty"`
+	ExperienceLevel    string                 `json:"experience_level,omitempty"`
+	Duration           string                 `json:"duration,omitempty"`
+	HoursPerWeek       string                 `json:"hours_per_week,omitempty"`
+	ProposalsTier      string                 `json:"proposals_tier,omitempty"`
+	ClientCountry      string                 `json:"client_country,omitempty"`
+	ClientSpent        string                 `json:"client_spent,omitempty"`
+	ClientHireRate     *float64               `json:"client_hire_rate,omitempty"`
+	ScreeningQuestions []string               `json:"screening_questions,omitempty"`
+	UserProfile        string                 `json:"user_profile"`
+	UserSkills         string                 `json:"user_skills"`
+	PortfolioItems     []PortfolioContext     `json:"portfolio_items,omitempty"`
+	ActiveProjects     []ActiveProjectContext `json:"active_projects,omitempty"`
+	WorkloadSummary    string                 `json:"workload_summary,omitempty"`
+	Model              string                 `json:"model,omitempty"`
+	Effort             string                 `json:"effort,omitempty"`
+}
+
+// TokenUsage captures normalized LLM token counts returned by AGY or Ollama.
+type TokenUsage struct {
+	InputTokens   int `json:"input_tokens,omitempty"`
+	OutputTokens  int `json:"output_tokens,omitempty"`
+	ThoughtTokens int `json:"thought_tokens,omitempty"`
+	TotalTokens   int `json:"total_tokens,omitempty"`
 }
 
 // JobAnalysisResponse contains the AI-generated analysis.
@@ -71,6 +106,9 @@ type JobAnalysisResponse struct {
 	QuestionsForClient []string        `json:"questions_for_client"`
 	TipsAndAdvice      []string        `json:"tips_and_advice"`
 	ToneAnalysis       string          `json:"tone_analysis"`
+	Model              string          `json:"model,omitempty"`
+	Effort             string          `json:"effort,omitempty"`
+	Usage              *TokenUsage     `json:"usage,omitempty"`
 }
 
 type chatRequest struct {
@@ -86,11 +124,27 @@ type chatMessage struct {
 	Content string `json:"content"`
 }
 
+type chatUsage struct {
+	InputTokens        int `json:"inputTokens"`
+	OutputTokens       int `json:"outputTokens"`
+	ThoughtTokens      int `json:"thoughtTokens"`
+	TotalTokens        int `json:"totalTokens"`
+	InputTokensSnake   int `json:"input_tokens"`
+	OutputTokensSnake  int `json:"output_tokens"`
+	ThoughtTokensSnake int `json:"thought_tokens"`
+	TotalTokensSnake   int `json:"total_tokens"`
+}
+
 type chatResponse struct {
-	Model     string      `json:"model"`
-	CreatedAt string      `json:"created_at"`
-	Message   chatMessage `json:"message"`
-	Error     string      `json:"error,omitempty"`
+	Model           string      `json:"model"`
+	CreatedAt       string      `json:"created_at"`
+	Message         chatMessage `json:"message"`
+	Error           string      `json:"error,omitempty"`
+	AppliedEffort   string      `json:"applied_effort,omitempty"`
+	EffortApplied   *bool       `json:"effort_applied,omitempty"`
+	Usage           *chatUsage  `json:"usage,omitempty"`
+	PromptEvalCount int         `json:"prompt_eval_count,omitempty"`
+	EvalCount       int         `json:"eval_count,omitempty"`
 }
 
 // ActiveProvider returns the active LLM provider ("agy", "ollama", or "") based on environment configuration.
@@ -325,8 +379,70 @@ func (s *Service) AnalyzeJob(ctx context.Context, req JobAnalysisRequest) (*JobA
 
 	log.Printf("%s chat succeeded: model=%q created_at=%q content_length=%d", s.providerLabel(), chatResp.Model, chatResp.CreatedAt, len(chatResp.Message.Content))
 	result := s.parseResponse(chatResp.Message.Content)
+	respModel := strings.TrimSpace(chatResp.Model)
+	if respModel == "" {
+		respModel = model
+	}
+	result.Model = respModel
+	result.Effort = resolveAppliedEffort(chatResp, s.provider, effort)
+	result.Usage = extractTokenUsage(chatResp)
 	log.Printf("Parsed analysis result: proposal length=%d execution_prompt length=%d", len(result.Proposal), len(result.ExecutionPrompt))
 	return result, nil
+}
+
+func firstPositive(values ...int) int {
+	for _, v := range values {
+		if v > 0 {
+			return v
+		}
+	}
+	return 0
+}
+
+func extractTokenUsage(chatResp *chatResponse) *TokenUsage {
+	if chatResp == nil {
+		return nil
+	}
+	var in, out, thought, total int
+	if chatResp.Usage != nil {
+		in = firstPositive(chatResp.Usage.InputTokens, chatResp.Usage.InputTokensSnake)
+		out = firstPositive(chatResp.Usage.OutputTokens, chatResp.Usage.OutputTokensSnake)
+		thought = firstPositive(chatResp.Usage.ThoughtTokens, chatResp.Usage.ThoughtTokensSnake)
+		total = firstPositive(chatResp.Usage.TotalTokens, chatResp.Usage.TotalTokensSnake)
+	}
+	if in == 0 && chatResp.PromptEvalCount > 0 {
+		in = chatResp.PromptEvalCount
+	}
+	if out == 0 && chatResp.EvalCount > 0 {
+		out = chatResp.EvalCount
+	}
+	if total == 0 {
+		total = in + out + thought
+	}
+	if in == 0 && out == 0 && thought == 0 && total == 0 {
+		return nil
+	}
+	return &TokenUsage{
+		InputTokens:   in,
+		OutputTokens:  out,
+		ThoughtTokens: thought,
+		TotalTokens:   total,
+	}
+}
+
+func resolveAppliedEffort(chatResp *chatResponse, provider, requestedEffort string) string {
+	if chatResp != nil {
+		if e := strings.TrimSpace(chatResp.AppliedEffort); e != "" {
+			return e
+		}
+		if chatResp.EffortApplied != nil && !*chatResp.EffortApplied {
+			return ""
+		}
+	}
+	if provider == "agy" {
+		return requestedEffort
+	}
+	return ""
 }
 
 // buildAnalysisPrompt constructs the comprehensive prompt for the AI.
@@ -353,6 +469,122 @@ func (s *Service) buildAnalysisPrompt(req JobAnalysisRequest) string {
 		experienceDesc = "Not specified"
 	}
 
+	var extraContext strings.Builder
+	hasVisibleActiveProjects := false
+	for _, proj := range req.ActiveProjects {
+		if !strings.EqualFold(strings.TrimSpace(proj.Visibility), "private") {
+			hasVisibleActiveProjects = true
+			break
+		}
+	}
+	if len(req.PortfolioItems) > 0 || hasVisibleActiveProjects {
+		extraContext.WriteString("\nRELEVANT PORTFOLIO & ACTIVE WORK:\n")
+		extraContext.WriteString("Use these relevant examples to strengthen the proposal where helpful. For any entry tagged [ANONYMIZED/NDA], NEVER disclose client names, company names, or internal repo paths — describe capabilities and architecture patterns generically.\n")
+		for _, item := range req.PortfolioItems {
+			title := strings.TrimSpace(item.Title)
+			if title == "" {
+				continue
+			}
+			extraContext.WriteString("- [PORTFOLIO] ")
+			extraContext.WriteString(title)
+			if link := strings.TrimSpace(item.Link); link != "" {
+				extraContext.WriteString(" (")
+				extraContext.WriteString(link)
+				extraContext.WriteString(")")
+			}
+			if desc := strings.TrimSpace(item.Description); desc != "" {
+				extraContext.WriteString(": ")
+				extraContext.WriteString(desc)
+			}
+			extraContext.WriteByte('\n')
+		}
+		for _, proj := range req.ActiveProjects {
+			vis := strings.TrimSpace(proj.Visibility)
+			if strings.EqualFold(vis, "private") {
+				continue
+			}
+			display := strings.TrimSpace(proj.DisplayName)
+			if display == "" {
+				display = "Active client project"
+			}
+			tag := "[ANONYMIZED/NDA]"
+			if strings.EqualFold(vis, "public") {
+				tag = "[PUBLIC]"
+			}
+			extraContext.WriteString("- ")
+			extraContext.WriteString(tag)
+			extraContext.WriteByte(' ')
+			extraContext.WriteString(display)
+			if tier := strings.TrimSpace(proj.ActivityTier); tier != "" {
+				extraContext.WriteString(" (")
+				extraContext.WriteString(tier)
+				extraContext.WriteString(")")
+			}
+			if len(proj.TechStack) > 0 {
+				extraContext.WriteString(" [")
+				extraContext.WriteString(strings.Join(proj.TechStack, ", "))
+				extraContext.WriteString("]")
+			}
+			if summary := strings.TrimSpace(proj.Summary); summary != "" {
+				extraContext.WriteString(": ")
+				extraContext.WriteString(summary)
+			}
+			if tag == "[PUBLIC]" {
+				if focus := strings.TrimSpace(proj.RecentFocus); focus != "" {
+					extraContext.WriteString(" | Recent focus: ")
+					extraContext.WriteString(focus)
+				}
+			}
+			extraContext.WriteByte('\n')
+		}
+	}
+
+	if workload := strings.TrimSpace(req.WorkloadSummary); workload != "" {
+		extraContext.WriteString("\nCURRENT WORKLOAD CONTEXT:\n")
+		extraContext.WriteString(workload)
+		extraContext.WriteString("\nFactor this concurrent project load into a realistic time_estimate and practical tips_and_advice (e.g., buffer, milestone pacing, capacity).\n")
+	}
+
+	var detailLines strings.Builder
+	if v := strings.TrimSpace(req.Duration); v != "" {
+		detailLines.WriteString("\nDuration: ")
+		detailLines.WriteString(v)
+	}
+	if v := strings.TrimSpace(req.HoursPerWeek); v != "" {
+		detailLines.WriteString("\nHours Per Week: ")
+		detailLines.WriteString(v)
+	}
+	if v := strings.TrimSpace(req.ProposalsTier); v != "" {
+		detailLines.WriteString("\nProposals: ")
+		detailLines.WriteString(v)
+	}
+	if v := strings.TrimSpace(req.ClientCountry); v != "" {
+		detailLines.WriteString("\nClient Country: ")
+		detailLines.WriteString(v)
+	}
+	if v := strings.TrimSpace(req.ClientSpent); v != "" {
+		detailLines.WriteString("\nClient Spent: ")
+		detailLines.WriteString(v)
+	}
+	if req.ClientHireRate != nil {
+		detailLines.WriteString("\nClient Hire Rate: ")
+		detailLines.WriteString(strconv.FormatFloat(*req.ClientHireRate, 'f', -1, 64))
+		detailLines.WriteByte('%')
+	}
+	cleanQuestions := make([]string, 0, len(req.ScreeningQuestions))
+	for _, q := range req.ScreeningQuestions {
+		if trimmed := strings.TrimSpace(q); trimmed != "" {
+			cleanQuestions = append(cleanQuestions, trimmed)
+		}
+	}
+	if len(cleanQuestions) > 0 {
+		detailLines.WriteString("\nScreening Questions:")
+		for _, q := range cleanQuestions {
+			detailLines.WriteString("\n- ")
+			detailLines.WriteString(q)
+		}
+	}
+
 	return fmt.Sprintf(`You are an expert freelance consultant helping contractors on Upwork create winning proposals and project plans.
 
 JOB POSTING:
@@ -361,12 +593,12 @@ Description: %s
 Contract Type: %s
 Budget: %s
 Required Skills: %s
-Experience Level: %s
+Experience Level: %s%s
 
 CONTRACTOR PROFILE:
 Profile: %s
 Skills: %s
-
+%s
 Please provide a comprehensive analysis with the following sections:
 
 1. PROPOSAL (2-3 paragraphs)
@@ -377,7 +609,7 @@ Write a compelling, professional yet relatable proposal that:
 - Uses a tone that matches the job posting's formality level
 
 2. EXECUTION PROMPT
-Write a self-contained, copy-paste-ready prompt for an AI coding agent (Claude Code, Codex, Goose, etc.) that will execute this project end-to-end. The prompt must include:
+Write a self-contained, copy-paste-ready prompt for an AI coding agent (Claude Code, Codex, Goose, etc.) that will execute this project end-to-end. Keep execution_prompt concise (under ~6,000 characters). The prompt must include:
 - All project requirements and constraints from the job posting
 - Technical stack and architecture decisions
 - Step-by-step implementation instructions (numbered, specific)
@@ -416,7 +648,7 @@ Provide actionable advice on:
 7. TONE ANALYSIS
 Analyze the job posting's tone (formal, casual, technical, etc.) and suggest the best communication approach.
 
-Do not call any tools. Return valid JSON only, with these exact keys:
+Do not call any tools. Return valid JSON only, with these exact keys (strictly JSON-escape all double quotes as \", backslashes as \\, and newlines as \n inside JSON string values; prefer single quotes or backticks inside markdown prose):
 {
   "proposal": "...",
   "execution_prompt": "...",
@@ -432,8 +664,10 @@ Do not call any tools. Return valid JSON only, with these exact keys:
 		budgetDesc,
 		req.Skills,
 		experienceDesc,
+		detailLines.String(),
 		req.UserProfile,
 		req.UserSkills,
+		extraContext.String(),
 	)
 }
 
@@ -475,6 +709,15 @@ func (s *Service) parseResponse(fullText string) *JobAnalysisResponse {
 	} else {
 		log.Printf("parseResponse: ❌ json.Unmarshal FAILED: %v", err)
 		log.Printf("parseResponse: JSON error details - Type: %T, Message: %s", err, err.Error())
+
+		if repaired := repairMalformedJSON(fullText); repaired != "" && repaired != fullText {
+			var repairedResult JobAnalysisResponse
+			if errRepair := json.Unmarshal([]byte(repaired), &repairedResult); errRepair == nil {
+				log.Printf("parseResponse: ✅ json.Unmarshal succeeded after repairMalformedJSON")
+				return &repairedResult
+			}
+			log.Printf("parseResponse: ⚠️ repairMalformedJSON did not yield valid JSON")
+		}
 
 		if syntaxErr, ok := err.(*json.SyntaxError); ok {
 			log.Printf("parseResponse: JSON syntax error at byte offset %d", syntaxErr.Offset)
@@ -519,4 +762,197 @@ func normalizeHost(raw string) string {
 		host = "http://" + host
 	}
 	return strings.TrimRight(host, "/")
+}
+
+type jsonContainer struct {
+	kind      byte // '{' or '['
+	expectKey bool
+}
+
+// repairMalformedJSON extracts the outermost JSON object and escapes unescaped
+// interior double quotes and raw control characters inside JSON string values.
+func repairMalformedJSON(raw string) string {
+	start := strings.IndexByte(raw, '{')
+	end := strings.LastIndexByte(raw, '}')
+	if start == -1 || end <= start {
+		return ""
+	}
+	s := raw[start : end+1]
+
+	var out strings.Builder
+	out.Grow(len(s) + 64)
+
+	var stack []jsonContainer
+	inString := false
+	escaped := false
+	stringIsKey := false
+
+	for i := 0; i < len(s); i++ {
+		b := s[i]
+		if inString {
+			if escaped {
+				out.WriteByte(b)
+				escaped = false
+				continue
+			}
+			switch b {
+			case '\\':
+				out.WriteByte(b)
+				escaped = true
+			case '\n':
+				out.WriteString(`\n`)
+			case '\r':
+				out.WriteString(`\r`)
+			case '\t':
+				out.WriteString(`\t`)
+			case '"':
+				if isValidClosingQuote(s, i, stringIsKey, stack) {
+					out.WriteByte('"')
+					inString = false
+					stringIsKey = false
+				} else {
+					out.WriteString(`\"`)
+				}
+			default:
+				if b < 0x20 {
+					fmt.Fprintf(&out, `\u%04x`, b)
+				} else {
+					out.WriteByte(b)
+				}
+			}
+			continue
+		}
+
+		out.WriteByte(b)
+		switch b {
+		case '{':
+			stack = append(stack, jsonContainer{kind: '{', expectKey: true})
+		case '[':
+			stack = append(stack, jsonContainer{kind: '['})
+		case '}', ']':
+			if len(stack) > 0 {
+				stack = stack[:len(stack)-1]
+			}
+		case ':':
+			if len(stack) > 0 && stack[len(stack)-1].kind == '{' {
+				stack[len(stack)-1].expectKey = false
+			}
+		case ',':
+			if len(stack) > 0 && stack[len(stack)-1].kind == '{' {
+				stack[len(stack)-1].expectKey = true
+			}
+		case '"':
+			inString = true
+			escaped = false
+			stringIsKey = len(stack) > 0 && stack[len(stack)-1].kind == '{' && stack[len(stack)-1].expectKey
+		}
+	}
+
+	return out.String()
+}
+
+func skipJSONWhitespace(s string, idx int) int {
+	for idx < len(s) {
+		switch s[idx] {
+		case ' ', '\t', '\n', '\r':
+			idx++
+		default:
+			return idx
+		}
+	}
+	return idx
+}
+
+func isValidClosingQuote(s string, quoteIdx int, stringIsKey bool, stack []jsonContainer) bool {
+	nextIdx := skipJSONWhitespace(s, quoteIdx+1)
+	if nextIdx >= len(s) {
+		return false
+	}
+	nextByte := s[nextIdx]
+
+	if stringIsKey {
+		return nextByte == ':'
+	}
+
+	var topKind byte
+	if len(stack) > 0 {
+		topKind = stack[len(stack)-1].kind
+	}
+
+	switch nextByte {
+	case '}':
+		if topKind != '{' {
+			return false
+		}
+		afterClose := skipJSONWhitespace(s, nextIdx+1)
+		if len(stack) == 1 {
+			return afterClose == len(s)
+		}
+		return afterClose < len(s) && (s[afterClose] == ',' || s[afterClose] == '}' || s[afterClose] == ']')
+	case ']':
+		if topKind != '[' {
+			return false
+		}
+		afterClose := skipJSONWhitespace(s, nextIdx+1)
+		if len(stack) == 1 {
+			return afterClose == len(s)
+		}
+		return afterClose < len(s) && (s[afterClose] == ',' || s[afterClose] == '}' || s[afterClose] == ']')
+	case ',':
+		afterComma := skipJSONWhitespace(s, nextIdx+1)
+		if afterComma >= len(s) {
+			return false
+		}
+		afterByte := s[afterComma]
+		if topKind == '{' {
+			// Next token in a JSON object must be a quoted key followed by ':'.
+			return looksLikeJSONKeyAt(s, afterComma)
+		}
+		if topKind == '[' {
+			// Next token in a JSON array must start a valid JSON value (or closing ']').
+			if afterByte == '"' || afterByte == '{' || afterByte == '[' ||
+				afterByte == ']' || afterByte == '-' || (afterByte >= '0' && afterByte <= '9') {
+				return true
+			}
+			for _, kw := range []string{"true", "false", "null"} {
+				if strings.HasPrefix(s[afterComma:], kw) {
+					endKw := afterComma + len(kw)
+					if endKw == len(s) || s[endKw] == ',' || s[endKw] == ']' ||
+						s[endKw] == ' ' || s[endKw] == '\t' || s[endKw] == '\n' || s[endKw] == '\r' {
+						return true
+					}
+				}
+			}
+			return false
+		}
+		return false
+	default:
+		return false
+	}
+}
+
+func looksLikeJSONKeyAt(s string, idx int) bool {
+	if idx >= len(s) || s[idx] != '"' {
+		return false
+	}
+	esc := false
+	for i := idx + 1; i < len(s); i++ {
+		b := s[i]
+		if esc {
+			esc = false
+			continue
+		}
+		if b == '\\' {
+			esc = true
+			continue
+		}
+		if b == '\n' || b == '\r' {
+			return false
+		}
+		if b == '"' {
+			afterKey := skipJSONWhitespace(s, i+1)
+			return afterKey < len(s) && s[afterKey] == ':'
+		}
+	}
+	return false
 }

@@ -167,6 +167,8 @@ views:
         selectors:
           - "strong[data-test='payment-verification-status']"
           - ".air3-badge-tagline-sm.is-verified"
+          - "[data-qa='payment-verified']"
+          - "[data-test='payment-verified']"
         extract: "text"
         auth_only: true
         description: "Payment verification badge text on card"
@@ -258,6 +260,8 @@ views:
         selectors:
           - "strong[data-test='payment-verification-status']"
           - ".air3-badge-tagline-sm.is-verified"
+          - "[data-qa='payment-verified']"
+          - "[data-test='payment-verified']"
         extract: "text"
         auth_only: true
         description: "Client payment verification status"
@@ -366,6 +370,8 @@ views:
         selectors:
           - "strong[data-test='payment-verification-status']"
           - ".air3-badge-tagline-sm.is-verified"
+          - "[data-qa='payment-verified']"
+          - "[data-test='payment-verified']"
         extract: "text"
         auth_only: true
       client_rating:
@@ -469,6 +475,8 @@ views:
         selectors:
           - "strong[data-test='payment-verification-status']"
           - ".air3-badge-tagline-sm.is-verified"
+          - "[data-qa='payment-verified']"
+          - "[data-test='payment-verified']"
         extract: "text"
         auth_only: true
       client_rating:

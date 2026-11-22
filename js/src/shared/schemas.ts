@@ -49,6 +49,26 @@ export type ClientActivity = z.infer<typeof ClientActivitySchema>;
 export const ScoreBreakdownSchema = z.record(z.string(), z.unknown());
 export type ScoreBreakdown = z.infer<typeof ScoreBreakdownSchema>;
 
+export const PortfolioReferenceSchema = z.object({
+  source: z.string(),
+  display_name: z.string(),
+  visibility: z.string(),
+  link: z.string().optional(),
+  summary: z.string().optional(),
+  activity_tier: z.string().optional(),
+  tech_stack: z.array(z.string()).optional(),
+});
+export type PortfolioReference = z.infer<typeof PortfolioReferenceSchema>;
+
+export const AIEnrichmentStatusSchema = z.enum([
+  'none',
+  'queued',
+  'scraping_details',
+  'analyzing',
+  'completed',
+  'failed',
+]);
+
 export const JobUpsertPayloadSchema = z.object({
   job_title: z.string().optional(),
   job_description: z.string().optional(),
@@ -100,8 +120,18 @@ export const JobUpsertPayloadSchema = z.object({
   client_activity: ClientActivitySchema.optional(),
   score: z.number().nullable().optional(),
   score_breakdown: ScoreBreakdownSchema.optional(),
+  score_reasoning: z.string().optional(),
   fit_label: z.string().optional(),
-  last_enriched_at: z.string().optional(),
+  fit_assessment: z.string().optional(),
+  portfolio_references: z.array(PortfolioReferenceSchema).optional(),
+  last_enriched_at: z.string().nullable().optional(),
+  ai_enrichment_status: z.string().optional(),
+  ai_enriched_at: z.string().nullable().optional(),
+  ai_enrichment_error: z.string().optional(),
+  ai_model: z.string().optional(),
+  ai_effort: z.string().optional(),
+  ai_tokens_used: z.number().int().nullable().optional(),
+  last_search_run_id: z.number().int().nullable().optional(),
 });
 export type JobUpsertPayload = z.infer<typeof JobUpsertPayloadSchema>;
 
@@ -294,39 +324,72 @@ export type ExtensionSettings = z.infer<typeof ExtensionSettingsSchema>;
 export const SearchSourceSchema = z.enum(['search', 'best_matches', 'most_recent', 'saved_jobs']);
 export type SearchSource = z.infer<typeof SearchSourceSchema>;
 
-export const SearchRunFiltersSchema = z.object({
-  required_keywords: z.array(z.string()).optional(),
-  exclude_keywords: z.array(z.string()).optional(),
-  min_score: z.number().int().min(0).max(100).optional(),
-  max_posted_age_days: z.number().int().nonnegative().optional(),
-  max_proposals: z.number().int().nonnegative().optional(),
-  budget_min: z.number().nonnegative().optional(),
-  budget_max: z.number().nonnegative().optional(),
-  sort_by_score: z.boolean().optional(),
-});
+export const SearchRunFiltersSchema = z
+  .object({
+    required_keywords: z.array(z.string()).optional(),
+    exclude_keywords: z.array(z.string()).optional(),
+    min_score: z.number().int().min(0).max(100).optional(),
+    max_posted_age_days: z.number().int().nonnegative().optional(),
+    max_proposals: z.number().int().nonnegative().optional(),
+    budget_min: z.number().nonnegative().optional(),
+    budget_max: z.number().nonnegative().optional(),
+    hourly_rate_min: z.number().nonnegative().optional(),
+    hourly_rate_max: z.number().nonnegative().optional(),
+    payment_verified_only: z.boolean().optional(),
+    sort_by_score: z.boolean().optional(),
+  })
+  .refine(
+    (data) =>
+      data.hourly_rate_min === undefined ||
+      data.hourly_rate_max === undefined ||
+      data.hourly_rate_min <= data.hourly_rate_max,
+    {
+      message: 'hourly_rate_min cannot exceed hourly_rate_max',
+      path: ['hourly_rate_max'],
+    },
+  );
 export type SearchRunFilters = z.infer<typeof SearchRunFiltersSchema>;
 
-export const SearchRunRequestSchema = z.object({
-  source: SearchSourceSchema.default('search'),
-  query: z.string().optional(),
-  queries: z.array(z.string()).optional(),
-  sort: z.enum(['recency', 'relevance']).optional(),
-  per_page: z.union([z.literal(10), z.literal(20), z.literal(50)]).optional(),
-  contractor_tier: z.array(z.number().int().min(1).max(3)).optional(),
-  contract_type: z.enum(['hourly', 'fixed']).optional(),
-  proposal_tiers: z.array(z.string()).optional(),
-  budget_min: z.number().nonnegative().optional(),
-  budget_max: z.number().nonnegative().optional(),
-  category: z.string().optional(),
-  search_url: z.string().optional(),
-  start_page: z.number().int().min(1).default(1),
-  max_pages: z.number().int().min(1).max(20).default(1),
-  target_jobs: z.number().int().min(1).max(200).optional(),
-  enrich_top_n: z.number().int().min(0).max(50).optional(),
-  auto_ingest: z.boolean().optional(),
-  profile_id: z.number().int().positive().optional(),
-  filters: SearchRunFiltersSchema.optional(),
-});
+export const SearchRunRequestSchema = z
+  .object({
+    source: SearchSourceSchema.default('search'),
+    query: z.string().optional(),
+    queries: z.array(z.string()).optional(),
+    sort: z.enum(['recency', 'relevance']).optional(),
+    per_page: z.union([z.literal(10), z.literal(20), z.literal(50)]).optional(),
+    contractor_tier: z.array(z.number().int().min(1).max(3)).optional(),
+    contract_type: z.enum(['hourly', 'fixed']).optional(),
+    proposal_tiers: z.array(z.string()).optional(),
+    budget_min: z.number().nonnegative().optional(),
+    budget_max: z.number().nonnegative().optional(),
+    hourly_rate_min: z.number().nonnegative().optional(),
+    hourly_rate_max: z.number().nonnegative().optional(),
+    payment_verified_only: z.boolean().optional(),
+    category: z.string().optional(),
+    search_url: z.string().optional(),
+    start_page: z.number().int().min(1).default(1),
+    max_pages: z.number().int().min(1).max(20).default(1),
+    target_jobs: z.number().int().min(1).max(200).optional(),
+    enrich_top_n: z.number().int().min(0).max(50).optional(),
+    skip_auto_detail_enrich: z.boolean().optional(),
+    auto_ingest: z.boolean().optional(),
+    profile_id: z.number().int().positive().optional(),
+    run_label: z.string().optional(),
+    from_active_projects: z.boolean().optional(),
+    active_project_keys: z.array(z.string()).optional(),
+    active_project_tiers: z.array(z.string()).optional(),
+    filters: SearchRunFiltersSchema.optional(),
+  })
+  .refine(
+    (data) =>
+      data.hourly_rate_min === undefined ||
+      data.hourly_rate_max === undefined ||
+      data.hourly_rate_min <= data.hourly_rate_max,
+    {
+      message: 'hourly_rate_min cannot exceed hourly_rate_max',
+      path: ['hourly_rate_max'],
+    },
+  );
 export type SearchRunRequest = z.infer<typeof SearchRunRequestSchema>;
 
 export const DetailEnrichRequestSchema = z.object({
@@ -394,3 +457,119 @@ export const SearchProfileEntrySchema = z.object({
   updated_at: z.string().optional(),
 });
 export type SearchProfileEntry = z.infer<typeof SearchProfileEntrySchema>;
+
+export const EnrichmentModeSchema = z.enum(['full', 'ai_only', 'detail_only']);
+export const AIEffortLevelSchema = z.enum(['', 'low', 'medium', 'high', 'xhigh']);
+
+export const EnrichmentConfigSchema = z.object({
+  max_batch_size: z.number().int().min(1).max(100),
+  default_mode: EnrichmentModeSchema,
+  default_force: z.boolean(),
+  skip_detail_if_present: z.boolean(),
+  require_details: z.boolean(),
+  max_concurrency: z.number().int().min(1).max(4),
+  default_model: z.string(),
+  default_effort: AIEffortLevelSchema,
+  confirm_threshold: z.number().int().min(0).max(100),
+  wait_timeout_seconds: z.number().int().min(5).max(180),
+  web_ui_enabled: z.boolean(),
+  web_session_ttl_minutes: z.number().int().min(5).max(10080),
+});
+
+export const SearchRunSummarySchema = z.object({
+  id: z.number().int(),
+  label: z.string(),
+  source: z.string(),
+  triggered_by: z.string(),
+  profile_id: z.number().int().optional(),
+  project_keys: z.array(z.string()).default([]),
+  queries: z.array(z.string()).default([]),
+  criteria: z.unknown().optional(),
+  total_scraped: z.number().int().nonnegative(),
+  filtered_count: z.number().int().nonnegative(),
+  persisted_count: z.number().int().nonnegative(),
+  detail_enriched_count: z.number().int().nonnegative(),
+  stopped_reason: z.string(),
+  created_at: z.string(),
+});
+
+export const EnrichmentBatchSummarySchema = z.object({
+  id: z.number().int(),
+  mode: z.string(),
+  triggered_by: z.string(),
+  model: z.string().optional(),
+  effort: z.string().optional(),
+  force: z.boolean(),
+  status: z.string(),
+  total_count: z.number().int().nonnegative(),
+  queued_count: z.number().int().nonnegative(),
+  running_count: z.number().int().nonnegative(),
+  completed_count: z.number().int().nonnegative(),
+  skipped_count: z.number().int().nonnegative(),
+  failed_count: z.number().int().nonnegative(),
+  canceled_count: z.number().int().nonnegative(),
+  total_tokens_used: z.number().int().nonnegative(),
+  created_at: z.string(),
+  started_at: z.string().nullable().optional(),
+  completed_at: z.string().nullable().optional(),
+  updated_at: z.string(),
+});
+
+export const EnrichmentBatchItemSchema = z.object({
+  id: z.number().int(),
+  batch_id: z.number().int(),
+  job_id: z.number().int(),
+  status: z.string(),
+  detail_fetched: z.boolean(),
+  llm_invoked: z.boolean(),
+  model: z.string().optional(),
+  effort: z.string().optional(),
+  input_tokens: z.number().int().nonnegative(),
+  output_tokens: z.number().int().nonnegative(),
+  thought_tokens: z.number().int().nonnegative(),
+  total_tokens: z.number().int().nonnegative(),
+  error_code: z.string().optional(),
+  error_message: z.string().optional(),
+  started_at: z.string().nullable().optional(),
+  completed_at: z.string().nullable().optional(),
+  created_at: z.string(),
+  updated_at: z.string(),
+});
+
+export const EnrichmentBatchDetailResponseSchema = z.object({
+  batch: EnrichmentBatchSummarySchema,
+  items: z.array(EnrichmentBatchItemSchema),
+  dashboard_url: z.string().optional(),
+});
+
+export const BatchEnrichRequestSchema = z.object({
+  job_ids: z.array(z.union([z.number().int().positive(), z.string().min(1)])).min(1),
+  mode: EnrichmentModeSchema.optional(),
+  force: z.boolean().optional(),
+  skip_detail_if_present: z.boolean().optional(),
+  require_details: z.boolean().optional(),
+  model: z.string().optional(),
+  effort: AIEffortLevelSchema.optional(),
+  max_concurrency: z.number().int().min(1).max(4).optional(),
+  wait: z.boolean().optional(),
+  wait_timeout_seconds: z.number().int().min(5).max(180).optional(),
+  triggered_by: z.string().optional(),
+});
+
+export const ActiveProjectEntrySchema = z.object({
+  id: z.number().int(),
+  project_key: z.string(),
+  slug: z.string(),
+  name: z.string(),
+  path: z.string(),
+  group_name: z.string(),
+  activity_tier: z.string(),
+  status: z.string(),
+  client: z.string(),
+  proposal_visibility: z.string(),
+  public_alias: z.string(),
+  tech_stack: z.array(z.string()).default([]),
+  summary: z.string(),
+  pinned: z.boolean(),
+  last_activity_at: z.string().nullable().optional(),
+});

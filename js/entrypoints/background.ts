@@ -732,6 +732,47 @@ export default defineBackground(() => {
         }
       }
 
+      case 'OPEN_JOBS_DASHBOARD': {
+        try {
+          const baseUrl = browser.runtime.getURL('/dashboard.html');
+          const params = new URLSearchParams(
+            msg.queryString ? msg.queryString.replace(/^\?/, '') : '',
+          );
+          if (msg.runId !== undefined) params.set('run', String(msg.runId));
+          if (msg.fit) params.set('fit', msg.fit);
+          if (msg.q) params.set('q', msg.q);
+          if (msg.batchId !== undefined) params.set('batch', String(msg.batchId));
+          const qs = params.toString();
+          const targetUrl = qs ? `${baseUrl}?${qs}` : baseUrl;
+
+          const existingTabs = await browser.tabs.query({});
+          const match = existingTabs.find(
+            (t) =>
+              typeof t.id === 'number' && typeof t.url === 'string' && t.url.startsWith(baseUrl),
+          );
+          if (match && match.id !== undefined) {
+            await browser.tabs.update(match.id, {
+              active: true,
+              ...(qs || match.url !== targetUrl ? { url: targetUrl } : {}),
+            });
+            if (match.windowId !== undefined) {
+              await browser.windows
+                .update(match.windowId, { focused: true })
+                .catch(() => undefined);
+            }
+            return { ok: true, mode: 'reused', tabId: match.id, url: targetUrl };
+          }
+
+          const created = await browser.tabs.create({ url: targetUrl });
+          return { ok: true, mode: 'tab', tabId: created.id, url: targetUrl };
+        } catch (error) {
+          return {
+            ok: false,
+            error: error instanceof Error ? error.message : String(error),
+          };
+        }
+      }
+
       case 'PASSIVE_TAP_PAYLOAD': {
         passiveTapCache.unshift({
           kind: msg.kind,

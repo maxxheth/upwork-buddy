@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"io"
 	"log"
+	"math"
 	"net/http"
 	"strconv"
 	"strings"
@@ -382,6 +383,9 @@ func (s *Server) DeleteSearchProfile(ctx context.Context, id uint64, name string
 	if s.db == nil || s.db.GetGorm() == nil {
 		return &ServiceError{Code: "DB_UNAVAILABLE", HTTPStatus: http.StatusServiceUnavailable, Message: "Database unavailable"}
 	}
+	if id > math.MaxInt64 {
+		return &ServiceError{Code: "INVALID_PARAMS", HTTPStatus: http.StatusBadRequest, Message: "Invalid search profile ID"}
+	}
 	gormDB := s.db.GetGorm().WithContext(ctx)
 	var res *gorm.DB
 	if id > 0 {
@@ -406,7 +410,10 @@ func (s *Server) RunSearchProfile(ctx context.Context, id *uint, name string) (*
 		return nil, &ServiceError{Code: "DB_UNAVAILABLE", HTTPStatus: http.StatusServiceUnavailable, Message: "Database unavailable"}
 	}
 	var resolvedID uint
-	if id != nil && *id > 0 {
+	if id != nil {
+		if *id == 0 || uint64(*id) > math.MaxInt64 {
+			return nil, &ServiceError{Code: "INVALID_PARAMS", HTTPStatus: http.StatusBadRequest, Message: "Invalid search profile ID"}
+		}
 		resolvedID = *id
 	} else if trimmedName := strings.TrimSpace(name); trimmedName != "" {
 		var row dbservice.SearchProfile
@@ -537,8 +544,8 @@ func (s *Server) deleteSearchProfileHandler(w http.ResponseWriter, r *http.Reque
 		idStr = strings.TrimPrefix(r.URL.Path, "/api/search-profiles/")
 	}
 	id, err := strconv.ParseUint(strings.TrimSpace(idStr), 10, 64)
-	if err != nil {
-		respondWithError(w, http.StatusBadRequest, "Invalid search profile ID")
+	if err != nil || id == 0 || id > math.MaxInt64 {
+		respondInvalidParams(w, "Invalid search profile ID")
 		return
 	}
 

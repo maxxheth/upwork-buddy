@@ -777,4 +777,95 @@ describe('Background Search, Detail & Selector Audit RPC Orchestration', () => {
     expect(requestedPaths.some((p) => p.includes('view_type=job_detail'))).toBe(true);
     expect(requestedPaths.some((p) => p.includes('view_type=messages_thread'))).toBe(false);
   });
+
+  it('executeSearchSweep forwards hourly_rate and payment_verified facets and preserves M2 filters on auto_ingest', async () => {
+    const { controller } = createMockTabController();
+    const navigatedUrls: string[] = [];
+    vi.spyOn(controller, 'navigateAndWaitForHydration').mockImplementation(async (url) => {
+      navigatedUrls.push(url);
+      return { tabId: 101, url, loggedIn: true };
+    });
+
+    const batchPayloads: Array<Record<string, unknown>> = [];
+    const proxyFetch = vi.fn(async (path: string, init?: RequestInit) => {
+      if (path === '/api/jobs/batch' && init?.body) {
+        batchPayloads.push(JSON.parse(String(init.body)) as Record<string, unknown>);
+      }
+      return new Response(JSON.stringify({ persisted_count: 1 }), { status: 200 });
+    });
+
+    const sendTabMessage = vi.fn(async () => ({
+      ok: true,
+      hasNextPage: false,
+      jobs: [
+        {
+          upwork_job_id: '~0777',
+          job_title: 'Senior Go Engineer',
+          canonical_url: 'https://www.upwork.com/jobs/~0777/',
+        },
+      ],
+    }));
+
+    const res = await executeSearchSweep(
+      {
+        tabController: controller,
+        proxyFetch,
+        getSelectors: async () => BUNDLED_SELECTORS,
+        sendTabMessage,
+      },
+      {
+        source: 'search',
+        query: 'golang',
+        hourly_rate_min: 70,
+        hourly_rate_max: 130,
+        payment_verified_only: true,
+        run_label: 'M2 sweep',
+        skip_auto_detail_enrich: true,
+        from_active_projects: true,
+        active_project_keys: ['proj-a'],
+        active_project_tiers: ['active'],
+        auto_ingest: true,
+        filters: {
+          hourly_rate_min: 70,
+          hourly_rate_max: 130,
+          payment_verified_only: true,
+          sort_by_score: true,
+        },
+      },
+    );
+
+    expect(res.ok).toBe(true);
+    expect(navigatedUrls).toHaveLength(1);
+    const navUrl = new URL(navigatedUrls[0]);
+    expect(navUrl.searchParams.get('hourly_rate')).toBe('70-130');
+    expect(navUrl.searchParams.get('payment_verified')).toBe('1');
+    expect(batchPayloads).toHaveLength(1);
+    expect(batchPayloads[0].filters).toEqual({
+      hourly_rate_min: 70,
+      hourly_rate_max: 130,
+      payment_verified_only: true,
+      sort_by_score: true,
+    });
+  });
+
+  it('executeSearchSweep rejects inverted hourly_rate_min > hourly_rate_max with INVALID_PARAMS', async () => {
+    const { controller } = createMockTabController();
+    await expect(
+      executeSearchSweep(
+        {
+          tabController: controller,
+          proxyFetch: vi.fn(),
+          getSelectors: async () => BUNDLED_SELECTORS,
+        },
+        {
+          source: 'search',
+          query: 'golang',
+          hourly_rate_min: 150,
+          hourly_rate_max: 75,
+        },
+      ),
+    ).rejects.toMatchObject({
+      code: 'INVALID_PARAMS',
+    });
+  });
 });

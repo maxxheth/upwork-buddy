@@ -632,6 +632,23 @@ export class DriftAuditor {
         const fbMatches = queryAllSafe(this.root, fb);
         if (fbMatches.length > 0) {
           const sampleVal = this.extractSampleValue(fbMatches, reg);
+          if (fb.includes('data-v-')) {
+            const stableFallback = reg.fallback_selectors.find(
+              (alt) => !alt.includes('data-v-') && queryAllSafe(this.root, alt).length > 0,
+            );
+            const replacement =
+              stableFallback ?? this.findReplacementForBroken({ ...reg, css_selector: fb }) ?? fb;
+            return {
+              target_field: reg.target_field,
+              view: reg.view,
+              registered_selector: reg.css_selector,
+              status: 'FRAGILE',
+              matched_count: fbMatches.length,
+              sample_extracted_value: sampleVal,
+              notes: `Primary selector failed; matched via fragile Vue hash fallback '${fb}'`,
+              suggested_replacement: replacement,
+            };
+          }
           return {
             target_field: reg.target_field,
             view: reg.view,

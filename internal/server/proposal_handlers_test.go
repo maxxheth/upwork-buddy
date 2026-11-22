@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"math"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -1366,5 +1367,90 @@ func TestProposalLifecycle_R5_UnseededSwapClearsJobID_MismatchRejected_AndUnfill
 	}
 	if syncedRow.Status != "submitted" || syncedRow.ApprovalToken != "" || syncedRow.ApprovalTokenExpiresAt != nil {
 		t.Fatalf("expected SyncProposals to clear ApprovalToken on submitted status, got status=%q tok=%q exp=%v", syncedRow.Status, syncedRow.ApprovalToken, syncedRow.ApprovalTokenExpiresAt)
+	}
+}
+
+func TestProposalHandlers_IDBoundsValidation_WithDB(t *testing.T) {
+	s := setupTestServer(t)
+	router := s.RegisterRoutes()
+	ctx := context.Background()
+
+	doReq := func(method, path, body string) *httptest.ResponseRecorder {
+		var rBody *strings.Reader
+		if body != "" {
+			rBody = strings.NewReader(body)
+		} else {
+			rBody = strings.NewReader("")
+		}
+		req := httptest.NewRequest(method, path, rBody)
+		req.Header.Set("Authorization", "Bearer "+s.apiToken)
+		if body != "" {
+			req.Header.Set("Content-Type", "application/json")
+		}
+		w := httptest.NewRecorder()
+		router.ServeHTTP(w, req)
+		return w
+	}
+
+	for _, badID := range []string{"0", "9223372036854775808", "18446744073709551615"} {
+		for _, tc := range []struct {
+			method string
+			path   string
+			body   string
+		}{
+			{http.MethodGet, "/api/proposals/" + badID, ""},
+			{http.MethodPost, "/api/proposals/" + badID + "/fill", `{}`},
+			{http.MethodPost, "/api/proposals/" + badID + "/approve", `{}`},
+			{http.MethodPost, "/api/proposals/" + badID + "/reject", `{}`},
+			{http.MethodPost, "/api/proposals/" + badID + "/submit", `{}`},
+			{http.MethodGet, "/api/proposals?job_id=" + badID, ""},
+		} {
+			w := doReq(tc.method, tc.path, tc.body)
+			if w.Result().StatusCode != http.StatusBadRequest {
+				t.Fatalf("%s %s status = %d, want 400; body=%s", tc.method, tc.path, w.Result().StatusCode, w.Body.String())
+			}
+			var errBody map[string]any
+			_ = json.NewDecoder(w.Body).Decode(&errBody)
+			if errBody["error_code"] != "INVALID_PARAMS" {
+				t.Fatalf("%s %s expected INVALID_PARAMS, got %+v", tc.method, tc.path, errBody)
+			}
+		}
+	}
+
+	// POST /api/proposals with id or job_id > MaxInt64
+	for _, payload := range []string{
+		`{"id":9223372036854775808,"cover_letter":"Overflow ID"}`,
+		`{"job_id":9223372036854775808,"cover_letter":"Overflow numeric job_id"}`,
+		`{"job_id":"9223372036854775808","cover_letter":"Overflow string job_id"}`,
+		`{"job_id":"18446744073709551615","cover_letter":"MaxUint64 string job_id"}`,
+	} {
+		w := doReq(http.MethodPost, "/api/proposals", payload)
+		if w.Result().StatusCode != http.StatusBadRequest {
+			t.Fatalf("POST /api/proposals %s status = %d, want 400; body=%s", payload, w.Result().StatusCode, w.Body.String())
+		}
+		var errBody map[string]any
+		_ = json.NewDecoder(w.Body).Decode(&errBody)
+		if errBody["error_code"] != "INVALID_PARAMS" {
+			t.Fatalf("POST /api/proposals %s expected INVALID_PARAMS, got %+v", payload, errBody)
+		}
+	}
+
+	// Direct service methods reject 0 and > math.MaxInt64
+	for _, badU64 := range []uint64{0, uint64(1) << 63, math.MaxUint64} {
+		if _, err := s.GetProposal(ctx, badU64); err == nil {
+			t.Fatalf("expected GetProposal(%d) error", badU64)
+		} else if se, ok := err.(*ServiceError); !ok || se.Code != "INVALID_PARAMS" {
+			t.Fatalf("GetProposal(%d) expected INVALID_PARAMS, got %v", badU64, err)
+		}
+		if _, err := s.FillProposal(ctx, badU64, FillProposalInput{}); err == nil {
+			t.Fatalf("expected FillProposal(%d) error", badU64)
+		} else if se, ok := err.(*ServiceError); !ok || se.Code != "INVALID_PARAMS" {
+			t.Fatalf("FillProposal(%d) expected INVALID_PARAMS, got %v", badU64, err)
+		}
+		if _, err := s.CommitProposal(ctx, badU64, CommitProposalInput{}, false); err == nil {
+			t.Fatalf("expected CommitProposal(%d) error", badU64)
+		} else if se, ok := err.(*ServiceError); !ok || se.Code != "INVALID_PARAMS" {
+			t.Fatalf("CommitProposal(%d) expected INVALID_PARAMS, got %v", badU64, err)
+		}
 	}
 }

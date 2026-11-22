@@ -276,6 +276,28 @@ body {
   font-weight: 600;
 }
 
+.sp-badge[data-ai-status="completed"] {
+  background: #dcfce7;
+  color: #166534;
+}
+
+.sp-badge[data-ai-status="failed"] {
+  background: #fee2e2;
+  color: #991b1b;
+}
+
+.sp-badge[data-ai-status="queued"],
+.sp-badge[data-ai-status="scraping_details"],
+.sp-badge[data-ai-status="analyzing"] {
+  background: #dbeafe;
+  color: #1e40af;
+}
+
+.sp-badge[data-ai-status="detail_only"] {
+  background: #e0f2fe;
+  color: #075985;
+}
+
 .empty-state {
   color: #6b7280;
   text-align: center;

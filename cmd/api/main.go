@@ -22,6 +22,7 @@ import (
 	"upwork-buddy/internal/server"
 
 	"github.com/modelcontextprotocol/go-sdk/mcp"
+	gormlogger "gorm.io/gorm/logger"
 )
 
 func gracefulShutdown(apiServer *http.Server, appServer *server.Server, done chan bool) {
@@ -35,9 +36,12 @@ func gracefulShutdown(apiServer *http.Server, appServer *server.Server, done cha
 	log.Println("shutting down gracefully, press Ctrl+C again to force")
 	stop() // Allow Ctrl+C to force shutdown
 
-	// Close active MCP SSE/HTTP sessions and WebSocket bridge connections before http.Server.Shutdown.
+	// Close active MCP SSE/HTTP sessions, enrichment batches, and WebSocket bridge connections before http.Server.Shutdown.
 	if appServer != nil {
 		appServer.CloseMCPSessions()
+		if err := appServer.CloseEnrichment(); err != nil {
+			log.Printf("Enrichment batch shutdown error: %v", err)
+		}
 		if appServer.BridgeHub() != nil {
 			if err := appServer.BridgeHub().Close(); err != nil {
 				log.Printf("WebSocket bridge shutdown error: %v", err)
@@ -313,6 +317,12 @@ func runEmbeddedMCP(ctx context.Context) error {
 
 func runMCP(args []string) int {
 	log.SetOutput(os.Stderr)
+	gormlogger.Default = gormlogger.New(log.New(os.Stderr, "\r\n", log.LstdFlags), gormlogger.Config{
+		SlowThreshold:             200 * time.Millisecond,
+		LogLevel:                  gormlogger.Warn,
+		IgnoreRecordNotFoundError: true,
+		Colorful:                  false,
+	})
 
 	fs := flag.NewFlagSet("mcp", flag.ContinueOnError)
 	fs.SetOutput(os.Stderr)

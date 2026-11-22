@@ -6,6 +6,8 @@ import (
 	"net/http"
 	"net/url"
 	"strings"
+
+	"upwork-buddy/internal/webui"
 )
 
 func (s *Server) RegisterRoutes() http.Handler {
@@ -92,7 +94,29 @@ func (s *Server) RegisterRoutes() http.Handler {
 	apiMux.HandleFunc("POST /api/messages/{id}/approve", s.approveMessageHandler)
 	apiMux.HandleFunc("POST /api/messages/{id}/reject", s.rejectMessageHandler)
 
+	// Active Projects Inventory
+	apiMux.HandleFunc("POST /api/active-projects/sync", s.syncActiveProjectsHandler)
+	apiMux.HandleFunc("GET /api/active-projects", s.listActiveProjectsHandler)
+	apiMux.HandleFunc("PATCH /api/active-projects/{id}", s.updateActiveProjectHandler)
+
+	// Search Runs, Enrichment Config & Async Batch Enrichment
+	apiMux.HandleFunc("GET /api/search-runs", s.listSearchRunsHandler)
+	apiMux.HandleFunc("GET /api/search-runs/{id}", s.getSearchRunHandler)
+	apiMux.HandleFunc("GET /api/enrichment-config", s.enrichmentConfigHandler)
+	apiMux.HandleFunc("POST /api/jobs/enrich", s.enrichJobsHandler)
+	apiMux.HandleFunc("GET /api/enrichment-batches", s.listEnrichmentBatchesHandler)
+	apiMux.HandleFunc("GET /api/enrichment-batches/{id}", s.getEnrichmentBatchHandler)
+	apiMux.HandleFunc("POST /api/enrichment-batches/{id}/cancel", s.cancelEnrichmentBatchHandler)
+
+	// Web Dashboard Session Ticket
+	apiMux.HandleFunc("POST /api/web-session/ticket", s.createWebSessionTicketHandler)
+
 	mux.Handle("/api/", s.authMiddleware(apiMux))
+
+	// Standalone Web Dashboard (method-less patterns so non-GET methods never fall through to "/")
+	mux.HandleFunc("/dashboard", s.dashboardRedirectHandler)
+	mux.HandleFunc("/dashboard/auth/exchange", s.exchangeWebSessionTicketHandler)
+	mux.Handle("/dashboard/", s.dashboardStaticHandler())
 
 	// Protected MCP endpoint (delegates to s.mcpHandler when wired in M6)
 	mcpStub := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -112,8 +136,8 @@ func (s *Server) RegisterRoutes() http.Handler {
 	// Protected extension WebSocket endpoint
 	mux.HandleFunc("/ws/extension", s.wsExtensionHandler)
 
-	// Wrap root mux with strict Origin-echoing CORS middleware before auth so OPTIONS preflight succeeds
-	return s.corsMiddleware(mux)
+	// Wrap root mux with dashboard traversal guard and strict Origin-echoing CORS middleware
+	return s.corsMiddleware(s.dashboardTraversalMiddleware(mux))
 }
 
 // IsAllowedOrigin strictly validates an HTTP Origin header using URL parsing and exact host/scheme rules.
@@ -240,6 +264,72 @@ func (s *Server) wsExtensionHandler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	respondWithError(w, http.StatusNotImplemented, "WebSocket bridge not initialized")
+}
+
+func targetsDashboard(u *url.URL) bool {
+	if u == nil {
+		return false
+	}
+	for _, candidate := range []string{u.Path, u.EscapedPath(), u.RawPath} {
+		if candidate == "" {
+			continue
+		}
+		lower := strings.ToLower(candidate)
+		if lower == "/dashboard" ||
+			strings.HasPrefix(lower, "/dashboard/") ||
+			strings.HasPrefix(lower, "/dashboard\\") ||
+			strings.HasPrefix(lower, "/dashboard%2f") ||
+			strings.HasPrefix(lower, "/dashboard%5c") {
+			return true
+		}
+	}
+	return false
+}
+
+func (s *Server) dashboardTraversalMiddleware(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if targetsDashboard(r.URL) && webui.HasPathTraversal(r.URL) {
+			webui.SetSecurityHeaders(w)
+			http.NotFound(w, r)
+			return
+		}
+		next.ServeHTTP(w, r)
+	})
+}
+
+func (s *Server) dashboardRedirectHandler(w http.ResponseWriter, r *http.Request) {
+	webui.SetSecurityHeaders(w)
+	if !ResolveEnrichmentConfig().WebUIEnabled {
+		http.NotFound(w, r)
+		return
+	}
+	if r.Method != http.MethodGet && r.Method != http.MethodHead {
+		w.Header().Set("Allow", "GET, HEAD")
+		respondWithError(w, http.StatusMethodNotAllowed, "Method not allowed")
+		return
+	}
+	target := "/dashboard/"
+	if r.URL != nil && r.URL.RawQuery != "" {
+		target += "?" + r.URL.RawQuery
+	}
+	http.Redirect(w, r, target, http.StatusFound)
+}
+
+func (s *Server) dashboardStaticHandler() http.Handler {
+	static := http.StripPrefix("/dashboard/", webui.Handler())
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		webui.SetSecurityHeaders(w)
+		if !ResolveEnrichmentConfig().WebUIEnabled {
+			http.NotFound(w, r)
+			return
+		}
+		if r.Method != http.MethodGet && r.Method != http.MethodHead {
+			w.Header().Set("Allow", "GET, HEAD")
+			respondWithError(w, http.StatusMethodNotAllowed, "Method not allowed")
+			return
+		}
+		static.ServeHTTP(w, r)
+	})
 }
 
 func (s *Server) HelloWorldHandler(w http.ResponseWriter, r *http.Request) {

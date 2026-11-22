@@ -147,4 +147,68 @@ func (s *Server) registerResources() {
 		}
 		return jsonResourceResult(req.Params.URI, detail)
 	})
+
+	s.mcpServer.AddResource(&mcp.Resource{
+		URI:         "upwork://projects/active",
+		Name:        "Active Coding & Client Projects",
+		Description: "Tracked workspace coding and client projects synced into Postgres.",
+		MIMEType:    "application/json",
+	}, func(ctx context.Context, req *mcp.ReadResourceRequest) (*mcp.ReadResourceResult, error) {
+		projects, err := s.backend.ListActiveProjects(ctx, server.ListActiveProjectsFilter{
+			Limit: 100,
+		})
+		if err != nil {
+			return nil, err
+		}
+		return jsonResourceResult(req.Params.URI, map[string]any{
+			"projects": projects,
+			"count":    len(projects),
+		})
+	})
+
+	s.mcpServer.AddResource(&mcp.Resource{
+		URI:         "upwork://jobs/search-runs",
+		Name:        "Recent Search Runs",
+		Description: "Latest 20 persisted job search runs with criteria, counts, linked project keys, and optional dashboard URL.",
+		MIMEType:    "application/json",
+	}, func(ctx context.Context, req *mcp.ReadResourceRequest) (*mcp.ReadResourceResult, error) {
+		runs, total, err := s.backend.ListSearchRuns(ctx, 20, 0)
+		if err != nil {
+			return nil, err
+		}
+		payload := map[string]any{
+			"search_runs": runs,
+			"count":       len(runs),
+			"total":       total,
+		}
+		if dashURL := s.backend.BuildDashboardURL(""); dashURL != "" {
+			payload["dashboard_url"] = dashURL
+		}
+		return jsonResourceResult(req.Params.URI, payload)
+	})
+
+	s.mcpServer.AddResource(&mcp.Resource{
+		URI:         "upwork://jobs/enrichment-batches",
+		Name:        "Recent Enrichment Batches",
+		Description: "Latest 20 async batch AI/detail enrichment runs with status, counts, token usage, and optional dashboard URL.",
+		MIMEType:    "application/json",
+	}, func(ctx context.Context, req *mcp.ReadResourceRequest) (*mcp.ReadResourceResult, error) {
+		mgr := s.backend.EnrichmentManager()
+		if mgr == nil {
+			return nil, fmt.Errorf("enrichment manager unavailable")
+		}
+		batches, total, err := mgr.ListBatches(ctx, "", 20, 0)
+		if err != nil {
+			return nil, err
+		}
+		payload := map[string]any{
+			"batches": batches,
+			"count":   len(batches),
+			"total":   total,
+		}
+		if dashURL := s.backend.BuildDashboardURL(""); dashURL != "" {
+			payload["dashboard_url"] = dashURL
+		}
+		return jsonResourceResult(req.Params.URI, payload)
+	})
 }

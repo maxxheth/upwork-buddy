@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"log"
+	"math"
 	"math/rand/v2"
 	"net/http"
 	"sort"
@@ -20,6 +21,7 @@ import (
 
 	"github.com/jackc/pgx/v5/pgconn"
 	"gorm.io/gorm"
+	"gorm.io/gorm/clause"
 )
 
 var (
@@ -27,52 +29,77 @@ var (
 	errBatchValidation       = errors.New("batch job validation failed")
 )
 
-type batchIngestJobsRequest struct {
+type batchIngestJobsRequest = BatchIngestJobsRequest
+
+// BatchIngestJobsRequest describes a deterministic batch job ingestion and optional search-run provenance request.
+type BatchIngestJobsRequest struct {
 	Jobs        []saveJobRequest      `json:"jobs"`
 	Filters     *scoring.FilterConfig `json:"filters,omitempty"`
 	FilterStage string                `json:"filter_stage,omitempty"`
 	SortByScore *bool                 `json:"sort_by_score,omitempty"`
 	Upsert      *bool                 `json:"upsert,omitempty"`
+	RunLabel    string                `json:"run_label,omitempty"`
+	Source      string                `json:"source,omitempty"`
+	TriggeredBy string                `json:"triggered_by,omitempty"`
+	ProjectKeys []string              `json:"project_keys,omitempty"`
+	Queries     []string              `json:"queries,omitempty"`
 }
 
-type batchIngestJobsResponse struct {
+type batchIngestJobsResponse = BatchIngestJobsResponse
+
+// BatchIngestJobsResponse summarizes a batch ingestion call and optional SearchRun record.
+type BatchIngestJobsResponse struct {
 	Jobs              []jobEntry `json:"jobs"`
 	TotalReceived     int        `json:"total_received"`
 	DeduplicatedCount int        `json:"deduplicated_count"`
 	FilteredCount     int        `json:"filtered_count"`
 	PersistedCount    int        `json:"persisted_count"`
+	SearchRunID       uint       `json:"search_run_id,omitempty"`
+	DashboardURL      string     `json:"dashboard_url,omitempty"`
 }
 
 // SearchJobsRequest describes an orchestrated extension search + scoring + optional enrichment sweep.
 type SearchJobsRequest struct {
-	Source         string                `json:"source,omitempty"`
-	Query          string                `json:"query,omitempty"`
-	Queries        []string              `json:"queries,omitempty"`
-	Sort           string                `json:"sort,omitempty"`
-	PerPage        *int                  `json:"per_page,omitempty"`
-	ContractorTier []int                 `json:"contractor_tier,omitempty"`
-	ContractType   string                `json:"contract_type,omitempty"`
-	ProposalTiers  []string              `json:"proposal_tiers,omitempty"`
-	Amount         string                `json:"amount,omitempty"`
-	BudgetMin      *int                  `json:"budget_min,omitempty"`
-	BudgetMax      *int                  `json:"budget_max,omitempty"`
-	Category       string                `json:"category,omitempty"`
-	SearchURL      string                `json:"search_url,omitempty"`
-	StartPage      int                   `json:"start_page,omitempty"`
-	MaxPages       int                   `json:"max_pages,omitempty"`
-	TargetJobs     *int                  `json:"target_jobs,omitempty"`
-	EnrichTopN     *int                  `json:"enrich_top_n,omitempty"`
-	ProfileID      *uint                 `json:"profile_id,omitempty"`
-	Filters        *scoring.FilterConfig `json:"filters,omitempty"`
+	Source               string                `json:"source,omitempty"`
+	Query                string                `json:"query,omitempty"`
+	Queries              []string              `json:"queries,omitempty"`
+	Sort                 string                `json:"sort,omitempty"`
+	PerPage              *int                  `json:"per_page,omitempty"`
+	ContractorTier       []int                 `json:"contractor_tier,omitempty"`
+	ContractType         string                `json:"contract_type,omitempty"`
+	ProposalTiers        []string              `json:"proposal_tiers,omitempty"`
+	Amount               string                `json:"amount,omitempty"`
+	BudgetMin            *int                  `json:"budget_min,omitempty"`
+	BudgetMax            *int                  `json:"budget_max,omitempty"`
+	HourlyRateMin        *float64              `json:"hourly_rate_min,omitempty"`
+	HourlyRateMax        *float64              `json:"hourly_rate_max,omitempty"`
+	PaymentVerifiedOnly  *bool                 `json:"payment_verified_only,omitempty"`
+	Category             string                `json:"category,omitempty"`
+	SearchURL            string                `json:"search_url,omitempty"`
+	StartPage            int                   `json:"start_page,omitempty"`
+	MaxPages             int                   `json:"max_pages,omitempty"`
+	TargetJobs           *int                  `json:"target_jobs,omitempty"`
+	EnrichTopN           *int                  `json:"enrich_top_n,omitempty"`
+	SkipAutoDetailEnrich bool                  `json:"skip_auto_detail_enrich,omitempty"`
+	ProfileID            *uint                 `json:"profile_id,omitempty"`
+	Filters              *scoring.FilterConfig `json:"filters,omitempty"`
+	RunLabel             string                `json:"run_label,omitempty"`
+	FromActiveProjects   bool                  `json:"from_active_projects,omitempty"`
+	ActiveProjectKeys    []string              `json:"active_project_keys,omitempty"`
+	ActiveProjectTiers   []string              `json:"active_project_tiers,omitempty"`
+	TriggeredBy          string                `json:"triggered_by,omitempty"`
 }
 
 // SearchJobsResponse summarizes an orchestrated search pipeline run.
 type SearchJobsResponse struct {
-	Jobs          []jobEntry `json:"jobs"`
-	TotalScraped  int        `json:"total_scraped"`
-	FilteredCount int        `json:"filtered_count"`
-	EnrichedCount int        `json:"enriched_count"`
-	StoppedReason string     `json:"stopped_reason"`
+	SearchRunID        uint       `json:"search_run_id,omitempty"`
+	Jobs               []jobEntry `json:"jobs"`
+	TotalScraped       int        `json:"total_scraped"`
+	FilteredCount      int        `json:"filtered_count"`
+	EnrichedCount      int        `json:"enriched_count"`
+	StoppedReason      string     `json:"stopped_reason"`
+	MatchedProjectKeys []string   `json:"matched_project_keys,omitempty"`
+	DashboardURL       string     `json:"dashboard_url,omitempty"`
 }
 
 // DetailEnrichRequest describes a single or batch job detail enrichment call.
@@ -239,10 +266,7 @@ func mergeSaveJobRequests(dst *saveJobRequest, src saveJobRequest) {
 func jobInputFromSaveRequest(req saveJobRequest) scoring.JobInput {
 	rawURL := firstNonEmpty(req.CanonicalURL, req.URL, req.JobURL)
 	canonicalURL := scoring.NormalizeJobURL(rawURL)
-	hourlyRate := req.RateRange
-	if hourlyRate == "" && strings.EqualFold(req.ContractType, "hourly") {
-		hourlyRate = req.Budget
-	}
+	hourlyRate := effectiveHourlyRate(req.RateRange, req.ContractType, req.Budget, req.RateMin, req.RateMax)
 	budgetStr := req.BudgetAmount
 	if budgetStr == "" && !strings.EqualFold(req.ContractType, "hourly") {
 		budgetStr = req.Budget
@@ -325,16 +349,206 @@ func isRetryableTxError(err error) bool {
 	return errors.As(err, &pgErr) && (pgErr.Code == "40P01" || pgErr.Code == "40001")
 }
 
+type searchRunMetadata struct {
+	Label               string
+	Source              string
+	TriggeredBy         string
+	ProfileID           *uint
+	ProjectKeys         []string
+	Queries             []string
+	Criteria            any
+	TotalScraped        int
+	FilteredCount       int
+	DetailEnrichedCount int
+	StoppedReason       string
+}
+
+func validateHourlyRateParams(minRate, maxRate *float64) error {
+	if minRate != nil && (math.IsNaN(*minRate) || math.IsInf(*minRate, 0) || *minRate < 0) {
+		return &ServiceError{
+			Code:       "INVALID_PARAMS",
+			HTTPStatus: http.StatusBadRequest,
+			Message:    "hourly_rate_min must be a non-negative finite number",
+		}
+	}
+	if maxRate != nil && (math.IsNaN(*maxRate) || math.IsInf(*maxRate, 0) || *maxRate < 0) {
+		return &ServiceError{
+			Code:       "INVALID_PARAMS",
+			HTTPStatus: http.StatusBadRequest,
+			Message:    "hourly_rate_max must be a non-negative finite number",
+		}
+	}
+	if minRate != nil && maxRate != nil && *minRate > *maxRate {
+		return &ServiceError{
+			Code:       "INVALID_PARAMS",
+			HTTPStatus: http.StatusBadRequest,
+			Message:    "hourly_rate_min cannot exceed hourly_rate_max",
+		}
+	}
+	return nil
+}
+
+func computeSearchRPCTimeout(queryCount, maxPages int) time.Duration {
+	if queryCount <= 0 {
+		queryCount = 1
+	}
+	if maxPages <= 0 {
+		maxPages = 1
+	}
+	totalPages := queryCount * maxPages
+	if totalPages <= 1 {
+		return 2 * time.Minute
+	}
+	d := 30*time.Second + time.Duration(totalPages)*25*time.Second
+	if d < 2*time.Minute {
+		return 2 * time.Minute
+	}
+	const maxTimeout = 4*time.Minute + 30*time.Second
+	if d > maxTimeout {
+		return maxTimeout
+	}
+	return d
+}
+
+func mergeUniqueQueries(groups ...[]string) []string {
+	var out []string
+	seen := make(map[string]struct{})
+	for _, group := range groups {
+		for _, q := range group {
+			trimmed := strings.TrimSpace(q)
+			if trimmed == "" {
+				continue
+			}
+			lower := strings.ToLower(trimmed)
+			if _, ok := seen[lower]; ok {
+				continue
+			}
+			seen[lower] = struct{}{}
+			out = append(out, trimmed)
+		}
+	}
+	return out
+}
+
+// deriveQueriesFromActiveProjects builds Upwork search queries strictly from tech_stack_json
+// of non-private, non-archived active_projects. It never selects or emits NDA-sensitive fields
+// (name, client, group_name, path, summary, readme_hint, or public_alias).
+func deriveQueriesFromActiveProjects(db *gorm.DB, keys, tiers []string) ([]string, []string, error) {
+	if db == nil {
+		return nil, nil, errors.New("database unavailable")
+	}
+
+	cleanKeys := mergeUniqueQueries(keys)
+
+	var cleanTiers []string
+	seenTiers := make(map[string]struct{})
+	for _, t := range tiers {
+		lower := strings.ToLower(strings.TrimSpace(t))
+		if lower == "" {
+			continue
+		}
+		if _, ok := seenTiers[lower]; ok {
+			continue
+		}
+		seenTiers[lower] = struct{}{}
+		cleanTiers = append(cleanTiers, lower)
+	}
+	if len(cleanTiers) == 0 && len(cleanKeys) == 0 {
+		cleanTiers = []string{"active"}
+	}
+
+	type activeProjectTechRow struct {
+		ProjectKey    string          `gorm:"column:project_key"`
+		TechStackJSON dbservice.JSONB `gorm:"column:tech_stack_json"`
+	}
+
+	q := db.Model(&dbservice.ActiveProject{}).
+		Select("project_key", "tech_stack_json").
+		Where("LOWER(proposal_visibility) <> ? AND LOWER(activity_tier) <> ? AND LOWER(status) <> ?", "private", "archived", "archived")
+	if len(cleanKeys) > 0 {
+		q = q.Where("project_key IN ?", cleanKeys)
+	}
+	if len(cleanTiers) > 0 {
+		q = q.Where("LOWER(activity_tier) IN ?", cleanTiers)
+	}
+
+	var rows []activeProjectTechRow
+	if err := q.Order("pinned DESC, last_activity_at DESC NULLS LAST, id ASC").Find(&rows).Error; err != nil {
+		return nil, nil, err
+	}
+
+	const maxActiveProjectQueries = 6
+	queries := make([]string, 0, len(rows))
+	matchedKeys := make([]string, 0, len(rows))
+	seenQueries := make(map[string]struct{})
+	seenKeys := make(map[string]struct{})
+
+	for _, row := range rows {
+		rawStack := decodeStringSliceJSONB(row.TechStackJSON)
+		terms := make([]string, 0, len(rawStack))
+		seenTerms := make(map[string]struct{})
+		for _, tok := range rawStack {
+			trimmed := strings.TrimSpace(tok)
+			if trimmed == "" {
+				continue
+			}
+			lower := strings.ToLower(trimmed)
+			if _, ok := seenTerms[lower]; ok {
+				continue
+			}
+			seenTerms[lower] = struct{}{}
+			terms = append(terms, trimmed)
+			if len(terms) == 2 {
+				break
+			}
+		}
+		if len(terms) == 0 {
+			continue
+		}
+
+		pk := strings.TrimSpace(row.ProjectKey)
+		if pk != "" {
+			if _, ok := seenKeys[pk]; !ok {
+				seenKeys[pk] = struct{}{}
+				matchedKeys = append(matchedKeys, pk)
+			}
+		}
+
+		if len(queries) >= maxActiveProjectQueries {
+			continue
+		}
+		queryText := strings.Join(terms, " ")
+		queryLower := strings.ToLower(queryText)
+		if _, ok := seenQueries[queryLower]; ok {
+			continue
+		}
+		seenQueries[queryLower] = struct{}{}
+		queries = append(queries, queryText)
+	}
+
+	return queries, matchedKeys, nil
+}
+
 func upsertBatchRequests(
 	gormDB *gorm.DB,
 	reqs []saveJobRequest,
 	profile *scoring.ScoringProfile,
 ) ([]jobEntry, error) {
+	entries, _, err := upsertBatchRequestsWithRun(gormDB, reqs, profile, nil)
+	return entries, err
+}
+
+func upsertBatchRequestsWithRun(
+	gormDB *gorm.DB,
+	reqs []saveJobRequest,
+	profile *scoring.ScoringProfile,
+	runMeta *searchRunMetadata,
+) ([]jobEntry, uint, error) {
 	prepared := make([]preparedBatchJob, 0, len(reqs))
 	for i, req := range reqs {
 		jobModel, _, explicitScore, err := buildJobModelFromRequest(req)
 		if err != nil {
-			return nil, fmt.Errorf("%w: %w", errBatchValidation, err)
+			return nil, 0, fmt.Errorf("%w: %w", errBatchValidation, err)
 		}
 		prepared = append(prepared, preparedBatchJob{
 			origIdx:       i,
@@ -344,18 +558,37 @@ func upsertBatchRequests(
 		})
 	}
 
-	if len(prepared) == 0 {
-		return []jobEntry{}, nil
-	}
-
 	if gormDB == nil {
+		if len(prepared) == 0 {
+			return []jobEntry{}, 0, nil
+		}
 		entries := make([]jobEntry, 0, len(prepared))
 		for _, item := range prepared {
 			m := item.model
 			applyDeterministicScore(&m, profile, item.explicitScore)
 			entries = append(entries, jobEntryFromModel(m))
 		}
-		return entries, nil
+		return entries, 0, nil
+	}
+
+	if len(prepared) == 0 && runMeta == nil {
+		return []jobEntry{}, 0, nil
+	}
+
+	var projectKeysJSON, queriesJSON, criteriaJSON dbservice.JSONB
+	if runMeta != nil {
+		var err error
+		if projectKeysJSON, err = encodeStringSliceJSONB(runMeta.ProjectKeys); err != nil {
+			return nil, 0, err
+		}
+		if queriesJSON, err = encodeStringSliceJSONB(runMeta.Queries); err != nil {
+			return nil, 0, err
+		}
+		if runMeta.Criteria != nil {
+			if raw, mErr := json.Marshal(runMeta.Criteria); mErr == nil {
+				criteriaJSON = dbservice.JSONB(raw)
+			}
+		}
 	}
 
 	ordered := make([]preparedBatchJob, len(prepared))
@@ -369,13 +602,50 @@ func upsertBatchRequests(
 
 	const maxTxAttempts = 4
 	var entries []jobEntry
+	var createdRunID uint
 	for attempt := 0; attempt < maxTxAttempts; attempt++ {
 		attemptEntries := make([]jobEntry, len(prepared))
+		var attemptRunID uint
 		txErr := gormDB.Transaction(func(tx *gorm.DB) error {
+			if runMeta != nil {
+				run := dbservice.SearchRun{
+					Label:               strings.TrimSpace(runMeta.Label),
+					Source:              strings.TrimSpace(runMeta.Source),
+					TriggeredBy:         strings.TrimSpace(runMeta.TriggeredBy),
+					ProfileID:           runMeta.ProfileID,
+					ProjectKeysJSON:     projectKeysJSON,
+					QueriesJSON:         queriesJSON,
+					CriteriaJSON:        criteriaJSON,
+					TotalScraped:        runMeta.TotalScraped,
+					FilteredCount:       runMeta.FilteredCount,
+					PersistedCount:      len(prepared),
+					DetailEnrichedCount: runMeta.DetailEnrichedCount,
+					StoppedReason:       strings.TrimSpace(runMeta.StoppedReason),
+				}
+				if err := tx.Create(&run).Error; err != nil {
+					return err
+				}
+				attemptRunID = run.ID
+			}
+
 			for _, item := range ordered {
-				saved, _, err := upsertJobRecord(tx, item.model, profile, item.explicitScore)
+				modelCopy := item.model
+				if attemptRunID > 0 {
+					rid := attemptRunID
+					modelCopy.LastSearchRunID = &rid
+				}
+				saved, _, err := upsertJobRecord(tx, modelCopy, profile, item.explicitScore)
 				if err != nil {
 					return err
+				}
+				if attemptRunID > 0 {
+					link := dbservice.SearchRunJob{
+						SearchRunID: attemptRunID,
+						JobID:       saved.ID,
+					}
+					if err := tx.Clauses(clause.OnConflict{DoNothing: true}).Create(&link).Error; err != nil {
+						return err
+					}
 				}
 				attemptEntries[item.origIdx] = jobEntryFromModel(saved)
 			}
@@ -383,15 +653,16 @@ func upsertBatchRequests(
 		})
 		if txErr == nil {
 			entries = attemptEntries
+			createdRunID = attemptRunID
 			break
 		}
 		if !isRetryableTxError(txErr) || attempt == maxTxAttempts-1 {
-			return nil, txErr
+			return nil, 0, txErr
 		}
 		jitter := time.Duration(5+rand.IntN(21)) * time.Millisecond
 		time.Sleep(jitter)
 	}
-	return entries, nil
+	return entries, createdRunID, nil
 }
 
 func extendWriteDeadline(w http.ResponseWriter, d time.Duration) {
@@ -518,16 +789,26 @@ func respondWithJSONStatus(w http.ResponseWriter, status int, payload any) {
 	}
 }
 
-func (s *Server) batchIngestJobsHandler(w http.ResponseWriter, r *http.Request) {
-	if s.db == nil || s.db.GetGorm() == nil {
-		respondWithError(w, http.StatusServiceUnavailable, "Database unavailable")
-		return
+// BatchIngestJobs deduplicates, filters, scores, and optionally persists a batch of jobs
+// alongside a SearchRun provenance record (0 LLM tokens).
+func (s *Server) BatchIngestJobs(ctx context.Context, req BatchIngestJobsRequest) (*BatchIngestJobsResponse, error) {
+	if s == nil || s.db == nil || s.db.GetGorm() == nil {
+		return nil, &ServiceError{Code: "DB_UNAVAILABLE", HTTPStatus: http.StatusServiceUnavailable, Message: "Database unavailable"}
+	}
+	if req.Filters != nil {
+		if err := validateHourlyRateParams(req.Filters.HourlyRateMin, req.Filters.HourlyRateMax); err != nil {
+			return nil, err
+		}
 	}
 
-	var req batchIngestJobsRequest
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		respondWithError(w, http.StatusBadRequest, "Invalid request body")
-		return
+	for _, jobReq := range req.Jobs {
+		if _, _, _, err := buildJobModelFromRequest(jobReq); err != nil {
+			return nil, &ServiceError{
+				Code:       "INVALID_PARAMS",
+				HTTPStatus: http.StatusBadRequest,
+				Message:    fmt.Sprintf("%s: %s", errBatchValidation.Error(), err.Error()),
+			}
+		}
 	}
 
 	totalReceived := len(req.Jobs)
@@ -538,7 +819,7 @@ func (s *Server) batchIngestJobsHandler(w http.ResponseWriter, r *http.Request) 
 		stage = scoring.StagePostEnrichment
 	}
 
-	gormDB := s.db.GetGorm()
+	gormDB := s.db.GetGorm().WithContext(ctx)
 	profile := loadScoringProfile(gormDB)
 
 	surviving := deduped
@@ -554,20 +835,37 @@ func (s *Server) batchIngestJobsHandler(w http.ResponseWriter, r *http.Request) 
 
 	doUpsert := req.Upsert == nil || *req.Upsert
 	var entries []jobEntry
+	var searchRunID uint
 	var err error
 	if doUpsert {
-		entries, err = upsertBatchRequests(gormDB, surviving, profile)
+		runMeta := &searchRunMetadata{
+			Label:         strings.TrimSpace(req.RunLabel),
+			Source:        firstNonEmpty(req.Source, "batch"),
+			TriggeredBy:   firstNonEmpty(req.TriggeredBy, "api"),
+			ProjectKeys:   mergeUniqueQueries(req.ProjectKeys),
+			Queries:       mergeUniqueQueries(req.Queries),
+			Criteria:      map[string]any{"filter_stage": string(stage), "filters": req.Filters},
+			TotalScraped:  totalReceived,
+			FilteredCount: len(surviving),
+			StoppedReason: "completed",
+		}
+		entries, searchRunID, err = upsertBatchRequestsWithRun(gormDB, surviving, profile, runMeta)
 	} else {
-		entries, err = upsertBatchRequests(nil, surviving, profile)
+		entries, _, err = upsertBatchRequestsWithRun(nil, surviving, profile, nil)
 	}
 	if err != nil {
 		if errors.Is(err, errBatchValidation) {
-			respondWithError(w, http.StatusBadRequest, err.Error())
-			return
+			return nil, &ServiceError{
+				Code:       "INVALID_PARAMS",
+				HTTPStatus: http.StatusBadRequest,
+				Message:    err.Error(),
+			}
 		}
-		log.Printf("❌ Failed to ingest batch jobs: %v", err)
-		respondWithError(w, http.StatusInternalServerError, err.Error())
-		return
+		return nil, &ServiceError{
+			Code:       "DB_ERROR",
+			HTTPStatus: http.StatusInternalServerError,
+			Message:    err.Error(),
+		}
 	}
 
 	persistedCount := 0
@@ -575,13 +873,37 @@ func (s *Server) batchIngestJobsHandler(w http.ResponseWriter, r *http.Request) 
 		persistedCount = len(entries)
 	}
 
-	respondWithJSON(w, batchIngestJobsResponse{
+	return &BatchIngestJobsResponse{
 		Jobs:              entries,
 		TotalReceived:     totalReceived,
 		DeduplicatedCount: len(deduped),
 		FilteredCount:     len(surviving),
 		PersistedCount:    persistedCount,
-	})
+		SearchRunID:       searchRunID,
+		DashboardURL:      s.buildSearchRunDashboardURL(searchRunID),
+	}, nil
+}
+
+func (s *Server) batchIngestJobsHandler(w http.ResponseWriter, r *http.Request) {
+	if s.db == nil || s.db.GetGorm() == nil {
+		respondWithError(w, http.StatusServiceUnavailable, "Database unavailable")
+		return
+	}
+
+	var req batchIngestJobsRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		respondWithError(w, http.StatusBadRequest, "Invalid request body")
+		return
+	}
+
+	res, err := s.BatchIngestJobs(r.Context(), req)
+	if err != nil {
+		log.Printf("❌ Failed to ingest batch jobs: %v", err)
+		respondBridgeError(w, err)
+		return
+	}
+
+	respondWithJSON(w, res)
 }
 
 func searchModeToFeedSource(mode string) string {
@@ -664,6 +986,22 @@ func mergeProfileIntoSearchRequest(req *SearchJobsRequest, cfg SearchProfileConf
 
 // ExecuteSearchPipeline runs extension search -> Stage 2 filtering/scoring -> optional top-N detail enrichment -> Stage 3 filtering/scoring -> DB upsert.
 func (s *Server) ExecuteSearchPipeline(ctx context.Context, req SearchJobsRequest) (*SearchJobsResponse, error) {
+	if err := validateHourlyRateParams(req.HourlyRateMin, req.HourlyRateMax); err != nil {
+		return nil, err
+	}
+	if req.Filters != nil {
+		if err := validateHourlyRateParams(req.Filters.HourlyRateMin, req.Filters.HourlyRateMax); err != nil {
+			return nil, err
+		}
+	}
+	if req.ProfileID != nil && (*req.ProfileID == 0 || uint64(*req.ProfileID) > math.MaxInt64) {
+		return nil, &ServiceError{
+			Code:       "INVALID_PARAMS",
+			HTTPStatus: http.StatusBadRequest,
+			Message:    "Invalid search profile ID",
+		}
+	}
+
 	if s.bridgeHub == nil || !s.bridgeHub.IsConnected() {
 		return nil, bridge.ErrExtensionDisconnected
 	}
@@ -700,6 +1038,36 @@ func (s *Server) ExecuteSearchPipeline(ctx context.Context, req SearchJobsReques
 	if req.MaxPages <= 0 {
 		req.MaxPages = 1
 	}
+
+	var matchedProjectKeys []string
+	if req.FromActiveProjects {
+		if gormDB == nil {
+			return nil, &ServiceError{
+				Code:       "DB_UNAVAILABLE",
+				HTTPStatus: http.StatusServiceUnavailable,
+				Message:    "Database unavailable",
+			}
+		}
+		derivedQueries, projectKeys, err := deriveQueriesFromActiveProjects(gormDB, req.ActiveProjectKeys, req.ActiveProjectTiers)
+		if err != nil {
+			return nil, &ServiceError{
+				Code:       "DB_ERROR",
+				HTTPStatus: http.StatusInternalServerError,
+				Message:    "Failed to derive search queries from active projects",
+			}
+		}
+		matchedProjectKeys = projectKeys
+		mergedQueries := mergeUniqueQueries([]string{req.Query}, req.Queries, derivedQueries)
+		if len(mergedQueries) == 0 && strings.TrimSpace(req.SearchURL) == "" && req.Source == "search" {
+			return nil, &ServiceError{
+				Code:       "INVALID_PARAMS",
+				HTTPStatus: http.StatusBadRequest,
+				Message:    "no search queries derived from active projects",
+			}
+		}
+		req.Queries = mergedQueries
+	}
+
 	amountFacet := strings.TrimSpace(req.Amount)
 	if amountFacet != "" {
 		minAmt, maxAmt, parseErr := parseAmountFacet(amountFacet)
@@ -730,6 +1098,20 @@ func (s *Server) ExecuteSearchPipeline(ctx context.Context, req SearchJobsReques
 	if req.BudgetMax != nil && effectiveFilters.BudgetMax == nil {
 		v := float64(*req.BudgetMax)
 		effectiveFilters.BudgetMax = &v
+	}
+	if req.HourlyRateMin != nil {
+		v := *req.HourlyRateMin
+		effectiveFilters.HourlyRateMin = &v
+	}
+	if req.HourlyRateMax != nil {
+		v := *req.HourlyRateMax
+		effectiveFilters.HourlyRateMax = &v
+	}
+	if err := validateHourlyRateParams(effectiveFilters.HourlyRateMin, effectiveFilters.HourlyRateMax); err != nil {
+		return nil, err
+	}
+	if req.PaymentVerifiedOnly != nil {
+		effectiveFilters.PaymentVerifiedOnly = *req.PaymentVerifiedOnly
 	}
 	req.Filters = &effectiveFilters
 
@@ -770,6 +1152,17 @@ func (s *Server) ExecuteSearchPipeline(ctx context.Context, req SearchJobsReques
 	if req.BudgetMax != nil {
 		wsParams["budget_max"] = *req.BudgetMax
 	}
+	if effectiveFilters.HourlyRateMin != nil {
+		wsParams["hourly_rate_min"] = *effectiveFilters.HourlyRateMin
+	}
+	if effectiveFilters.HourlyRateMax != nil {
+		wsParams["hourly_rate_max"] = *effectiveFilters.HourlyRateMax
+	}
+	if effectiveFilters.PaymentVerifiedOnly {
+		wsParams["payment_verified_only"] = true
+	} else if req.PaymentVerifiedOnly != nil {
+		wsParams["payment_verified_only"] = *req.PaymentVerifiedOnly
+	}
 	if req.Category != "" {
 		wsParams["category"] = req.Category
 	}
@@ -780,7 +1173,13 @@ func (s *Server) ExecuteSearchPipeline(ctx context.Context, req SearchJobsReques
 		wsParams["target_jobs"] = *req.TargetJobs
 	}
 
-	rawSearchResult, err := s.bridgeHub.CallExtension(ctx, "jobs.search", wsParams, 2*time.Minute)
+	queryCount := len(req.Queries)
+	if queryCount == 0 {
+		queryCount = 1
+	}
+	rpcTimeout := computeSearchRPCTimeout(queryCount, req.MaxPages)
+
+	rawSearchResult, err := s.bridgeHub.CallExtension(ctx, "jobs.search", wsParams, rpcTimeout)
 	if err != nil {
 		s.auditBridgeChallenge("jobs_search", req.Query, err)
 		return nil, err
@@ -801,24 +1200,26 @@ func (s *Server) ExecuteSearchPipeline(ctx context.Context, req SearchJobsReques
 	// Stage 2: pre-enrichment filter + sort by score
 	stage2 := filterSaveJobRequests(deduped, effectiveFilters, scoring.StagePreEnrichment, profile)
 
-	// Stage 3: optional top-N enrichment
+	// Stage 3: optional top-N enrichment (suppressed when skip_auto_detail_enrich=true)
 	enrichTopN := 0
-	if req.EnrichTopN != nil {
-		if *req.EnrichTopN > 0 {
-			enrichTopN = *req.EnrichTopN
-		}
-	} else if req.Filters != nil && req.Filters.MaxProposals != nil {
-		anyMissing := false
-		for _, c := range stage2 {
-			if firstNonEmpty(c.ProposalsTier, c.Proposals) == "" && c.ProposalsCount == nil {
-				anyMissing = true
-				break
+	if !req.SkipAutoDetailEnrich {
+		if req.EnrichTopN != nil {
+			if *req.EnrichTopN > 0 {
+				enrichTopN = *req.EnrichTopN
 			}
-		}
-		if anyMissing {
-			enrichTopN = 25
-			if req.TargetJobs != nil && *req.TargetJobs > 0 && *req.TargetJobs < enrichTopN {
-				enrichTopN = *req.TargetJobs
+		} else if req.Filters != nil && req.Filters.MaxProposals != nil {
+			anyMissing := false
+			for _, c := range stage2 {
+				if firstNonEmpty(c.ProposalsTier, c.Proposals) == "" && c.ProposalsCount == nil {
+					anyMissing = true
+					break
+				}
+			}
+			if anyMissing {
+				enrichTopN = 25
+				if req.TargetJobs != nil && *req.TargetJobs > 0 && *req.TargetJobs < enrichTopN {
+					enrichTopN = *req.TargetJobs
+				}
 			}
 		}
 	}
@@ -827,6 +1228,32 @@ func (s *Server) ExecuteSearchPipeline(ctx context.Context, req SearchJobsReques
 	stoppedReason := wsSearchOut.StoppedReason
 	if stoppedReason == "" {
 		stoppedReason = "completed"
+	}
+
+	runQueries := mergeUniqueQueries(req.Queries)
+	if len(runQueries) == 0 && strings.TrimSpace(req.Query) != "" {
+		runQueries = []string{strings.TrimSpace(req.Query)}
+	}
+	defaultTriggeredBy := "api"
+	if req.ProfileID != nil {
+		defaultTriggeredBy = "profile"
+	}
+	triggeredBy := firstNonEmpty(req.TriggeredBy, defaultTriggeredBy)
+	criteriaPayload := map[string]any{
+		"source":                  req.Source,
+		"contract_type":           req.ContractType,
+		"budget_min":              req.BudgetMin,
+		"budget_max":              req.BudgetMax,
+		"hourly_rate_min":         effectiveFilters.HourlyRateMin,
+		"hourly_rate_max":         effectiveFilters.HourlyRateMax,
+		"payment_verified_only":   effectiveFilters.PaymentVerifiedOnly,
+		"from_active_projects":    req.FromActiveProjects,
+		"active_project_tiers":    req.ActiveProjectTiers,
+		"skip_auto_detail_enrich": req.SkipAutoDetailEnrich,
+		"start_page":              req.StartPage,
+		"max_pages":               req.MaxPages,
+		"target_jobs":             req.TargetJobs,
+		"filters":                 effectiveFilters,
 	}
 
 	finalCandidates := stage2
@@ -864,7 +1291,21 @@ func (s *Server) ExecuteSearchPipeline(ctx context.Context, req SearchJobsReques
 			}, 3*time.Minute)
 			if detailErr != nil {
 				if errors.Is(detailErr, bridge.ErrHumanActionRequired) {
-					_, _ = upsertBatchRequests(gormDB, stage2, profile)
+					if gormDB != nil {
+						stage2Meta := &searchRunMetadata{
+							Label:         strings.TrimSpace(req.RunLabel),
+							Source:        req.Source,
+							TriggeredBy:   triggeredBy,
+							ProfileID:     req.ProfileID,
+							ProjectKeys:   matchedProjectKeys,
+							Queries:       runQueries,
+							Criteria:      criteriaPayload,
+							TotalScraped:  totalScraped,
+							FilteredCount: len(stage2),
+							StoppedReason: "human_action_required",
+						}
+						_, _, _ = upsertBatchRequestsWithRun(gormDB, stage2, profile, stage2Meta)
+					}
 					s.auditBridgeChallenge("jobs_detail", strings.Join(topURLs, ","), detailErr)
 					return nil, detailErr
 				}
@@ -906,10 +1347,33 @@ func (s *Server) ExecuteSearchPipeline(ctx context.Context, req SearchJobsReques
 	if req.Filters != nil {
 		f := *req.Filters
 		f.SortByScore = true
+		// When live Upwork search already applied the native payment_verified=1 URL facet
+		// and no detail scrape ran (enrichedCount == 0), Stage 2 already dropped explicit
+		// payment_verified=false cards; do not discard nil-badge cards at Stage 3.
+		if f.PaymentVerifiedOnly && enrichedCount == 0 && req.Source == "search" && strings.TrimSpace(req.SearchURL) == "" {
+			f.PaymentVerifiedOnly = false
+		}
 		finalCandidates = filterSaveJobRequests(finalCandidates, f, scoring.StagePostEnrichment, profile)
 	}
 
-	entries, err := upsertBatchRequests(gormDB, finalCandidates, profile)
+	var runMeta *searchRunMetadata
+	if gormDB != nil {
+		runMeta = &searchRunMetadata{
+			Label:               strings.TrimSpace(req.RunLabel),
+			Source:              req.Source,
+			TriggeredBy:         triggeredBy,
+			ProfileID:           req.ProfileID,
+			ProjectKeys:         matchedProjectKeys,
+			Queries:             runQueries,
+			Criteria:            criteriaPayload,
+			TotalScraped:        totalScraped,
+			FilteredCount:       len(finalCandidates),
+			DetailEnrichedCount: enrichedCount,
+			StoppedReason:       stoppedReason,
+		}
+	}
+
+	entries, searchRunID, err := upsertBatchRequestsWithRun(gormDB, finalCandidates, profile, runMeta)
 	if err != nil {
 		return nil, err
 	}
@@ -922,11 +1386,14 @@ func (s *Server) ExecuteSearchPipeline(ctx context.Context, req SearchJobsReques
 	}
 
 	return &SearchJobsResponse{
-		Jobs:          entries,
-		TotalScraped:  totalScraped,
-		FilteredCount: len(finalCandidates),
-		EnrichedCount: enrichedCount,
-		StoppedReason: stoppedReason,
+		SearchRunID:        searchRunID,
+		Jobs:               entries,
+		TotalScraped:       totalScraped,
+		FilteredCount:      len(finalCandidates),
+		EnrichedCount:      enrichedCount,
+		StoppedReason:      stoppedReason,
+		MatchedProjectKeys: matchedProjectKeys,
+		DashboardURL:       s.buildSearchRunDashboardURL(searchRunID),
 	}, nil
 }
 
@@ -1066,8 +1533,8 @@ func (s *Server) runSearchProfileHandler(w http.ResponseWriter, r *http.Request)
 
 	idStr := strings.TrimSpace(r.PathValue("id"))
 	idVal, err := strconv.ParseUint(idStr, 10, 64)
-	if err != nil || idVal == 0 {
-		respondWithError(w, http.StatusBadRequest, "Invalid search profile ID")
+	if err != nil || idVal == 0 || idVal > math.MaxInt64 {
+		respondInvalidParams(w, "Invalid search profile ID")
 		return
 	}
 

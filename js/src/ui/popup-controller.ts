@@ -8,6 +8,7 @@ export interface PopupControllerElements {
   pendingCountEl: HTMLElement;
   challengeBannerEl: HTMLElement;
   openSidePanelBtn: HTMLButtonElement;
+  openJobsTableBtn?: HTMLButtonElement | null;
   killSwitchBtn: HTMLButtonElement;
   startServerBtn: HTMLButtonElement;
   openOptionsBtn: HTMLButtonElement;
@@ -27,6 +28,9 @@ export class PopupController {
   async init(): Promise<void> {
     this.els.openSidePanelBtn.addEventListener('click', () => {
       void this.handleOpenSidePanel();
+    });
+    this.els.openJobsTableBtn?.addEventListener('click', () => {
+      void this.handleOpenJobsTable();
     });
     this.els.killSwitchBtn.addEventListener('click', () => {
       void this.handleKillSwitch();
@@ -204,5 +208,17 @@ export class PopupController {
     } catch {
       await browser.tabs.create({ url: browser.runtime.getURL('/options.html') });
     }
+  }
+
+  async handleOpenJobsTable(): Promise<void> {
+    try {
+      const res = (await browser.runtime.sendMessage({
+        type: 'OPEN_JOBS_DASHBOARD',
+      })) as { ok?: boolean } | undefined;
+      if (res?.ok) return;
+    } catch {
+      // fall back to direct tab creation
+    }
+    await browser.tabs.create({ url: browser.runtime.getURL('/dashboard.html') });
   }
 }

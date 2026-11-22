@@ -525,6 +525,7 @@ export class SidePanelController {
                 typeof job.connects_required === 'number'
                   ? `${job.connects_required} Connects`
                   : '';
+              const aiBadge = this.formatSidePanelAiBadge(job);
               const enrichTargetUrl = safeUrl ?? '';
               return `
                 <article class="sp-card" data-job-id="${escapeHtml(String(job.id))}">
@@ -541,6 +542,7 @@ export class SidePanelController {
                     ${job.client_spent ? `<span>${escapeHtml(job.client_spent)}</span>` : ''}
                     ${job.posted_text ? `<span>${escapeHtml(job.posted_text)}</span>` : ''}
                     ${job.client_country ? `<span>${escapeHtml(job.client_country)}</span>` : ''}
+                    <span class="sp-badge badge-tag" data-testid="sp-ai-badge" data-ai-status="${escapeHtml(aiBadge.status)}">${escapeHtml(aiBadge.label)}</span>
                   </div>
                   <div class="sp-card-actions">
                     ${safeUrl ? `<a class="sp-link" href="${escapeHtml(safeUrl)}" target="_blank" rel="noopener noreferrer">Open on Upwork</a>` : ''}
@@ -605,6 +607,7 @@ export class SidePanelController {
           <input type="search" data-testid="filter-query" id="sp-filter-query" placeholder="Search jobs..." value="${escapeHtml(this.filterQuery)}" />
           <button type="button" id="sp-pipeline-refresh" class="btn-secondary">Refresh</button>
           <button type="button" id="sp-analyze-tab" data-testid="analyze-current-tab-btn" class="btn-primary">Analyze Current Tab</button>
+          <button type="button" id="sp-open-full-table" data-testid="open-full-table-btn" class="btn-secondary">Open Full Table ↗</button>
         </div>
         <div class="sp-list">${cardsHtml}</div>
         <div id="sp-job-detail-view"></div>
@@ -616,6 +619,8 @@ export class SidePanelController {
     const queryInput = this.els.contentEl.querySelector<HTMLInputElement>('#sp-filter-query');
     const refreshBtn = this.els.contentEl.querySelector<HTMLButtonElement>('#sp-pipeline-refresh');
     const analyzeTabBtn = this.els.contentEl.querySelector<HTMLButtonElement>('#sp-analyze-tab');
+    const openFullTableBtn =
+      this.els.contentEl.querySelector<HTMLButtonElement>('#sp-open-full-table');
 
     const searchQueryEl = this.els.contentEl.querySelector<HTMLInputElement>('#sp-search-query');
     const searchSourceEl = this.els.contentEl.querySelector<HTMLSelectElement>('#sp-search-source');
@@ -791,6 +796,25 @@ export class SidePanelController {
       } catch {
         // ignore if active tab is not Upwork
       }
+    });
+
+    openFullTableBtn?.addEventListener('click', async () => {
+      try {
+        const res = (await browser.runtime.sendMessage({
+          type: 'OPEN_JOBS_DASHBOARD',
+          ...(this.filterFit ? { fit: this.filterFit } : {}),
+          ...(this.filterQuery ? { q: this.filterQuery } : {}),
+        })) as { ok?: boolean } | undefined;
+        if (res?.ok) return;
+      } catch {
+        // fall back to direct tab creation
+      }
+      const params = new URLSearchParams();
+      if (this.filterFit) params.set('fit', this.filterFit);
+      if (this.filterQuery) params.set('q', this.filterQuery);
+      const qs = params.toString();
+      const baseUrl = browser.runtime.getURL('/dashboard.html');
+      await browser.tabs.create({ url: qs ? `${baseUrl}?${qs}` : baseUrl });
     });
 
     this.els.contentEl.querySelectorAll<HTMLButtonElement>('.js-enrich-job').forEach((btn) => {
@@ -2250,5 +2274,28 @@ export class SidePanelController {
         }
       });
     }
+  }
+
+  private formatSidePanelAiBadge(job: SavedJob): { status: string; label: string } {
+    const raw = (job.ai_enrichment_status ?? 'none').toLowerCase();
+    if (raw === 'queued') {
+      return { status: 'queued', label: 'AI Queued' };
+    }
+    if (raw === 'scraping_details') {
+      return { status: 'scraping_details', label: 'AI Scraping...' };
+    }
+    if (raw === 'analyzing') {
+      return { status: 'analyzing', label: 'AI Analyzing...' };
+    }
+    if (raw === 'failed') {
+      return { status: 'failed', label: 'AI Failed' };
+    }
+    if (raw === 'completed' || job.ai_enriched_at || job.proposal?.trim()) {
+      return { status: 'completed', label: 'AI Enriched ✓' };
+    }
+    if (job.last_enriched_at) {
+      return { status: 'detail_only', label: 'AI Status: Details Only' };
+    }
+    return { status: 'none', label: 'AI Status: Unenriched' };
   }
 }

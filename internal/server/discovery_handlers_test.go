@@ -4,8 +4,10 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
+	"math"
 	"net/http"
 	"net/http/httptest"
 	"strconv"
@@ -18,6 +20,7 @@ import (
 	"github.com/coder/websocket"
 
 	"upwork-buddy/internal/bridge"
+	dbservice "upwork-buddy/internal/database/service"
 	"upwork-buddy/internal/scoring"
 )
 
@@ -1003,5 +1006,595 @@ func TestExecuteDetailEnrich_NegativeMaxJobsRejected(t *testing.T) {
 	resp.Body.Close()
 	if resp.StatusCode != http.StatusBadRequest || out["error_code"] != "INVALID_PARAMS" {
 		t.Fatalf("expected 400 INVALID_PARAMS for negative max_jobs, got status=%d body=%+v", resp.StatusCode, out)
+	}
+}
+
+func TestComputeSearchRPCTimeout(t *testing.T) {
+	if got := computeSearchRPCTimeout(1, 1); got != 2*time.Minute {
+		t.Fatalf("1x1 timeout = %v, want 2m", got)
+	}
+	if got := computeSearchRPCTimeout(3, 2); got != 3*time.Minute {
+		t.Fatalf("3x2 timeout = %v, want 3m", got)
+	}
+	if got := computeSearchRPCTimeout(10, 5); got != 4*time.Minute+30*time.Second {
+		t.Fatalf("10x5 timeout = %v, want 4m30s", got)
+	}
+}
+
+func TestDeriveQueriesFromActiveProjects_NDASafety_WithDB(t *testing.T) {
+	s := setupTestServer(t)
+	gormDB := s.db.GetGorm()
+
+	now := time.Now().UTC()
+	projects := []dbservice.ActiveProject{
+		{
+			ProjectKey:         "pub-active-1",
+			Name:               "FORBIDDEN_PUB_NAME",
+			Path:               "/var/www/forbidden-pub-path",
+			GroupName:          "forbidden-pub-group",
+			ActivityTier:       "active",
+			Status:             "active",
+			Client:             "FORBIDDEN_PUB_CLIENT",
+			ProposalVisibility: "public",
+			PublicAlias:        "FORBIDDEN_PUB_ALIAS",
+			TechStackJSON:      dbservice.JSONB(`["Go","PostgreSQL","Docker"]`),
+			Summary:            "FORBIDDEN_PUB_SUMMARY",
+			ReadmeHint:         "FORBIDDEN_PUB_README",
+			Pinned:             true,
+			LastActivityAt:     &now,
+		},
+		{
+			ProjectKey:         "anon-active-2",
+			Name:               "FORBIDDEN_ANON_NAME",
+			Path:               "/var/www/forbidden-anon-path",
+			GroupName:          "forbidden-anon-group",
+			ActivityTier:       "active",
+			Status:             "active",
+			Client:             "FORBIDDEN_ANON_CLIENT",
+			ProposalVisibility: "anonymized",
+			PublicAlias:        "FORBIDDEN_ANON_ALIAS",
+			TechStackJSON:      dbservice.JSONB(`["TypeScript","Playwright"]`),
+			Summary:            "FORBIDDEN_ANON_SUMMARY",
+			ReadmeHint:         "FORBIDDEN_ANON_README",
+		},
+		{
+			ProjectKey:         "private-stealth",
+			Name:               "FORBIDDEN_PRIVATE_NAME",
+			Path:               "/var/www/forbidden-private-path",
+			GroupName:          "forbidden-private-group",
+			ActivityTier:       "active",
+			Status:             "active",
+			Client:             "FORBIDDEN_PRIVATE_CLIENT",
+			ProposalVisibility: "private",
+			PublicAlias:        "FORBIDDEN_PRIVATE_ALIAS",
+			TechStackJSON:      dbservice.JSONB(`["StealthSecretStack","Rust"]`),
+			Summary:            "FORBIDDEN_PRIVATE_SUMMARY",
+			ReadmeHint:         "FORBIDDEN_PRIVATE_README",
+			Pinned:             true,
+		},
+		{
+			ProjectKey:         "tier-archived",
+			Name:               "FORBIDDEN_TIER_ARCHIVED",
+			ActivityTier:       "archived",
+			Status:             "active",
+			ProposalVisibility: "public",
+			TechStackJSON:      dbservice.JSONB(`["ArchivedTierStack"]`),
+		},
+		{
+			ProjectKey:         "status-archived",
+			Name:               "FORBIDDEN_STATUS_ARCHIVED",
+			ActivityTier:       "active",
+			Status:             "archived",
+			ProposalVisibility: "public",
+			TechStackJSON:      dbservice.JSONB(`["ArchivedStatusStack"]`),
+		},
+		{
+			ProjectKey:         "recent-proj",
+			Name:               "FORBIDDEN_RECENT_NAME",
+			ActivityTier:       "recent",
+			Status:             "active",
+			ProposalVisibility: "anonymized",
+			TechStackJSON:      dbservice.JSONB(`["Next.js","Prisma"]`),
+		},
+		{
+			ProjectKey:         "empty-stack-active",
+			Name:               "FORBIDDEN_EMPTY_STACK",
+			ActivityTier:       "active",
+			Status:             "active",
+			ProposalVisibility: "public",
+			TechStackJSON:      dbservice.JSONB(`[]`),
+		},
+	}
+	for i := range projects {
+		if err := gormDB.Create(&projects[i]).Error; err != nil {
+			t.Fatalf("seed project %s: %v", projects[i].ProjectKey, err)
+		}
+	}
+
+	// 1. Default tiers (nil, nil) -> only active non-private non-archived with non-empty tech stack
+	queries, matchedKeys, err := deriveQueriesFromActiveProjects(gormDB, nil, nil)
+	if err != nil {
+		t.Fatalf("deriveQueriesFromActiveProjects default failed: %v", err)
+	}
+	if len(queries) != 2 || queries[0] != "Go PostgreSQL" || queries[1] != "TypeScript Playwright" {
+		t.Fatalf("unexpected default derived queries: %+v", queries)
+	}
+	if len(matchedKeys) != 2 || matchedKeys[0] != "pub-active-1" || matchedKeys[1] != "anon-active-2" {
+		t.Fatalf("unexpected default matchedKeys: %+v", matchedKeys)
+	}
+
+	// Explicit negative NDA assertions
+	joined := strings.Join(queries, " | ")
+	for _, forbidden := range []string{
+		"FORBIDDEN_",
+		"forbidden-",
+		"StealthSecretStack",
+		"ArchivedTierStack",
+		"ArchivedStatusStack",
+		"pub-active-1",
+		"anon-active-2",
+		"private-stealth",
+		"Next.js",
+	} {
+		if strings.Contains(joined, forbidden) {
+			t.Fatalf("NDA leak detected: forbidden token %q appeared in queries %q", forbidden, joined)
+		}
+	}
+
+	// 2. Explicit tiers=["active","recent"] includes recent-proj
+	tierQueries, tierKeys, err := deriveQueriesFromActiveProjects(gormDB, nil, []string{"active", "recent"})
+	if err != nil {
+		t.Fatalf("deriveQueriesFromActiveProjects with tiers failed: %v", err)
+	}
+	if len(tierQueries) != 3 || tierQueries[2] != "Next.js Prisma" {
+		t.Fatalf("expected recent project query included, got %+v", tierQueries)
+	}
+	if len(tierKeys) != 3 {
+		t.Fatalf("expected 3 matched keys, got %+v", tierKeys)
+	}
+
+	// 3. Explicit keys filter (private-stealth still excluded even when explicitly requested!)
+	keyQueries, keyMatched, err := deriveQueriesFromActiveProjects(gormDB, []string{"anon-active-2", "private-stealth"}, nil)
+	if err != nil {
+		t.Fatalf("deriveQueriesFromActiveProjects with keys failed: %v", err)
+	}
+	if len(keyQueries) != 1 || keyQueries[0] != "TypeScript Playwright" {
+		t.Fatalf("expected only anon-active-2 query, got %+v", keyQueries)
+	}
+	if len(keyMatched) != 1 || keyMatched[0] != "anon-active-2" {
+		t.Fatalf("expected only anon-active-2 key, got %+v", keyMatched)
+	}
+}
+
+func TestExecuteSearchPipeline_CriteriaForwardingAndSkipAutoDetailEnrich(t *testing.T) {
+	s := &Server{apiToken: "tok-crit"}
+	srv, _ := attachTestBridgeHub(t, s)
+
+	var detailCalls atomic.Int32
+	var seenSearchParams atomic.Value
+	dialAuthenticatedMockExtension(t, srv, "tok-crit", func(method string, params json.RawMessage) (any, *bridge.WireRPCError) {
+		if method == "jobs.detail" {
+			detailCalls.Add(1)
+			return map[string]any{"ok": true, "jobs": []any{}}, nil
+		}
+		if method == "jobs.search" {
+			var p map[string]any
+			_ = json.Unmarshal(params, &p)
+			seenSearchParams.Store(p)
+			return map[string]any{
+				"ok":             true,
+				"stopped_reason": "completed",
+				"jobs": []map[string]any{
+					{
+						"upwork_job_id":    "~01hourlyok",
+						"canonical_url":    "https://www.upwork.com/jobs/Hourly-OK_~01hourlyok/",
+						"job_title":        "Go Hourly Engineer",
+						"job_description":  "Build Go services",
+						"contract_type":    "hourly",
+						"rate_range":       "$75 - $110/hr",
+						"proposals":        "Less than 5",
+						"payment_verified": true,
+					},
+					{
+						"upwork_job_id":    "~02unverified",
+						"canonical_url":    "https://www.upwork.com/jobs/Unverified_~02unverified/",
+						"job_title":        "Unverified Hourly",
+						"job_description":  "Build Go services",
+						"contract_type":    "hourly",
+						"rate_range":       "$80 - $100/hr",
+						"payment_verified": false,
+					},
+					{
+						"upwork_job_id":    "~03lowrate",
+						"canonical_url":    "https://www.upwork.com/jobs/Low-Rate_~03lowrate/",
+						"job_title":        "Low Rate Hourly",
+						"job_description":  "Build Go services",
+						"contract_type":    "hourly",
+						"rate_range":       "$25 - $40/hr",
+						"payment_verified": true,
+					},
+					{
+						"upwork_job_id":    "~04missingprops",
+						"canonical_url":    "https://www.upwork.com/jobs/Missing-Props_~04missingprops/",
+						"job_title":        "Hourly Missing Proposals",
+						"job_description":  "Build Go services",
+						"contract_type":    "hourly",
+						"rate_range":       "$80 - $110/hr",
+						"payment_verified": true,
+					},
+				},
+			}, nil
+		}
+		return nil, &bridge.WireRPCError{Code: json.RawMessage(`-32601`), Message: "unexpected"}
+	})
+
+	// 1. Inverted hourly_rate_min > hourly_rate_max fails fast with 400 INVALID_PARAMS before calling Chrome
+	minHigh := 120.0
+	maxLow := 60.0
+	_, badErr := s.ExecuteSearchPipeline(context.Background(), SearchJobsRequest{
+		Source:        "search",
+		Query:         "go",
+		HourlyRateMin: &minHigh,
+		HourlyRateMax: &maxLow,
+	})
+	var se *ServiceError
+	if !errors.As(badErr, &se) || se.HTTPStatus != http.StatusBadRequest || se.Code != "INVALID_PARAMS" {
+		t.Fatalf("expected 400 INVALID_PARAMS for inverted hourly rates, got %v", badErr)
+	}
+
+	// 2. Valid hourly_rate_min, hourly_rate_max, payment_verified_only, skip_auto_detail_enrich=true (even with max_proposals=15 & missing proposals)
+	rateMin := 70.0
+	rateMax := 130.0
+	payVerified := true
+	maxProps := 15
+	res, err := s.ExecuteSearchPipeline(context.Background(), SearchJobsRequest{
+		Source:               "search",
+		Query:                "go",
+		HourlyRateMin:        &rateMin,
+		HourlyRateMax:        &rateMax,
+		PaymentVerifiedOnly:  &payVerified,
+		SkipAutoDetailEnrich: true,
+		Filters: &scoring.FilterConfig{
+			MaxProposals: &maxProps,
+		},
+	})
+	if err != nil {
+		t.Fatalf("ExecuteSearchPipeline failed: %v", err)
+	}
+	if detailCalls.Load() != 0 {
+		t.Fatalf("expected 0 jobs.detail calls when skip_auto_detail_enrich=true, got %d", detailCalls.Load())
+	}
+	sp, _ := seenSearchParams.Load().(map[string]any)
+	if sp["hourly_rate_min"] != float64(70) || sp["hourly_rate_max"] != float64(130) || sp["payment_verified_only"] != true {
+		t.Fatalf("expected hourly_rate_min/max & payment_verified_only forwarded in wsParams, got %+v", sp)
+	}
+	if len(res.Jobs) != 1 || res.Jobs[0].UpworkJobID != "~01hourlyok" {
+		t.Fatalf("expected only ~01hourlyok to survive hourly rate & payment_verified filters, got %+v", res.Jobs)
+	}
+}
+
+func TestExecuteSearchPipeline_PaymentVerifiedOnlyKeepsNilBadgeCardsWithoutDetailEnrich(t *testing.T) {
+	s := NewServerWithDeps(ServerDeps{APIToken: "test-tok"})
+	srv, _ := attachTestBridgeHub(t, s)
+
+	dialAuthenticatedMockExtension(t, srv, s.apiToken, func(method string, _ json.RawMessage) (any, *bridge.WireRPCError) {
+		if method == "jobs.search" {
+			return map[string]any{
+				"ok":             true,
+				"stopped_reason": "completed",
+				"jobs": []map[string]any{
+					{
+						"upwork_job_id":   "~01nilbadge",
+						"canonical_url":   "https://www.upwork.com/jobs/Nil-Badge_~01nilbadge/",
+						"job_title":       "Go Backend Engineer",
+						"job_description": "Go and PostgreSQL",
+						"contract_type":   "hourly",
+						"rate_range":      "$80 - $100/hr",
+					},
+					{
+						"upwork_job_id":    "~02explicitfalse",
+						"canonical_url":    "https://www.upwork.com/jobs/Unverified_~02explicitfalse/",
+						"job_title":        "Unverified Client Job",
+						"job_description":  "Go and PostgreSQL",
+						"contract_type":    "hourly",
+						"rate_range":       "$80 - $100/hr",
+						"payment_verified": false,
+					},
+				},
+			}, nil
+		}
+		return nil, &bridge.WireRPCError{Code: json.RawMessage(`-32601`), Message: "unexpected"}
+	})
+
+	payVerified := true
+	res, err := s.ExecuteSearchPipeline(context.Background(), SearchJobsRequest{
+		Source:               "search",
+		Query:                "golang",
+		PaymentVerifiedOnly:  &payVerified,
+		SkipAutoDetailEnrich: true,
+	})
+	if err != nil {
+		t.Fatalf("ExecuteSearchPipeline failed: %v", err)
+	}
+	if len(res.Jobs) != 1 || res.Jobs[0].UpworkJobID != "~01nilbadge" {
+		t.Fatalf("expected nil-badge card from native payment_verified=1 search to survive and explicit false to be dropped, got %+v", res.Jobs)
+	}
+}
+
+func TestSearchAndBatchIngest_SearchRunProvenance_WithDB(t *testing.T) {
+	s := setupTestServer(t)
+	s.port = 9095
+	t.Setenv("WEB_UI_ENABLED", "true")
+	srv, _ := attachTestBridgeHub(t, s)
+	gormDB := s.db.GetGorm()
+
+	// Seed 1 public active project and 1 private project
+	if err := gormDB.Create(&dbservice.ActiveProject{
+		ProjectKey:         "upwork-buddy",
+		Name:               "Secret Project Name",
+		Client:             "Secret Client",
+		ActivityTier:       "active",
+		Status:             "active",
+		ProposalVisibility: "public",
+		TechStackJSON:      dbservice.JSONB(`["Go","PostgreSQL"]`),
+	}).Error; err != nil {
+		t.Fatalf("seed active project: %v", err)
+	}
+	if err := gormDB.Create(&dbservice.ActiveProject{
+		ProjectKey:         "stealth-proj",
+		Name:               "Stealth Name",
+		ActivityTier:       "active",
+		Status:             "active",
+		ProposalVisibility: "private",
+		TechStackJSON:      dbservice.JSONB(`["StealthLang"]`),
+	}).Error; err != nil {
+		t.Fatalf("seed private project: %v", err)
+	}
+
+	var seenSearchParams atomic.Value
+	dialAuthenticatedMockExtension(t, srv, s.apiToken, func(method string, params json.RawMessage) (any, *bridge.WireRPCError) {
+		if method == "jobs.search" {
+			var p map[string]any
+			_ = json.Unmarshal(params, &p)
+			seenSearchParams.Store(p)
+			return map[string]any{
+				"ok":             true,
+				"stopped_reason": "completed",
+				"jobs": []map[string]any{
+					{
+						"upwork_job_id":    "~01provA",
+						"canonical_url":    "https://www.upwork.com/jobs/Prov-A_~01provA/",
+						"job_title":        "Go PostgreSQL API",
+						"job_description":  "Go + Postgres microservices",
+						"contract_type":    "hourly",
+						"rate_range":       "$75 - $110/hr",
+						"payment_verified": true,
+					},
+				},
+			}, nil
+		}
+		return nil, &bridge.WireRPCError{Code: json.RawMessage(`-32601`), Message: "unexpected"}
+	})
+
+	rateMin := 70.0
+	payVerified := true
+	searchRes, err := s.ExecuteSearchPipeline(context.Background(), SearchJobsRequest{
+		Source:               "search",
+		RunLabel:             "M2 sweep",
+		TriggeredBy:          "mcp",
+		FromActiveProjects:   true,
+		HourlyRateMin:        &rateMin,
+		PaymentVerifiedOnly:  &payVerified,
+		SkipAutoDetailEnrich: true,
+	})
+	if err != nil {
+		t.Fatalf("ExecuteSearchPipeline failed: %v", err)
+	}
+	if searchRes.SearchRunID == 0 {
+		t.Fatal("expected non-zero SearchRunID")
+	}
+	if len(searchRes.MatchedProjectKeys) != 1 || searchRes.MatchedProjectKeys[0] != "upwork-buddy" {
+		t.Fatalf("expected matched_project_keys=[upwork-buddy], got %+v", searchRes.MatchedProjectKeys)
+	}
+	assertTicketedDashboardURL(t, s, searchRes.DashboardURL, "http://127.0.0.1:9095", "run", strconv.FormatUint(uint64(searchRes.SearchRunID), 10))
+	if len(searchRes.Jobs) != 1 || searchRes.Jobs[0].LastSearchRunID == nil || *searchRes.Jobs[0].LastSearchRunID != searchRes.SearchRunID {
+		t.Fatalf("expected job last_search_run_id=%d, got %+v", searchRes.SearchRunID, searchRes.Jobs)
+	}
+
+	sp, _ := seenSearchParams.Load().(map[string]any)
+	rawQueries, _ := sp["queries"].([]any)
+	if len(rawQueries) != 1 || rawQueries[0] != "Go PostgreSQL" {
+		t.Fatalf("expected derived query ['Go PostgreSQL'] in wsParams, got %+v", sp["queries"])
+	}
+
+	// Verify GetSearchRun returns run1 + job ~01provA
+	detail1, err := s.GetSearchRun(context.Background(), searchRes.SearchRunID)
+	if err != nil || len(detail1.Jobs) != 1 || detail1.Jobs[0].UpworkJobID != "~01provA" {
+		t.Fatalf("GetSearchRun(run1) failed: detail=%+v err=%v", detail1, err)
+	}
+	if detail1.SearchRun.Label != "M2 sweep" || detail1.SearchRun.TriggeredBy != "mcp" {
+		t.Fatalf("unexpected SearchRun metadata: %+v", detail1.SearchRun)
+	}
+
+	// Second wave via BatchIngestJobs re-ingests ~01provA + adds ~01provB
+	batchRes, err := s.BatchIngestJobs(context.Background(), BatchIngestJobsRequest{
+		RunLabel:    "Batch wave 2",
+		Source:      "batch",
+		TriggeredBy: "api",
+		Jobs: []saveJobRequest{
+			{
+				UpworkJobID:    "~01provA",
+				JobTitle:       "Go PostgreSQL API",
+				JobDescription: "Go + Postgres microservices updated",
+			},
+			{
+				UpworkJobID:    "~01provB",
+				JobTitle:       "Second Job",
+				JobDescription: "Docker + Kubernetes",
+			},
+		},
+	})
+	if err != nil {
+		t.Fatalf("BatchIngestJobs failed: %v", err)
+	}
+	if batchRes.SearchRunID == 0 || batchRes.SearchRunID == searchRes.SearchRunID {
+		t.Fatalf("expected distinct batch SearchRunID, got %d", batchRes.SearchRunID)
+	}
+
+	// Verify ~01provA has last_search_run_id updated to batchRes.SearchRunID while STILL linked to BOTH runs in search_run_jobs!
+	gotA, err := s.GetJob(context.Background(), 0, "~01provA")
+	if err != nil || gotA.LastSearchRunID == nil || *gotA.LastSearchRunID != batchRes.SearchRunID {
+		t.Fatalf("expected ~01provA last_search_run_id=%d, got %+v (err=%v)", batchRes.SearchRunID, gotA, err)
+	}
+	detail1After, err := s.GetSearchRun(context.Background(), searchRes.SearchRunID)
+	if err != nil || len(detail1After.Jobs) != 1 {
+		t.Fatalf("expected run1 to retain ~01provA provenance in search_run_jobs, got %+v (err=%v)", detail1After, err)
+	}
+	detail2, err := s.GetSearchRun(context.Background(), batchRes.SearchRunID)
+	if err != nil || len(detail2.Jobs) != 2 {
+		t.Fatalf("expected run2 to have 2 jobs, got %+v (err=%v)", detail2, err)
+	}
+
+	// Upsert=false creates 0 SearchRun rows
+	noUpsert := false
+	dryRes, err := s.BatchIngestJobs(context.Background(), BatchIngestJobsRequest{
+		Upsert: &noUpsert,
+		Jobs: []saveJobRequest{
+			{UpworkJobID: "~01dry", JobTitle: "Dry Run Job", JobDescription: "Test"},
+		},
+	})
+	if err != nil {
+		t.Fatalf("BatchIngestJobs upsert=false failed: %v", err)
+	}
+	if dryRes.SearchRunID != 0 || dryRes.PersistedCount != 0 || dryRes.DashboardURL != "" {
+		t.Fatalf("expected SearchRunID=0, PersistedCount=0, DashboardURL='' on upsert=false, got %+v", dryRes)
+	}
+}
+
+func TestBatchIngestJobs_RateMinMaxScoringFilterAndEmptyValidation_WithDB(t *testing.T) {
+	s := setupTestServer(t)
+
+	// 1. rate_min / rate_max without rate_range should synthesize hourly rate for scoring & post_enrichment filtering.
+	noUpsert := false
+	rateMinFilter := 70.0
+	res, err := s.BatchIngestJobs(context.Background(), BatchIngestJobsRequest{
+		Upsert:      &noUpsert,
+		FilterStage: "post_enrichment",
+		Filters: &scoring.FilterConfig{
+			HourlyRateMin: &rateMinFilter,
+		},
+		Jobs: []saveJobRequest{
+			{
+				UpworkJobID:    "~09rateminmax1",
+				JobTitle:       "Hourly Go Engineer",
+				JobDescription: "Build Go microservices",
+				ContractType:   "hourly",
+				RateMin:        "80",
+				RateMax:        "120",
+			},
+			{
+				UpworkJobID:    "~09rateminmax2",
+				JobTitle:       "Low Hourly Go Engineer",
+				JobDescription: "Build Go microservices",
+				ContractType:   "hourly",
+				RateMin:        "25",
+				RateMax:        "40",
+			},
+		},
+	})
+	if err != nil {
+		t.Fatalf("BatchIngestJobs(rate_min/max) failed: %v", err)
+	}
+	if res.FilteredCount != 1 || len(res.Jobs) != 1 || res.Jobs[0].UpworkJobID != "~09rateminmax1" {
+		t.Fatalf("expected only ~09rateminmax1 to pass hourly_rate_min=70, got filtered=%d jobs=%+v", res.FilteredCount, res.Jobs)
+	}
+	if res.Jobs[0].Score == nil || *res.Jobs[0].Score <= 0 {
+		t.Fatalf("expected non-zero deterministic score from rate_min/rate_max, got %+v", res.Jobs[0].Score)
+	}
+	var sb scoring.ScoreBreakdown
+	if err := json.Unmarshal(res.Jobs[0].ScoreBreakdown, &sb); err != nil {
+		t.Fatalf("unmarshal score_breakdown: %v", err)
+	}
+	if sb.RateBudget != 20 {
+		t.Fatalf("expected RateBudget=20 for $80-$120/hr, got %d", sb.RateBudget)
+	}
+
+	// 2. Empty job object {} must fail with 400 INVALID_PARAMS (even when filters are present).
+	for _, tc := range []struct {
+		name string
+		req  BatchIngestJobsRequest
+	}{
+		{
+			name: "plain_empty_object",
+			req:  BatchIngestJobsRequest{Jobs: []saveJobRequest{{}}},
+		},
+		{
+			name: "empty_object_with_filters",
+			req: BatchIngestJobsRequest{
+				Jobs:    []saveJobRequest{{}},
+				Filters: &scoring.FilterConfig{HourlyRateMin: &rateMinFilter},
+			},
+		},
+	} {
+		_, emptyErr := s.BatchIngestJobs(context.Background(), tc.req)
+		var se *ServiceError
+		if !errors.As(emptyErr, &se) || se.HTTPStatus != http.StatusBadRequest || se.Code != "INVALID_PARAMS" {
+			t.Fatalf("%s: expected 400 INVALID_PARAMS, got %v", tc.name, emptyErr)
+		}
+	}
+}
+
+func TestSearchProfileAndPipelineIDBoundsValidation_WithDB(t *testing.T) {
+	s := setupTestServer(t)
+	router := s.RegisterRoutes()
+	ctx := context.Background()
+
+	// ExecuteSearchPipeline rejects ProfileID == 0 or > math.MaxInt64 with 400 INVALID_PARAMS
+	for _, badID := range []uint{0, uint(uint64(1) << 63), ^uint(0)} {
+		idCopy := badID
+		_, err := s.ExecuteSearchPipeline(ctx, SearchJobsRequest{ProfileID: &idCopy})
+		var se *ServiceError
+		if !errors.As(err, &se) || se.HTTPStatus != http.StatusBadRequest || se.Code != "INVALID_PARAMS" {
+			t.Fatalf("ExecuteSearchPipeline(ProfileID=%d) expected 400 INVALID_PARAMS, got %v", badID, err)
+		}
+
+		_, runErr := s.RunSearchProfile(ctx, &idCopy, "")
+		var seRun *ServiceError
+		if !errors.As(runErr, &seRun) || seRun.HTTPStatus != http.StatusBadRequest || seRun.Code != "INVALID_PARAMS" {
+			t.Fatalf("RunSearchProfile(id=%d) expected 400 INVALID_PARAMS, got %v", badID, runErr)
+		}
+	}
+
+	// DeleteSearchProfile rejects > math.MaxInt64 with 400 INVALID_PARAMS
+	for _, badU64 := range []uint64{uint64(1) << 63, math.MaxUint64} {
+		delErr := s.DeleteSearchProfile(ctx, badU64, "")
+		var seDel *ServiceError
+		if !errors.As(delErr, &seDel) || seDel.HTTPStatus != http.StatusBadRequest || seDel.Code != "INVALID_PARAMS" {
+			t.Fatalf("DeleteSearchProfile(id=%d) expected 400 INVALID_PARAMS, got %v", badU64, delErr)
+		}
+	}
+
+	// HTTP endpoints: POST /api/search-profiles/{id}/run and DELETE /api/search-profiles/{id}
+	for _, badIDStr := range []string{"0", "9223372036854775808", "18446744073709551615"} {
+		for _, tc := range []struct {
+			method string
+			path   string
+		}{
+			{http.MethodPost, "/api/search-profiles/" + badIDStr + "/run"},
+			{http.MethodDelete, "/api/search-profiles/" + badIDStr},
+		} {
+			req := httptest.NewRequest(tc.method, tc.path, nil)
+			req.Header.Set("Authorization", "Bearer "+s.apiToken)
+			w := httptest.NewRecorder()
+			router.ServeHTTP(w, req)
+			if w.Result().StatusCode != http.StatusBadRequest {
+				t.Fatalf("%s %s status = %d, want 400; body=%s", tc.method, tc.path, w.Result().StatusCode, w.Body.String())
+			}
+			var errBody map[string]any
+			_ = json.NewDecoder(w.Body).Decode(&errBody)
+			if errBody["error_code"] != "INVALID_PARAMS" {
+				t.Fatalf("%s %s expected INVALID_PARAMS, got %+v", tc.method, tc.path, errBody)
+			}
+		}
 	}
 }

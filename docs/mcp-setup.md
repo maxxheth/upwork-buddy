@@ -57,7 +57,21 @@ Native Messaging allows the extension Popup and Background Service Worker to lau
 
 ## 3. MCP Server Overview & Transports
 
-The embedded Go MCP server (`github.com/modelcontextprotocol/go-sdk v1.8.0`) exposes **22 tools** (`upwork_session_status`, `upwork_audit_selectors`, `upwork_list_tabs`, `upwork_capture_ui_diagnostic`, `upwork_get_ui_diagnostic`, `upwork_test_selector_patch`, `upwork_apply_selector_patch`, `upwork_search_jobs`, `upwork_get_job_details`, `upwork_list_saved_jobs`, `upwork_analyze_job`, `upwork_manage_search_profiles`, `upwork_draft_proposal`, `upwork_fill_proposal_form`, `upwork_submit_proposal`, `upwork_sync_proposals`, `upwork_list_conversations`, `upwork_get_conversation`, `upwork_draft_message`, `upwork_send_message`, `upwork_profile`, `upwork_generate_project_agents`) and **7 JSON resources** (`upwork://profile`, `upwork://jobs/hot`, `upwork://proposals/pending-approval`, `upwork://proposals/active`, `upwork://messages/unread`, `upwork://selectors/health`, `upwork://diagnostics/latest`).
+The embedded Go MCP server (`github.com/modelcontextprotocol/go-sdk v1.8.0`) exposes **26 tools** (`upwork_session_status`, `upwork_audit_selectors`, `upwork_list_tabs`, `upwork_capture_ui_diagnostic`, `upwork_get_ui_diagnostic`, `upwork_test_selector_patch`, `upwork_apply_selector_patch`, `upwork_search_jobs`, `upwork_get_job_details`, `upwork_list_saved_jobs`, `upwork_analyze_job`, `upwork_manage_search_profiles`, `upwork_save_jobs`, `upwork_enrich_jobs`, `upwork_enrichment_batches`, `upwork_draft_proposal`, `upwork_fill_proposal_form`, `upwork_submit_proposal`, `upwork_sync_proposals`, `upwork_list_conversations`, `upwork_get_conversation`, `upwork_draft_message`, `upwork_send_message`, `upwork_profile`, `upwork_generate_project_agents`, `upwork_active_projects`) and **10 JSON resources** (`upwork://profile`, `upwork://jobs/hot`, `upwork://proposals/pending-approval`, `upwork://proposals/active`, `upwork://messages/unread`, `upwork://selectors/health`, `upwork://diagnostics/latest`, `upwork://projects/active`, `upwork://jobs/search-runs`, `upwork://jobs/enrichment-batches`).
+
+### Decoupled 2-Phase Search & Selective Batch Enrichment Workflow
+
+To keep LLM token usage bounded and avoid scraping/analyzing low-fit listings:
+
+1. **Phase 1 — Multi-Criteria Discovery & Persistence (0 LLM Tokens):**
+   - Call `upwork_search_jobs` with `compact: true`, optional `run_label`, `hourly_rate_min` / `hourly_rate_max`, `payment_verified_only: true`, `skip_auto_detail_enrich: true`, or `from_active_projects: true` (derives NDA-safe search queries strictly from `tech_stack_json` of synced non-private `active_projects` via `upwork_active_projects` / `upwork://projects/active`).
+   - Or curate/merge job objects programmatically via `upwork_save_jobs` (`0` LLM tokens, deduplicated, filtered, deterministically scored, and persisted under a tracked `SearchRun`).
+   - Both tools return `search_run_id`, lean `compact` job summaries (`job_description` < 200 chars, omitting heavy JSONB/AI fields), and a clickable `dashboard_url` (single-use ticket when `WEB_UI_ENABLED=true`) to inspect and multi-select jobs in the TanStack Table dashboard.
+   - Query saved candidates anytime with `upwork_list_saved_jobs` (filtering by `search_run_id`, `contract_type`, `source_query`, `hourly_rate_min`/`max`, `enrichment_status`, `has_ai_analysis`, `matched_project`, `compact`, and `sort`: `created_desc | score_desc | posted_desc | budget_desc | enriched_desc`), or inspect recent runs via `upwork://jobs/search-runs`.
+2. **Phase 2 — Selective Async Batch AI Enrichment:**
+   - Trigger `upwork_enrich_jobs` for chosen `job_ids` (numeric IDs or `~upworkJobID`s) with `mode` (`full`, `ai_only`, or `detail_only`), `force` (`false` skips already AI-enriched jobs), `skip_detail_if_present`, `require_details`, `model`/`effort` overrides, `max_concurrency`, and optional `wait` / `wait_timeout_seconds` — governed by `ENRICHMENT_*` env guardrails.
+   - Monitor progress, token totals, and per-job errors or cancel remaining queued items via `upwork_enrichment_batches` (`action: "list" | "get" | "cancel"`) and `upwork://jobs/enrichment-batches`.
+   - For single-job deep analysis, `upwork_analyze_job` supports `ensure_details: true` (fetching missing Chrome DOM details first) and returns `usage`, `ai_enriched_at`, `ai_model`, `ai_effort`, and `ai_tokens_used`.
 
 ### Closed-Loop UI Diagnostic & Self-Healing Selector Workflow
 

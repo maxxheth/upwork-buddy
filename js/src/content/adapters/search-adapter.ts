@@ -21,6 +21,9 @@ export interface BuildSearchUrlParams {
   proposal_tiers?: string[];
   budget_min?: number;
   budget_max?: number;
+  hourly_rate_min?: number;
+  hourly_rate_max?: number;
+  payment_verified_only?: boolean;
   category?: string;
   search_url?: string;
   page?: number;
@@ -53,6 +56,24 @@ export function resolveSearchViewName(source: SearchSource = 'search'): string {
 }
 
 export function buildSearchUrl(params: BuildSearchUrlParams): string {
+  if (params.hourly_rate_min !== undefined) {
+    if (!Number.isFinite(params.hourly_rate_min) || params.hourly_rate_min < 0) {
+      throw new Error('hourly_rate_min must be a non-negative finite number');
+    }
+  }
+  if (params.hourly_rate_max !== undefined) {
+    if (!Number.isFinite(params.hourly_rate_max) || params.hourly_rate_max < 0) {
+      throw new Error('hourly_rate_max must be a non-negative finite number');
+    }
+  }
+  if (
+    params.hourly_rate_min !== undefined &&
+    params.hourly_rate_max !== undefined &&
+    params.hourly_rate_min > params.hourly_rate_max
+  ) {
+    throw new Error('hourly_rate_min cannot exceed hourly_rate_max');
+  }
+
   const source = params.source ?? 'search';
   if (params.search_url) {
     const parsed = new URL(params.search_url);
@@ -100,6 +121,14 @@ export function buildSearchUrl(params: BuildSearchUrlParams): string {
     const minPart = params.budget_min !== undefined ? String(params.budget_min) : '0';
     const maxPart = params.budget_max !== undefined ? String(params.budget_max) : '';
     u.searchParams.set('amount', `${minPart}-${maxPart}`);
+  }
+  if (params.hourly_rate_min !== undefined || params.hourly_rate_max !== undefined) {
+    const minPart = params.hourly_rate_min !== undefined ? String(params.hourly_rate_min) : '';
+    const maxPart = params.hourly_rate_max !== undefined ? String(params.hourly_rate_max) : '';
+    u.searchParams.set('hourly_rate', `${minPart}-${maxPart}`);
+  }
+  if (params.payment_verified_only === true) {
+    u.searchParams.set('payment_verified', '1');
   }
   if (params.proposal_tiers && params.proposal_tiers.length > 0) {
     u.searchParams.set('proposals', params.proposal_tiers.join(','));

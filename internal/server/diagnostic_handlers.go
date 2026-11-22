@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"log"
+	"math"
 	"net/http"
 	"os"
 	"path/filepath"
@@ -825,7 +826,14 @@ func (s *Server) GetUIDiagnosticCapture(ctx context.Context, idOrUID string, inc
 	var err error
 	if strings.EqualFold(key, "latest") {
 		err = db.Order("created_at DESC, id DESC").First(&row).Error
-	} else if numID, parseErr := strconv.ParseUint(key, 10, 64); parseErr == nil && numID > 0 {
+	} else if numID, parseErr := strconv.ParseUint(key, 10, 64); parseErr == nil || errors.Is(parseErr, strconv.ErrRange) {
+		if parseErr != nil || numID == 0 || numID > math.MaxInt64 {
+			return nil, &ServiceError{
+				Code:       "INVALID_PARAMS",
+				HTTPStatus: http.StatusBadRequest,
+				Message:    "Invalid diagnostic capture ID",
+			}
+		}
 		err = db.Where("id = ?", numID).First(&row).Error
 	} else {
 		err = db.Where("capture_uid = ?", key).First(&row).Error

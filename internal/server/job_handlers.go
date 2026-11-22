@@ -7,7 +7,10 @@ import (
 	"errors"
 	"fmt"
 	"log"
+	"math"
 	"net/http"
+	"net/url"
+	"sort"
 	"strconv"
 	"strings"
 	"time"
@@ -218,7 +221,8 @@ type saveJobResponse struct {
 }
 
 type listJobsResponse struct {
-	Jobs []JobEntry `json:"jobs"`
+	Jobs  []JobEntry `json:"jobs"`
+	Total int        `json:"total"`
 }
 
 type jobEntry = JobEntry
@@ -279,6 +283,13 @@ type JobEntry struct {
 	ExecutionPrompt     string          `json:"execution_prompt"`
 	ToneAnalysis        string          `json:"tone_analysis"`
 	LastEnrichedAt      *string         `json:"last_enriched_at,omitempty"`
+	AIEnrichmentStatus  string          `json:"ai_enrichment_status"`
+	AIEnrichedAt        *string         `json:"ai_enriched_at,omitempty"`
+	AIEnrichmentError   string          `json:"ai_enrichment_error,omitempty"`
+	AIModel             string          `json:"ai_model,omitempty"`
+	AIEffort            string          `json:"ai_effort,omitempty"`
+	AITokensUsed        *int            `json:"ai_tokens_used,omitempty"`
+	LastSearchRunID     *uint           `json:"last_search_run_id,omitempty"`
 	CreatedAt           string          `json:"created_at"`
 	UpdatedAt           string          `json:"updated_at,omitempty"`
 }
@@ -311,6 +322,10 @@ func jobEntryFromModel(j dbservice.Job) jobEntry {
 	upworkID := ""
 	if j.UpworkJobID != nil {
 		upworkID = *j.UpworkJobID
+	}
+	aiStatus := strings.TrimSpace(j.AIEnrichmentStatus)
+	if aiStatus == "" {
+		aiStatus = "none"
 	}
 	return jobEntry{
 		ID:                  j.ID,
@@ -367,6 +382,13 @@ func jobEntryFromModel(j dbservice.Job) jobEntry {
 		ExecutionPrompt:     j.ExecutionPrompt,
 		ToneAnalysis:        j.ToneAnalysis,
 		LastEnrichedAt:      formatOptTime(j.LastEnrichedAt),
+		AIEnrichmentStatus:  aiStatus,
+		AIEnrichedAt:        formatOptTime(j.AIEnrichedAt),
+		AIEnrichmentError:   j.AIEnrichmentError,
+		AIModel:             j.AIModel,
+		AIEffort:            j.AIEffort,
+		AITokensUsed:        j.AITokensUsed,
+		LastSearchRunID:     j.LastSearchRunID,
 		CreatedAt:           j.CreatedAt.Format("2006-01-02T15:04:05Z07:00"),
 		UpdatedAt:           j.UpdatedAt.Format("2006-01-02T15:04:05Z07:00"),
 	}
@@ -377,7 +399,7 @@ func loadScoringProfile(db *gorm.DB) *scoring.ScoringProfile {
 		return nil
 	}
 	var profile dbservice.Profile
-	if err := db.Preload("PortfolioItems").Order("id asc").First(&profile).Error; err != nil {
+	if err := db.Preload("PortfolioItems").Order("id asc").First(&profile).Error; err != nil && !errors.Is(err, gorm.ErrRecordNotFound) {
 		return nil
 	}
 	var skills []string
@@ -394,10 +416,48 @@ func loadScoringProfile(db *gorm.DB) *scoring.ScoringProfile {
 			Description: p.Description,
 		})
 	}
+	var activeProjects []scoring.ActiveProjectRef
+	var dbProjects []dbservice.ActiveProject
+	if err := db.Where("(activity_tier IN ? OR pinned = ?) AND LOWER(activity_tier) <> ? AND LOWER(status) <> ? AND LOWER(proposal_visibility) <> ?",
+		[]string{"active", "recent"}, true, "archived", "archived", "private").
+		Order("pinned desc, last_activity_at desc, id asc").
+		Find(&dbProjects).Error; err != nil {
+		log.Printf("loadScoringProfile: skipping active projects query: %v", err)
+	} else if len(dbProjects) > 0 {
+		activeProjects = make([]scoring.ActiveProjectRef, 0, len(dbProjects))
+		for _, p := range dbProjects {
+			displayName, safeSummary, _, ok := SanitizedActiveProjectDisplay(p)
+			if !ok {
+				continue
+			}
+			vis := strings.ToLower(strings.TrimSpace(p.ProposalVisibility))
+			safeName := ""
+			safeKey := ""
+			if vis == "public" {
+				safeName = p.Name
+				safeKey = p.ProjectKey
+			} else {
+				vis = "anonymized"
+			}
+			activeProjects = append(activeProjects, scoring.ActiveProjectRef{
+				Key:                safeKey,
+				Name:               safeName,
+				PublicAlias:        displayName,
+				ProposalVisibility: vis,
+				ActivityTier:       p.ActivityTier,
+				Summary:            safeSummary,
+				TechStack:          decodeStringSliceJSONB(p.TechStackJSON),
+			})
+		}
+	}
+	if profile.ID == 0 && len(activeProjects) == 0 {
+		return nil
+	}
 	return &scoring.ScoringProfile{
 		Description:    profile.Description,
 		Skills:         skills,
 		PortfolioItems: items,
+		ActiveProjects: activeProjects,
 	}
 }
 
@@ -523,42 +583,108 @@ func mergeIncomingJob(existing *dbservice.Job, incoming dbservice.Job) {
 	if incoming.FitAssessment != "" {
 		existing.FitAssessment = incoming.FitAssessment
 	}
-	if incoming.Proposal != "" {
-		existing.Proposal = incoming.Proposal
+	existingAIStatus := strings.ToLower(strings.TrimSpace(existing.AIEnrichmentStatus))
+	hasActiveOrDoneAI := (existingAIStatus != "" && existingAIStatus != "none") ||
+		existing.AIEnrichedAt != nil ||
+		strings.TrimSpace(existing.Proposal) != ""
+
+	if !hasActiveOrDoneAI {
+		if incoming.Proposal != "" && strings.TrimSpace(existing.Proposal) == "" {
+			existing.Proposal = incoming.Proposal
+		}
+		if incoming.ProposalSubject != "" && strings.TrimSpace(existing.ProposalSubject) == "" {
+			existing.ProposalSubject = incoming.ProposalSubject
+		}
+		if incoming.ProposalTone != "" && strings.TrimSpace(existing.ProposalTone) == "" {
+			existing.ProposalTone = incoming.ProposalTone
+		}
+		if len(incoming.ProposalJSON) > 0 && len(existing.ProposalJSON) == 0 {
+			existing.ProposalJSON = incoming.ProposalJSON
+		}
+		if len(incoming.PortfolioReferences) > 0 && len(existing.PortfolioReferences) == 0 {
+			existing.PortfolioReferences = incoming.PortfolioReferences
+		}
+		if incoming.TimeEstimate != "" && strings.TrimSpace(existing.TimeEstimate) == "" {
+			existing.TimeEstimate = incoming.TimeEstimate
+		}
+		if incoming.WorkloadDivision != "" && strings.TrimSpace(existing.WorkloadDivision) == "" {
+			existing.WorkloadDivision = incoming.WorkloadDivision
+		}
+		if incoming.QuestionsForClient != "" && strings.TrimSpace(existing.QuestionsForClient) == "" {
+			existing.QuestionsForClient = incoming.QuestionsForClient
+		}
+		if incoming.TipsAndAdvice != "" && strings.TrimSpace(existing.TipsAndAdvice) == "" {
+			existing.TipsAndAdvice = incoming.TipsAndAdvice
+		}
+		if incoming.ExecutionPrompt != "" && strings.TrimSpace(existing.ExecutionPrompt) == "" {
+			existing.ExecutionPrompt = incoming.ExecutionPrompt
+		}
+		if incoming.ToneAnalysis != "" && strings.TrimSpace(existing.ToneAnalysis) == "" {
+			existing.ToneAnalysis = incoming.ToneAnalysis
+		}
 	}
-	if incoming.ProposalSubject != "" {
-		existing.ProposalSubject = incoming.ProposalSubject
+
+	incomingAIStatus := strings.TrimSpace(incoming.AIEnrichmentStatus)
+	if (existingAIStatus == "" || existingAIStatus == "none") &&
+		incomingAIStatus != "" &&
+		!strings.EqualFold(incomingAIStatus, "none") {
+		existing.AIEnrichmentStatus = incomingAIStatus
 	}
-	if incoming.ProposalTone != "" {
-		existing.ProposalTone = incoming.ProposalTone
+	if !hasActiveOrDoneAI && existing.AIEnrichedAt == nil && incoming.AIEnrichedAt != nil {
+		existing.AIEnrichedAt = incoming.AIEnrichedAt
 	}
-	if len(incoming.ProposalJSON) > 0 {
-		existing.ProposalJSON = incoming.ProposalJSON
+	if (existingAIStatus == "" || existingAIStatus == "none") &&
+		existing.AIEnrichmentError == "" &&
+		incoming.AIEnrichmentError != "" {
+		existing.AIEnrichmentError = incoming.AIEnrichmentError
 	}
-	if len(incoming.PortfolioReferences) > 0 {
-		existing.PortfolioReferences = incoming.PortfolioReferences
+	if !hasActiveOrDoneAI && existing.AIModel == "" && incoming.AIModel != "" {
+		existing.AIModel = incoming.AIModel
 	}
-	if incoming.TimeEstimate != "" {
-		existing.TimeEstimate = incoming.TimeEstimate
+	if !hasActiveOrDoneAI && existing.AIEffort == "" && incoming.AIEffort != "" {
+		existing.AIEffort = incoming.AIEffort
 	}
-	if incoming.WorkloadDivision != "" {
-		existing.WorkloadDivision = incoming.WorkloadDivision
+	if !hasActiveOrDoneAI && existing.AITokensUsed == nil && incoming.AITokensUsed != nil {
+		existing.AITokensUsed = incoming.AITokensUsed
 	}
-	if incoming.QuestionsForClient != "" {
-		existing.QuestionsForClient = incoming.QuestionsForClient
-	}
-	if incoming.TipsAndAdvice != "" {
-		existing.TipsAndAdvice = incoming.TipsAndAdvice
-	}
-	if incoming.ExecutionPrompt != "" {
-		existing.ExecutionPrompt = incoming.ExecutionPrompt
-	}
-	if incoming.ToneAnalysis != "" {
-		existing.ToneAnalysis = incoming.ToneAnalysis
+	if incoming.LastSearchRunID != nil && *incoming.LastSearchRunID > 0 {
+		existing.LastSearchRunID = incoming.LastSearchRunID
 	}
 	if incoming.Status != "" && existing.Status != "applied" && existing.Status != "rejected" && existing.Status != "archived" {
 		existing.Status = incoming.Status
 	}
+}
+
+func effectiveHourlyRate(rateRange, contractType, budget, rateMin, rateMax string) string {
+	hourlyRate := strings.TrimSpace(rateRange)
+	if hourlyRate == "" && strings.EqualFold(strings.TrimSpace(contractType), "hourly") {
+		hourlyRate = strings.TrimSpace(budget)
+	}
+	if minRate, maxRate := scoring.ParseHourlyRateRange(hourlyRate); minRate != nil && maxRate != nil {
+		return hourlyRate
+	}
+	if !strings.EqualFold(strings.TrimSpace(contractType), "fixed") {
+		minParsed := parseNumericOrDollar(rateMin)
+		maxParsed := parseNumericOrDollar(rateMax)
+		if minParsed != nil || maxParsed != nil {
+			if minParsed == nil {
+				minParsed = maxParsed
+			}
+			if maxParsed == nil {
+				maxParsed = minParsed
+			}
+			if *minParsed > *maxParsed {
+				minParsed, maxParsed = maxParsed, minParsed
+			}
+			minStr := strconv.FormatFloat(*minParsed, 'f', -1, 64)
+			maxStr := strconv.FormatFloat(*maxParsed, 'f', -1, 64)
+			if *minParsed == *maxParsed {
+				return "$" + minStr + "/hr"
+			}
+			return "$" + minStr + " - $" + maxStr + "/hr"
+		}
+	}
+	return hourlyRate
 }
 
 func applyDeterministicScore(job *dbservice.Job, profile *scoring.ScoringProfile, explicitScore bool) {
@@ -566,10 +692,7 @@ func applyDeterministicScore(job *dbservice.Job, profile *scoring.ScoringProfile
 		return
 	}
 	if !explicitScore || len(job.ScoreBreakdown) == 0 {
-		hourlyRate := job.RateRange
-		if hourlyRate == "" && strings.EqualFold(job.ContractType, "hourly") {
-			hourlyRate = job.Budget
-		}
+		hourlyRate := effectiveHourlyRate(job.RateRange, job.ContractType, job.Budget, job.RateMin, job.RateMax)
 		budgetStr := job.BudgetAmount
 		if budgetStr == "" && !strings.EqualFold(job.ContractType, "hourly") {
 			budgetStr = job.Budget
@@ -637,6 +760,9 @@ func buildJobModelFromRequest(req saveJobRequest) (dbservice.Job, string, bool, 
 		scoring.ExtractUpworkJobID(canonicalURL),
 		scoring.ExtractUpworkJobID(rawURL),
 	)
+	if strings.TrimSpace(req.JobTitle) == "" && rawURL == "" && upworkJobID == "" {
+		return dbservice.Job{}, "", false, errors.New("at least one of job_title, url, or upwork_job_id is required")
+	}
 	var upworkJobIDPtr *string
 	if upworkJobID != "" {
 		upworkJobIDPtr = &upworkJobID
@@ -860,7 +986,7 @@ func (s *Server) saveJobHandler(w http.ResponseWriter, r *http.Request) {
 
 	job, upworkJobID, explicitScore, err := buildJobModelFromRequest(req)
 	if err != nil {
-		respondWithError(w, http.StatusBadRequest, err.Error())
+		respondInvalidParams(w, err.Error())
 		return
 	}
 
@@ -894,8 +1020,11 @@ func (s *Server) saveJobHandler(w http.ResponseWriter, r *http.Request) {
 
 // ListJobsFilter configures filtering, sorting, and pagination for ListJobs.
 type ListJobsFilter struct {
+	SearchRunID          *uint    `json:"search_run_id,omitempty"`
 	Status               string   `json:"status,omitempty"`
 	Fit                  string   `json:"fit,omitempty"`
+	ContractType         string   `json:"contract_type,omitempty"`
+	SourceQuery          string   `json:"source_query,omitempty"`
 	MinScore             *int     `json:"min_score,omitempty"`
 	MaxAgeDays           *int     `json:"max_age_days,omitempty"`
 	MaxProposals         *int     `json:"max_proposals,omitempty"`
@@ -906,9 +1035,188 @@ type ListJobsFilter struct {
 	ExcludeKeywords      []string `json:"exclude_keywords,omitempty"`
 	BudgetMin            *float64 `json:"budget_min,omitempty"`
 	BudgetMax            *float64 `json:"budget_max,omitempty"`
+	HourlyRateMin        *float64 `json:"hourly_rate_min,omitempty"`
+	HourlyRateMax        *float64 `json:"hourly_rate_max,omitempty"`
+	EnrichmentStatus     string   `json:"enrichment_status,omitempty"`
+	HasAIAnalysis        *bool    `json:"has_ai_analysis,omitempty"`
+	MatchedProject       string   `json:"matched_project,omitempty"`
 	Limit                int      `json:"limit,omitempty"`
 	Offset               int      `json:"offset,omitempty"`
 	Sort                 string   `json:"sort,omitempty"`
+}
+
+func validateNumericRangeParams(minVal, maxVal *float64, name string) error {
+	if minVal != nil && (math.IsNaN(*minVal) || math.IsInf(*minVal, 0) || *minVal < 0) {
+		return &ServiceError{Code: "INVALID_PARAMS", HTTPStatus: http.StatusBadRequest, Message: fmt.Sprintf("Invalid %s_min parameter", name)}
+	}
+	if maxVal != nil && (math.IsNaN(*maxVal) || math.IsInf(*maxVal, 0) || *maxVal < 0) {
+		return &ServiceError{Code: "INVALID_PARAMS", HTTPStatus: http.StatusBadRequest, Message: fmt.Sprintf("Invalid %s_max parameter", name)}
+	}
+	if minVal != nil && maxVal != nil && *minVal > *maxVal {
+		return &ServiceError{Code: "INVALID_PARAMS", HTTPStatus: http.StatusBadRequest, Message: fmt.Sprintf("%s_min cannot exceed %s_max", name, name)}
+	}
+	return nil
+}
+
+func parseNumericOrDollar(raw string) *float64 {
+	trimmed := strings.TrimSpace(raw)
+	if trimmed == "" {
+		return nil
+	}
+	if amt := scoring.ParseBudgetAmount(trimmed); amt != nil {
+		return amt
+	}
+	cleaned := strings.ReplaceAll(trimmed, ",", "")
+	cleaned = strings.TrimPrefix(cleaned, "$")
+	cleaned = strings.TrimSpace(cleaned)
+	if cleaned == "" {
+		return nil
+	}
+	v, err := strconv.ParseFloat(cleaned, 64)
+	if err != nil || math.IsNaN(v) || math.IsInf(v, 0) || v < 0 {
+		return nil
+	}
+	return &v
+}
+
+func extractJobHourlyRateRange(j dbservice.Job) (*float64, *float64) {
+	hourlyRate := strings.TrimSpace(j.RateRange)
+	if hourlyRate == "" && strings.EqualFold(strings.TrimSpace(j.ContractType), "hourly") {
+		hourlyRate = strings.TrimSpace(j.Budget)
+	}
+	minRate, maxRate := scoring.ParseHourlyRateRange(hourlyRate)
+	if minRate != nil && maxRate != nil {
+		return minRate, maxRate
+	}
+	minParsed := parseNumericOrDollar(j.RateMin)
+	maxParsed := parseNumericOrDollar(j.RateMax)
+	if minParsed != nil || maxParsed != nil {
+		if minParsed == nil {
+			minParsed = maxParsed
+		}
+		if maxParsed == nil {
+			maxParsed = minParsed
+		}
+		if *minParsed > *maxParsed {
+			minParsed, maxParsed = maxParsed, minParsed
+		}
+		return minParsed, maxParsed
+	}
+	return nil, nil
+}
+
+func extractJobSortBudget(j dbservice.Job) (float64, bool) {
+	isHourly := strings.EqualFold(strings.TrimSpace(j.ContractType), "hourly")
+	if !isHourly {
+		budgetStr := strings.TrimSpace(j.BudgetAmount)
+		if budgetStr == "" {
+			budgetStr = strings.TrimSpace(j.Budget)
+		}
+		if amt := parseNumericOrDollar(budgetStr); amt != nil {
+			return *amt, true
+		}
+	}
+	if _, maxRate := extractJobHourlyRateRange(j); maxRate != nil {
+		return *maxRate, true
+	}
+	if amt := scoring.ParseBudgetAmount(j.Budget); amt != nil {
+		return *amt, true
+	}
+	return 0, false
+}
+
+func (s *Server) resolveMatchedProjectTargets(ctx context.Context, target string) []string {
+	needle := strings.TrimSpace(target)
+	if needle == "" {
+		return nil
+	}
+	targets := []string{needle}
+	seen := map[string]struct{}{
+		strings.ToLower(needle): {},
+	}
+	appendUnique := func(val string) {
+		trimmed := strings.TrimSpace(val)
+		if trimmed == "" {
+			return
+		}
+		key := strings.ToLower(trimmed)
+		if _, ok := seen[key]; ok {
+			return
+		}
+		seen[key] = struct{}{}
+		targets = append(targets, trimmed)
+	}
+
+	if s == nil || s.db == nil || s.db.GetGorm() == nil {
+		return targets
+	}
+
+	// NDA invariant: never resolve private projects' keys into display labels.
+	var projects []dbservice.ActiveProject
+	if err := s.db.GetGorm().WithContext(ctx).
+		Where("LOWER(proposal_visibility) <> ? AND LOWER(project_key) = LOWER(?)", "private", needle).
+		Find(&projects).Error; err != nil {
+		return targets
+	}
+
+	for _, p := range projects {
+		displayName, _, _, ok := SanitizedActiveProjectDisplay(p)
+		if !ok {
+			continue
+		}
+		appendUnique(displayName)
+		if strings.EqualFold(strings.TrimSpace(p.ProposalVisibility), "public") {
+			appendUnique(p.PublicAlias)
+			appendUnique(p.Name)
+		}
+	}
+	return targets
+}
+
+func jobMatchesProject(j dbservice.Job, targets ...string) bool {
+	needles := make([]string, 0, len(targets))
+	for _, t := range targets {
+		if trimmed := strings.TrimSpace(t); trimmed != "" {
+			needles = append(needles, trimmed)
+		}
+	}
+	if len(needles) == 0 {
+		return true
+	}
+	matchLabel := func(label string) bool {
+		trimmed := strings.TrimSpace(label)
+		if trimmed == "" {
+			return false
+		}
+		for _, needle := range needles {
+			if strings.EqualFold(trimmed, needle) || scoring.KeywordMatches(needle, trimmed) {
+				return true
+			}
+		}
+		return false
+	}
+
+	if len(j.ScoreBreakdown) > 0 {
+		var sb scoring.ScoreBreakdown
+		if err := json.Unmarshal(j.ScoreBreakdown, &sb); err == nil {
+			for _, label := range sb.MatchedActiveProjects {
+				if matchLabel(label) {
+					return true
+				}
+			}
+		}
+	}
+	if len(j.PortfolioReferences) > 0 {
+		var refs []PortfolioReferenceEntry
+		if err := json.Unmarshal(j.PortfolioReferences, &refs); err == nil {
+			for _, ref := range refs {
+				if strings.EqualFold(strings.TrimSpace(ref.Source), "active_project") && matchLabel(ref.DisplayName) {
+					return true
+				}
+			}
+		}
+	}
+	return false
 }
 
 // ListJobs queries persisted jobs with optional filtering, sorting, and pagination.
@@ -924,13 +1232,57 @@ func (s *Server) ListJobsWithTotal(ctx context.Context, filter ListJobsFilter) (
 		return nil, 0, &ServiceError{Code: "DB_UNAVAILABLE", HTTPStatus: http.StatusServiceUnavailable, Message: "Database unavailable"}
 	}
 
+	if filter.SearchRunID != nil && (*filter.SearchRunID == 0 || uint64(*filter.SearchRunID) > math.MaxInt64) {
+		return nil, 0, &ServiceError{Code: "INVALID_PARAMS", HTTPStatus: http.StatusBadRequest, Message: "Invalid search_run_id parameter"}
+	}
+	contractType := strings.ToLower(strings.TrimSpace(filter.ContractType))
+	if contractType != "" && contractType != "hourly" && contractType != "fixed" {
+		return nil, 0, &ServiceError{Code: "INVALID_PARAMS", HTTPStatus: http.StatusBadRequest, Message: "Invalid contract_type parameter"}
+	}
+	enrichmentStatus := strings.ToLower(strings.TrimSpace(filter.EnrichmentStatus))
+	switch enrichmentStatus {
+	case "", "none", "detail_only", "queued", "scraping_details", "analyzing", "completed", "failed":
+	default:
+		return nil, 0, &ServiceError{Code: "INVALID_PARAMS", HTTPStatus: http.StatusBadRequest, Message: "Invalid enrichment_status parameter"}
+	}
+	if err := validateNumericRangeParams(filter.BudgetMin, filter.BudgetMax, "budget"); err != nil {
+		return nil, 0, err
+	}
+	if err := validateNumericRangeParams(filter.HourlyRateMin, filter.HourlyRateMax, "hourly_rate"); err != nil {
+		return nil, 0, err
+	}
+
+	sortMode := strings.ToLower(strings.TrimSpace(filter.Sort))
+	var orderClause string
+	switch sortMode {
+	case "", "created_desc", "budget_desc":
+		orderClause = "created_at DESC, id DESC"
+	case "score_desc":
+		orderClause = "COALESCE(score, -1) DESC, created_at DESC, id DESC"
+	case "posted_desc":
+		orderClause = "COALESCE(posted_at_est, created_at) DESC, created_at DESC, id DESC"
+	case "enriched_desc":
+		orderClause = "ai_enriched_at DESC NULLS LAST, last_enriched_at DESC NULLS LAST, created_at DESC, id DESC"
+	default:
+		return nil, 0, &ServiceError{Code: "INVALID_PARAMS", HTTPStatus: http.StatusBadRequest, Message: "Invalid sort parameter"}
+	}
+
 	db := s.db.GetGorm().WithContext(ctx).Model(&dbservice.Job{})
 
+	if filter.SearchRunID != nil {
+		db = db.Where("(jobs.last_search_run_id = ? OR EXISTS (SELECT 1 FROM search_run_jobs srj WHERE srj.job_id = jobs.id AND srj.search_run_id = ?))", *filter.SearchRunID, *filter.SearchRunID)
+	}
 	if status := strings.TrimSpace(filter.Status); status != "" {
 		db = db.Where("status = ?", status)
 	}
 	if fit := strings.TrimSpace(filter.Fit); fit != "" {
 		db = db.Where("fit_label = ?", fit)
+	}
+	if contractType != "" {
+		db = db.Where("LOWER(TRIM(contract_type)) = ?", contractType)
+	}
+	if sourceQuery := strings.TrimSpace(filter.SourceQuery); sourceQuery != "" {
+		db = db.Where("LOWER(TRIM(source_query)) = LOWER(?)", sourceQuery)
 	}
 	if filter.MinScore != nil {
 		db = db.Where("score >= ?", *filter.MinScore)
@@ -954,14 +1306,41 @@ func (s *Server) ListJobsWithTotal(ctx context.Context, filter ListJobsFilter) (
 			db = db.Where("proposals_count <= ?", maxProposals)
 		}
 	}
+	if enrichmentStatus != "" {
+		switch enrichmentStatus {
+		case "none":
+			db = db.Where("(ai_enrichment_status = 'none' OR ai_enrichment_status = '') AND last_enriched_at IS NULL")
+		case "detail_only":
+			db = db.Where("(ai_enrichment_status = 'none' OR ai_enrichment_status = '') AND last_enriched_at IS NOT NULL")
+		default:
+			db = db.Where("ai_enrichment_status = ?", enrichmentStatus)
+		}
+	}
+	if filter.HasAIAnalysis != nil {
+		expr := `(ai_enrichment_status = 'completed' OR ai_enriched_at IS NOT NULL OR COALESCE(proposal, '') ~ '\S')`
+		if *filter.HasAIAnalysis {
+			db = db.Where(expr)
+		} else {
+			db = db.Where("NOT " + expr)
+		}
+	}
 	if search := strings.TrimSpace(filter.Query); search != "" {
 		pattern := "%" + search + "%"
-		db = db.Where("title ILIKE ? OR description ILIKE ? OR skills ILIKE ?", pattern, pattern, pattern)
+		db = db.Where("(title ILIKE ? OR description ILIKE ? OR skills ILIKE ?)", pattern, pattern, pattern)
 	}
 
 	hasBudgetFilter := filter.BudgetMin != nil || filter.BudgetMax != nil
+	hasHourlyRateFilter := filter.HourlyRateMin != nil || filter.HourlyRateMax != nil
 	hasKeywordFilter := len(filter.RequiredKeywords) > 0 || len(filter.ExcludeKeywords) > 0
-	hasInMemoryFilter := hasBudgetFilter || hasKeywordFilter
+	matchedProjectTarget := strings.TrimSpace(filter.MatchedProject)
+	hasMatchedProjectFilter := matchedProjectTarget != ""
+	hasInMemoryProcessing := hasBudgetFilter || hasHourlyRateFilter || hasKeywordFilter || hasMatchedProjectFilter || sortMode == "budget_desc"
+
+	var matchedProjectTargets []string
+	if hasMatchedProjectFilter {
+		matchedProjectTargets = s.resolveMatchedProjectTargets(ctx, matchedProjectTarget)
+	}
+
 	limit := filter.Limit
 	if limit < 0 {
 		return nil, 0, &ServiceError{Code: "INVALID_PARAMS", HTTPStatus: http.StatusBadRequest, Message: "Invalid limit parameter"}
@@ -974,18 +1353,8 @@ func (s *Server) ListJobsWithTotal(ctx context.Context, filter ListJobsFilter) (
 		return nil, 0, &ServiceError{Code: "INVALID_PARAMS", HTTPStatus: http.StatusBadRequest, Message: "Invalid offset parameter"}
 	}
 
-	var orderClause string
-	switch strings.ToLower(strings.TrimSpace(filter.Sort)) {
-	case "", "created_desc":
-		orderClause = "created_at DESC, id DESC"
-	case "score_desc":
-		orderClause = "COALESCE(score, -1) DESC, created_at DESC, id DESC"
-	default:
-		return nil, 0, &ServiceError{Code: "INVALID_PARAMS", HTTPStatus: http.StatusBadRequest, Message: "Invalid sort parameter"}
-	}
-
 	var totalCount int
-	if !hasInMemoryFilter {
+	if !hasInMemoryProcessing {
 		var count64 int64
 		if err := db.Session(&gorm.Session{}).Count(&count64).Error; err != nil {
 			log.Printf("❌ Failed to count jobs: %v", err)
@@ -1006,7 +1375,7 @@ func (s *Server) ListJobsWithTotal(ctx context.Context, filter ListJobsFilter) (
 		return nil, 0, &ServiceError{Code: "DB_ERROR", HTTPStatus: http.StatusInternalServerError, Message: "Failed to list jobs"}
 	}
 
-	if hasInMemoryFilter {
+	if hasInMemoryProcessing {
 		filtered := make([]dbservice.Job, 0, len(jobs))
 		for _, j := range jobs {
 			if hasBudgetFilter {
@@ -1014,13 +1383,11 @@ func (s *Server) ListJobsWithTotal(ctx context.Context, filter ListJobsFilter) (
 				if budgetStr == "" && !strings.EqualFold(j.ContractType, "hourly") {
 					budgetStr = j.Budget
 				}
-				hourlyRate := j.RateRange
-				if hourlyRate == "" && strings.EqualFold(j.ContractType, "hourly") {
-					hourlyRate = j.Budget
-				}
-				isHourlyJob := strings.TrimSpace(budgetStr) == "" &&
-					strings.TrimSpace(hourlyRate) != "" &&
-					!strings.EqualFold(strings.TrimSpace(hourlyRate), "Fixed price")
+				hourlyRate := effectiveHourlyRate(j.RateRange, j.ContractType, j.Budget, j.RateMin, j.RateMax)
+				isHourlyJob := strings.EqualFold(strings.TrimSpace(j.ContractType), "hourly") ||
+					(strings.TrimSpace(budgetStr) == "" &&
+						strings.TrimSpace(hourlyRate) != "" &&
+						!strings.Contains(strings.ToLower(strings.TrimSpace(hourlyRate)), "fixed"))
 				if !isHourlyJob {
 					amt := scoring.ParseBudgetAmount(budgetStr)
 					if amt == nil {
@@ -1034,6 +1401,25 @@ func (s *Server) ListJobsWithTotal(ctx context.Context, filter ListJobsFilter) (
 						if filter.BudgetMax != nil && *amt > *filter.BudgetMax {
 							continue
 						}
+					}
+				}
+			}
+
+			if hasHourlyRateFilter {
+				minRate, maxRate := extractJobHourlyRateRange(j)
+				if minRate == nil && maxRate == nil {
+					isFixedJob := strings.EqualFold(strings.TrimSpace(j.ContractType), "fixed") ||
+						(strings.TrimSpace(j.BudgetAmount) != "" && !strings.EqualFold(strings.TrimSpace(j.ContractType), "hourly")) ||
+						strings.Contains(strings.ToLower(j.RateRange), "fixed")
+					if !isFixedJob && !filter.IncludeUnknownBudget {
+						continue
+					}
+				} else {
+					if filter.HourlyRateMin != nil && *maxRate < *filter.HourlyRateMin {
+						continue
+					}
+					if filter.HourlyRateMax != nil && *minRate > *filter.HourlyRateMax {
+						continue
 					}
 				}
 			}
@@ -1074,8 +1460,24 @@ func (s *Server) ListJobsWithTotal(ctx context.Context, filter ListJobsFilter) (
 				}
 			}
 
+			if hasMatchedProjectFilter && !jobMatchesProject(j, matchedProjectTargets...) {
+				continue
+			}
+
 			filtered = append(filtered, j)
 		}
+
+		if sortMode == "budget_desc" {
+			sort.SliceStable(filtered, func(i, j int) bool {
+				va, okA := extractJobSortBudget(filtered[i])
+				vb, okB := extractJobSortBudget(filtered[j])
+				if okA != okB {
+					return okA
+				}
+				return va > vb
+			})
+		}
+
 		totalCount = len(filtered)
 		if offset >= len(filtered) {
 			jobs = nil
@@ -1108,25 +1510,62 @@ func (s *Server) ResolveJobRef(ctx context.Context, jobIDRaw any, upworkJobID st
 	switch v := jobIDRaw.(type) {
 	case nil:
 	case uint:
+		if v == 0 || uint64(v) > math.MaxInt64 {
+			return nil, &ServiceError{Code: "INVALID_PARAMS", HTTPStatus: http.StatusBadRequest, Message: "Invalid numeric job_id"}
+		}
 		numericID = uint64(v)
 	case uint64:
+		if v == 0 || v > math.MaxInt64 {
+			return nil, &ServiceError{Code: "INVALID_PARAMS", HTTPStatus: http.StatusBadRequest, Message: "Invalid numeric job_id"}
+		}
 		numericID = v
+	case uint32:
+		if v == 0 {
+			return nil, &ServiceError{Code: "INVALID_PARAMS", HTTPStatus: http.StatusBadRequest, Message: "Invalid numeric job_id"}
+		}
+		numericID = uint64(v)
 	case int:
-		if v > 0 {
-			numericID = uint64(v)
+		if v <= 0 {
+			return nil, &ServiceError{Code: "INVALID_PARAMS", HTTPStatus: http.StatusBadRequest, Message: "Invalid numeric job_id"}
 		}
+		numericID = uint64(v)
 	case int64:
-		if v > 0 {
-			numericID = uint64(v)
+		if v <= 0 {
+			return nil, &ServiceError{Code: "INVALID_PARAMS", HTTPStatus: http.StatusBadRequest, Message: "Invalid numeric job_id"}
 		}
+		numericID = uint64(v)
+	case int32:
+		if v <= 0 {
+			return nil, &ServiceError{Code: "INVALID_PARAMS", HTTPStatus: http.StatusBadRequest, Message: "Invalid numeric job_id"}
+		}
+		numericID = uint64(v)
 	case float64:
-		if v > 0 {
-			numericID = uint64(v)
+		if math.IsNaN(v) || math.IsInf(v, 0) || v <= 0 || v != math.Trunc(v) || v >= 9223372036854775808 {
+			return nil, &ServiceError{Code: "INVALID_PARAMS", HTTPStatus: http.StatusBadRequest, Message: "Invalid numeric job_id"}
+		}
+		numericID = uint64(v)
+	case float32:
+		f := float64(v)
+		if math.IsNaN(f) || math.IsInf(f, 0) || f <= 0 || f != math.Trunc(f) || f >= 9223372036854775808 {
+			return nil, &ServiceError{Code: "INVALID_PARAMS", HTTPStatus: http.StatusBadRequest, Message: "Invalid numeric job_id"}
+		}
+		numericID = uint64(f)
+	case json.Number:
+		sVal := strings.TrimSpace(v.String())
+		if sVal != "" {
+			parsed, err := strconv.ParseUint(sVal, 10, 64)
+			if err != nil || parsed == 0 || parsed > math.MaxInt64 {
+				return nil, &ServiceError{Code: "INVALID_PARAMS", HTTPStatus: http.StatusBadRequest, Message: "Invalid numeric job_id"}
+			}
+			numericID = parsed
 		}
 	case string:
 		trimmed := strings.TrimSpace(v)
 		if trimmed != "" {
-			if parsed, err := strconv.ParseUint(trimmed, 10, 64); err == nil && parsed > 0 {
+			if parsed, err := strconv.ParseUint(trimmed, 10, 64); err == nil || errors.Is(err, strconv.ErrRange) {
+				if err != nil || parsed == 0 || parsed > math.MaxInt64 {
+					return nil, &ServiceError{Code: "INVALID_PARAMS", HTTPStatus: http.StatusBadRequest, Message: "Invalid numeric job_id"}
+				}
 				numericID = parsed
 			} else {
 				upworkID = firstNonEmpty(scoring.NormalizeUpworkJobID(trimmed), trimmed)
@@ -1135,7 +1574,10 @@ func (s *Server) ResolveJobRef(ctx context.Context, jobIDRaw any, upworkJobID st
 	default:
 		if b, err := json.Marshal(v); err == nil {
 			sVal := strings.Trim(strings.TrimSpace(string(b)), `"`)
-			if parsed, err := strconv.ParseUint(sVal, 10, 64); err == nil && parsed > 0 {
+			if parsed, err := strconv.ParseUint(sVal, 10, 64); err == nil || errors.Is(err, strconv.ErrRange) {
+				if err != nil || parsed == 0 || parsed > math.MaxInt64 {
+					return nil, &ServiceError{Code: "INVALID_PARAMS", HTTPStatus: http.StatusBadRequest, Message: "Invalid numeric job_id"}
+				}
 				numericID = parsed
 			} else if sVal != "" && sVal != "null" {
 				upworkID = firstNonEmpty(scoring.NormalizeUpworkJobID(sVal), sVal)
@@ -1204,6 +1646,60 @@ func (s *Server) ListHotJobs(ctx context.Context, limit int) ([]JobEntry, error)
 	return entries, nil
 }
 
+func respondInvalidParams(w http.ResponseWriter, msg string) {
+	respondBridgeError(w, &ServiceError{
+		Code:       "INVALID_PARAMS",
+		HTTPStatus: http.StatusBadRequest,
+		Message:    msg,
+	})
+}
+
+func parseKeywordQueryParam(q url.Values, keys ...string) []string {
+	var out []string
+	seen := make(map[string]struct{})
+	for _, key := range keys {
+		for _, raw := range q[key] {
+			for _, part := range strings.Split(raw, ",") {
+				trimmed := strings.TrimSpace(part)
+				if trimmed == "" {
+					continue
+				}
+				lower := strings.ToLower(trimmed)
+				if _, exists := seen[lower]; exists {
+					continue
+				}
+				seen[lower] = struct{}{}
+				out = append(out, trimmed)
+			}
+		}
+	}
+	return out
+}
+
+func parseOptionalFloatQueryParam(q url.Values, name string) (*float64, error) {
+	raw := strings.TrimSpace(q.Get(name))
+	if raw == "" {
+		return nil, nil
+	}
+	v, err := strconv.ParseFloat(raw, 64)
+	if err != nil || math.IsNaN(v) || math.IsInf(v, 0) || v < 0 {
+		return nil, fmt.Errorf("invalid %s parameter", name)
+	}
+	return &v, nil
+}
+
+func parseOptionalBoolQueryParam(q url.Values, name string) (*bool, error) {
+	raw := strings.TrimSpace(q.Get(name))
+	if raw == "" {
+		return nil, nil
+	}
+	v, err := strconv.ParseBool(raw)
+	if err != nil {
+		return nil, fmt.Errorf("invalid %s parameter", name)
+	}
+	return &v, nil
+}
+
 func (s *Server) listJobsHandler(w http.ResponseWriter, r *http.Request) {
 	log.Printf("📥 List jobs request received")
 	if r.Method != http.MethodGet {
@@ -1217,16 +1713,69 @@ func (s *Server) listJobsHandler(w http.ResponseWriter, r *http.Request) {
 
 	q := r.URL.Query()
 	filter := ListJobsFilter{
-		Status:         strings.TrimSpace(q.Get("status")),
-		Fit:            strings.TrimSpace(q.Get("fit")),
-		IncludeUnknown: strings.EqualFold(strings.TrimSpace(q.Get("include_unknown")), "true"),
-		Query:          strings.TrimSpace(q.Get("q")),
-		Sort:           strings.TrimSpace(q.Get("sort")),
+		Status:           strings.TrimSpace(q.Get("status")),
+		Fit:              strings.TrimSpace(q.Get("fit")),
+		ContractType:     strings.TrimSpace(q.Get("contract_type")),
+		SourceQuery:      strings.TrimSpace(q.Get("source_query")),
+		Query:            firstNonEmpty(q.Get("q"), q.Get("query")),
+		RequiredKeywords: parseKeywordQueryParam(q, "required_keywords"),
+		ExcludeKeywords:  parseKeywordQueryParam(q, "exclude_keywords"),
+		EnrichmentStatus: strings.TrimSpace(q.Get("enrichment_status")),
+		MatchedProject:   strings.TrimSpace(q.Get("matched_project")),
+		Sort:             strings.TrimSpace(q.Get("sort")),
 	}
+
+	if incUnknown, err := parseOptionalBoolQueryParam(q, "include_unknown"); err != nil {
+		respondInvalidParams(w, err.Error())
+		return
+	} else if incUnknown != nil {
+		filter.IncludeUnknown = *incUnknown
+	}
+	if incUnknownBudget, err := parseOptionalBoolQueryParam(q, "include_unknown_budget"); err != nil {
+		respondInvalidParams(w, err.Error())
+		return
+	} else if incUnknownBudget != nil {
+		filter.IncludeUnknownBudget = *incUnknownBudget
+	}
+	if hasAI, err := parseOptionalBoolQueryParam(q, "has_ai_analysis"); err != nil {
+		respondInvalidParams(w, err.Error())
+		return
+	} else if hasAI != nil {
+		filter.HasAIAnalysis = hasAI
+	}
+
+	if runIDRaw := strings.TrimSpace(q.Get("search_run_id")); runIDRaw != "" {
+		runIDVal, err := strconv.ParseUint(runIDRaw, 10, 64)
+		if err != nil || runIDVal == 0 || runIDVal > math.MaxInt64 {
+			respondInvalidParams(w, "Invalid search_run_id parameter")
+			return
+		}
+		runID := uint(runIDVal)
+		filter.SearchRunID = &runID
+	}
+
+	var err error
+	if filter.BudgetMin, err = parseOptionalFloatQueryParam(q, "budget_min"); err != nil {
+		respondInvalidParams(w, err.Error())
+		return
+	}
+	if filter.BudgetMax, err = parseOptionalFloatQueryParam(q, "budget_max"); err != nil {
+		respondInvalidParams(w, err.Error())
+		return
+	}
+	if filter.HourlyRateMin, err = parseOptionalFloatQueryParam(q, "hourly_rate_min"); err != nil {
+		respondInvalidParams(w, err.Error())
+		return
+	}
+	if filter.HourlyRateMax, err = parseOptionalFloatQueryParam(q, "hourly_rate_max"); err != nil {
+		respondInvalidParams(w, err.Error())
+		return
+	}
+
 	if minScoreRaw := strings.TrimSpace(q.Get("min_score")); minScoreRaw != "" {
 		minScore, err := strconv.Atoi(minScoreRaw)
 		if err != nil {
-			respondWithError(w, http.StatusBadRequest, "Invalid min_score parameter")
+			respondInvalidParams(w, "Invalid min_score parameter")
 			return
 		}
 		filter.MinScore = &minScore
@@ -1234,7 +1783,7 @@ func (s *Server) listJobsHandler(w http.ResponseWriter, r *http.Request) {
 	if maxAgeRaw := strings.TrimSpace(q.Get("max_age_days")); maxAgeRaw != "" {
 		maxAgeDays, err := strconv.Atoi(maxAgeRaw)
 		if err != nil || maxAgeDays < 0 || maxAgeDays > 36500 {
-			respondWithError(w, http.StatusBadRequest, "Invalid max_age_days parameter")
+			respondInvalidParams(w, "Invalid max_age_days parameter")
 			return
 		}
 		filter.MaxAgeDays = &maxAgeDays
@@ -1242,7 +1791,7 @@ func (s *Server) listJobsHandler(w http.ResponseWriter, r *http.Request) {
 	if maxPropRaw := strings.TrimSpace(q.Get("max_proposals")); maxPropRaw != "" {
 		maxProposals, err := strconv.Atoi(maxPropRaw)
 		if err != nil || maxProposals < 0 {
-			respondWithError(w, http.StatusBadRequest, "Invalid max_proposals parameter")
+			respondInvalidParams(w, "Invalid max_proposals parameter")
 			return
 		}
 		filter.MaxProposals = &maxProposals
@@ -1250,7 +1799,7 @@ func (s *Server) listJobsHandler(w http.ResponseWriter, r *http.Request) {
 	if rawLimit := strings.TrimSpace(q.Get("limit")); rawLimit != "" {
 		limit, err := strconv.Atoi(rawLimit)
 		if err != nil || limit <= 0 {
-			respondWithError(w, http.StatusBadRequest, "Invalid limit parameter")
+			respondInvalidParams(w, "Invalid limit parameter")
 			return
 		}
 		filter.Limit = limit
@@ -1258,20 +1807,20 @@ func (s *Server) listJobsHandler(w http.ResponseWriter, r *http.Request) {
 	if rawOffset := strings.TrimSpace(q.Get("offset")); rawOffset != "" {
 		offset, err := strconv.Atoi(rawOffset)
 		if err != nil || offset < 0 {
-			respondWithError(w, http.StatusBadRequest, "Invalid offset parameter")
+			respondInvalidParams(w, "Invalid offset parameter")
 			return
 		}
 		filter.Offset = offset
 	}
 
-	entries, err := s.ListJobs(r.Context(), filter)
+	entries, total, err := s.ListJobsWithTotal(r.Context(), filter)
 	if err != nil {
 		respondBridgeError(w, err)
 		return
 	}
 
-	log.Printf("✅ Listed %d jobs", len(entries))
-	respondWithJSON(w, listJobsResponse{Jobs: entries})
+	log.Printf("✅ Listed %d jobs (total=%d)", len(entries), total)
+	respondWithJSON(w, listJobsResponse{Jobs: entries, Total: total})
 }
 
 func extractJobIDParam(r *http.Request) (uint64, error) {
@@ -1279,7 +1828,11 @@ func extractJobIDParam(r *http.Request) (uint64, error) {
 	if idStr == "" {
 		idStr = strings.TrimPrefix(r.URL.Path, "/api/jobs/")
 	}
-	return strconv.ParseUint(strings.TrimSpace(idStr), 10, 64)
+	idVal, err := strconv.ParseUint(strings.TrimSpace(idStr), 10, 64)
+	if err != nil || idVal == 0 || idVal > math.MaxInt64 {
+		return 0, errors.New("invalid job ID")
+	}
+	return idVal, nil
 }
 
 func (s *Server) getJobHandler(w http.ResponseWriter, r *http.Request) {
@@ -1293,7 +1846,7 @@ func (s *Server) getJobHandler(w http.ResponseWriter, r *http.Request) {
 	}
 	id, err := extractJobIDParam(r)
 	if err != nil {
-		respondWithError(w, http.StatusBadRequest, "Invalid job ID")
+		respondInvalidParams(w, "Invalid job ID")
 		return
 	}
 	entry, getErr := s.GetJob(r.Context(), uint(id), "")
@@ -1324,7 +1877,7 @@ func (s *Server) updateJobHandler(w http.ResponseWriter, r *http.Request) {
 	}
 	id, err := extractJobIDParam(r)
 	if err != nil {
-		respondWithError(w, http.StatusBadRequest, "Invalid job ID")
+		respondInvalidParams(w, "Invalid job ID")
 		return
 	}
 
@@ -1399,7 +1952,7 @@ func (s *Server) deleteJobHandler(w http.ResponseWriter, r *http.Request) {
 	id, err := extractJobIDParam(r)
 	if err != nil {
 		log.Printf("❌ Invalid job ID")
-		respondWithError(w, http.StatusBadRequest, "Invalid job ID")
+		respondInvalidParams(w, "Invalid job ID")
 		return
 	}
 
