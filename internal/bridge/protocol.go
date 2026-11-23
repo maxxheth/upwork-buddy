@@ -124,6 +124,30 @@ type ProgressEvent struct {
 	Message   string `json:"message,omitempty"`
 }
 
+// SearchObservedPagination carries optional GraphQL pagination metadata from a live search capture.
+type SearchObservedPagination struct {
+	TotalCount  *int   `json:"total_count,omitempty"`
+	Offset      *int   `json:"offset,omitempty"`
+	Count       *int   `json:"count,omitempty"`
+	Page        *int   `json:"page,omitempty"`
+	PerPage     *int   `json:"per_page,omitempty"`
+	HasNextPage *bool  `json:"has_next_page,omitempty"`
+	NextCursor  string `json:"next_cursor,omitempty"`
+}
+
+// SearchObservedEvent represents a live/SPA search batch pushed by the extension.
+type SearchObservedEvent struct {
+	TabID         int                       `json:"tab_id,omitempty"`
+	PageURL       string                    `json:"page_url"`
+	SourceFeed    string                    `json:"source_feed"`
+	Query         string                    `json:"query,omitempty"`
+	OperationName string                    `json:"operation_name,omitempty"`
+	CaptureKind   string                    `json:"capture_kind,omitempty"`
+	Paging        *SearchObservedPagination `json:"paging,omitempty"`
+	Jobs          []json.RawMessage         `json:"jobs"`
+	CapturedAt    string                    `json:"captured_at,omitempty"`
+}
+
 type BridgeStatus struct {
 	ExtensionConnected bool   `json:"extension_connected"`
 	SessionID          string `json:"session_id,omitempty"`

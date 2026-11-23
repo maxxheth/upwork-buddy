@@ -22,7 +22,7 @@ type Server struct {
 	mcpServer *mcp.Server
 }
 
-// NewServer constructs and registers all 26 Upwork Buddy MCP tools and 10 resources.
+// NewServer constructs and registers all 30 Upwork Buddy MCP tools and 10 resources.
 func NewServer(backend *server.Server) *Server {
 	s := &Server{
 		backend: backend,
@@ -46,6 +46,7 @@ func NewServer(backend *server.Server) *Server {
 	s.registerMessageTools()
 	s.registerProfileTools()
 	s.registerProjectTools()
+	s.registerWatcherTools()
 	s.registerResources()
 
 	return s

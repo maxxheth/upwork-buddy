@@ -36,9 +36,12 @@ func gracefulShutdown(apiServer *http.Server, appServer *server.Server, done cha
 	log.Println("shutting down gracefully, press Ctrl+C again to force")
 	stop() // Allow Ctrl+C to force shutdown
 
-	// Close active MCP SSE/HTTP sessions, enrichment batches, and WebSocket bridge connections before http.Server.Shutdown.
+	// Close active MCP SSE/HTTP sessions, watchers, enrichment batches, and WebSocket bridge connections before http.Server.Shutdown.
 	if appServer != nil {
 		appServer.CloseMCPSessions()
+		if err := appServer.CloseWatchers(); err != nil {
+			log.Printf("Watcher shutdown error: %v", err)
+		}
 		if err := appServer.CloseEnrichment(); err != nil {
 			log.Printf("Enrichment batch shutdown error: %v", err)
 		}
@@ -75,6 +78,12 @@ func runServe() {
 		mcpSrv := upworkmcp.NewServer(appServer)
 		appServer.SetMCPHandler(mcpSrv.StreamableHTTPHandler())
 		appServer.SetMCPShutdownHook(mcpSrv.CloseSessions)
+	}
+
+	if server.IsWatcherEnabledFromEnv() {
+		if err := appServer.StartWatchers(context.Background()); err != nil {
+			log.Printf("Watcher startup error: %v", err)
+		}
 	}
 
 	// Create a done channel to signal when the shutdown is complete

@@ -17,11 +17,11 @@ import (
 )
 
 const (
-	defaultAuthTimeout        = 5 * time.Second
-	defaultCallTimeout        = 60 * time.Second
-	defaultMaxMessageBytes    = int64(8 << 20) // 8 MiB
-	defaultWriteTimeout       = 5 * time.Second
-	defaultCloseWaitTimeout   = 2 * time.Second
+	defaultAuthTimeout      = 5 * time.Second
+	defaultCallTimeout      = 60 * time.Second
+	defaultMaxMessageBytes  = int64(8 << 20) // 8 MiB
+	defaultWriteTimeout     = 5 * time.Second
+	defaultCloseWaitTimeout = 2 * time.Second
 )
 
 // PreAuthChecker inspects an incoming HTTP upgrade request and returns true if already authenticated.
@@ -36,6 +36,10 @@ type OriginChecker func(origin string) bool
 // ProgressHandler receives task.progress events emitted by the extension.
 type ProgressHandler func(evt ProgressEvent)
 
+// SearchObservedHandler receives search.observed events pushed by the extension.
+// Implementations MUST be non-blocking so Hub.readLoop never stalls waiting on RPC responses or DB I/O.
+type SearchObservedHandler func(evt SearchObservedEvent)
+
 // HubConfig configures a loopback WebSocket bridge Hub.
 type HubConfig struct {
 	AuthTimeout        time.Duration
@@ -45,6 +49,7 @@ type HubConfig struct {
 	ValidateAuthFrame  AuthFrameValidator
 	AllowOrigin        OriginChecker
 	OnProgress         ProgressHandler
+	OnSearchObserved   SearchObservedHandler
 }
 
 type rpcOutcome struct {
@@ -86,6 +91,9 @@ type Hub struct {
 	progressMu   sync.RWMutex
 	progressSubs map[string]map[chan ProgressEvent]struct{}
 
+	searchObservedMu      sync.RWMutex
+	searchObservedHandler SearchObservedHandler
+
 	seq atomic.Uint64
 }
 
@@ -102,10 +110,11 @@ func NewHub(cfg HubConfig) *Hub {
 	}
 	rootCtx, rootCancel := context.WithCancel(context.Background())
 	return &Hub{
-		cfg:          cfg,
-		rootCtx:      rootCtx,
-		rootCancel:   rootCancel,
-		progressSubs: make(map[string]map[chan ProgressEvent]struct{}),
+		cfg:                   cfg,
+		rootCtx:               rootCtx,
+		rootCancel:            rootCancel,
+		progressSubs:          make(map[string]map[chan ProgressEvent]struct{}),
+		searchObservedHandler: cfg.OnSearchObserved,
 	}
 }
 
@@ -397,6 +406,14 @@ func (h *Hub) readLoop(ctx context.Context, sess *extSession) {
 				}
 			}
 
+		case "search.observed":
+			if trimmed := bytes.TrimSpace(env.Params); len(trimmed) > 0 && !bytes.Equal(trimmed, []byte("null")) {
+				var evt SearchObservedEvent
+				if pErr := json.Unmarshal(trimmed, &evt); pErr == nil {
+					h.dispatchSearchObserved(evt)
+				}
+			}
+
 		default:
 			if _, hasID := NormalizeIDKey(env.ID); hasID {
 				_ = sess.writeJSON(ctx, map[string]any{
@@ -432,6 +449,29 @@ func (h *Hub) dispatchProgress(evt ProgressEvent) {
 		case ch <- evt:
 		default:
 		}
+	}
+}
+
+// SetSearchObservedHandler sets or replaces the handler invoked when the extension emits search.observed.
+// Implementations MUST be non-blocking so Hub.readLoop never stalls waiting on RPC responses or DB I/O.
+func (h *Hub) SetSearchObservedHandler(fn SearchObservedHandler) {
+	if h == nil {
+		return
+	}
+	h.searchObservedMu.Lock()
+	h.searchObservedHandler = fn
+	h.searchObservedMu.Unlock()
+}
+
+func (h *Hub) dispatchSearchObserved(evt SearchObservedEvent) {
+	if h == nil {
+		return
+	}
+	h.searchObservedMu.RLock()
+	fn := h.searchObservedHandler
+	h.searchObservedMu.RUnlock()
+	if fn != nil {
+		fn(evt)
 	}
 }
 

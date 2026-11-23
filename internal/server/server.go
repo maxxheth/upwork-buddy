@@ -67,12 +67,16 @@ type Server struct {
 	mcpHandler      http.Handler
 	wsHandler       http.Handler
 	bridgeHub       *bridge.Hub
+	policyEngineMu  sync.Mutex
 	policyEngine    *policy.Engine
 	mcpHookMu       sync.Mutex
 	mcpShutdownHook func()
 
 	enrichmentMgrMu sync.Mutex
 	enrichmentMgr   *EnrichmentManager
+
+	watcherMgrMu sync.Mutex
+	watcherMgr   *WatcherManager
 
 	webSessionMu  sync.Mutex
 	webSessionMgr *webSessionManager
@@ -143,7 +147,7 @@ func NewServerWithDeps(deps ServerDeps) *Server {
 	if deps.BridgeHub != nil {
 		wsHandler = deps.BridgeHub
 	}
-	return &Server{
+	s := &Server{
 		host:               host,
 		port:               deps.Port,
 		env:                env,
@@ -158,6 +162,10 @@ func NewServerWithDeps(deps ServerDeps) *Server {
 		policyEngine:       pe,
 		db:                 deps.DB,
 	}
+	if deps.BridgeHub != nil {
+		deps.BridgeHub.SetSearchObservedHandler(s.HandleObservedSearch)
+	}
+	return s
 }
 
 // NewServerInstance builds both the *http.Server and underlying *Server so cmd/api/main.go
@@ -227,6 +235,7 @@ func NewServerInstance() (*http.Server, *Server) {
 		},
 		ValidateAuthFrame: appServer.ValidateWSAuthFrame,
 		AllowOrigin:       appServer.IsAllowedOrigin,
+		OnSearchObserved:  appServer.HandleObservedSearch,
 	})
 	appServer.bridgeHub = bridgeHub
 	appServer.wsHandler = bridgeHub
@@ -348,6 +357,8 @@ func (s *Server) PolicyEngine() *policy.Engine {
 	if s == nil {
 		return nil
 	}
+	s.policyEngineMu.Lock()
+	defer s.policyEngineMu.Unlock()
 	if s.policyEngine != nil {
 		return s.policyEngine
 	}
@@ -372,13 +383,16 @@ func (s *Server) CloseEnrichment() error {
 	return mgr.Close()
 }
 
-// Close releases underlying server resources (including MCP sessions, enrichment workers, WebSocket bridge, and database pool).
+// Close releases underlying server resources (including MCP sessions, enrichment workers, watcher workers, WebSocket bridge, and database pool).
 func (s *Server) Close() error {
 	if s == nil {
 		return nil
 	}
 	s.CloseMCPSessions()
 	var errs []error
+	if err := s.CloseWatchers(); err != nil {
+		errs = append(errs, err)
+	}
 	if err := s.CloseEnrichment(); err != nil {
 		errs = append(errs, err)
 	}
@@ -424,6 +438,74 @@ func (s *Server) getEnrichmentManager() *EnrichmentManager {
 		s.enrichmentMgr = NewEnrichmentManager(s)
 	}
 	return s.enrichmentMgr
+}
+
+// WatcherManager returns the server's autonomous watcher manager.
+func (s *Server) WatcherManager() *WatcherManager {
+	return s.getWatcherManager()
+}
+
+func (s *Server) getWatcherManager() *WatcherManager {
+	if s == nil {
+		return nil
+	}
+	s.watcherMgrMu.Lock()
+	defer s.watcherMgrMu.Unlock()
+	if s.watcherMgr == nil {
+		s.watcherMgr = NewWatcherManager(s)
+	}
+	return s.watcherMgr
+}
+
+// HandleObservedSearch forwards live/SPA search batches from the extension WebSocket bridge
+// to the watcher manager without blocking Hub.readLoop.
+func (s *Server) HandleObservedSearch(evt bridge.SearchObservedEvent) {
+	if s == nil || !IsLiveIngestEnabledFromEnv() {
+		return
+	}
+	mgr := s.getWatcherManager()
+	if mgr == nil {
+		return
+	}
+	mgr.EnqueueObservedSearch(evt)
+}
+
+// StartWatchers recovers interrupted watch runs and starts the background scheduler loop.
+func (s *Server) StartWatchers(ctx context.Context) error {
+	if s == nil {
+		return nil
+	}
+	return s.getWatcherManager().Start(ctx)
+}
+
+// CloseWatchers stops the watcher scheduler, cancels active runs, and drains notifications.
+func (s *Server) CloseWatchers() error {
+	if s == nil {
+		return nil
+	}
+	s.watcherMgrMu.Lock()
+	mgr := s.watcherMgr
+	s.watcherMgrMu.Unlock()
+	if mgr == nil {
+		return nil
+	}
+	return mgr.Close()
+}
+
+// CancelWatchers cancels active watcher runs and pauses enabled rules with KILL_SWITCH.
+func (s *Server) CancelWatchers(reason string) {
+	if s == nil {
+		return
+	}
+	s.watcherMgrMu.Lock()
+	mgr := s.watcherMgr
+	s.watcherMgrMu.Unlock()
+	if mgr == nil {
+		mgr = s.getWatcherManager()
+	}
+	if mgr != nil {
+		mgr.CancelAll(reason)
+	}
 }
 
 func (s *Server) getWebSessionManager() *webSessionManager {

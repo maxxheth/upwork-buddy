@@ -54,6 +54,8 @@ type BatchIngestJobsResponse struct {
 	DeduplicatedCount int        `json:"deduplicated_count"`
 	FilteredCount     int        `json:"filtered_count"`
 	PersistedCount    int        `json:"persisted_count"`
+	NewJobIDs         []uint     `json:"new_job_ids,omitempty"`
+	NewCount          int        `json:"new_count"`
 	SearchRunID       uint       `json:"search_run_id,omitempty"`
 	DashboardURL      string     `json:"dashboard_url,omitempty"`
 }
@@ -81,6 +83,8 @@ type SearchJobsRequest struct {
 	TargetJobs           *int                  `json:"target_jobs,omitempty"`
 	EnrichTopN           *int                  `json:"enrich_top_n,omitempty"`
 	SkipAutoDetailEnrich bool                  `json:"skip_auto_detail_enrich,omitempty"`
+	SkipIfBusy           bool                  `json:"skip_if_busy,omitempty"`
+	SkipPersist          bool                  `json:"skip_persist,omitempty"`
 	ProfileID            *uint                 `json:"profile_id,omitempty"`
 	Filters              *scoring.FilterConfig `json:"filters,omitempty"`
 	RunLabel             string                `json:"run_label,omitempty"`
@@ -97,7 +101,10 @@ type SearchJobsResponse struct {
 	TotalScraped       int        `json:"total_scraped"`
 	FilteredCount      int        `json:"filtered_count"`
 	EnrichedCount      int        `json:"enriched_count"`
-	StoppedReason      string     `json:"stopped_reason"`
+	NewJobIDs          []uint          `json:"new_job_ids,omitempty"`
+	NewCount           int             `json:"new_count"`
+	UnseenModels       []dbservice.Job `json:"-"`
+	StoppedReason      string          `json:"stopped_reason"`
 	MatchedProjectKeys []string   `json:"matched_project_keys,omitempty"`
 	DashboardURL       string     `json:"dashboard_url,omitempty"`
 }
@@ -534,7 +541,7 @@ func upsertBatchRequests(
 	reqs []saveJobRequest,
 	profile *scoring.ScoringProfile,
 ) ([]jobEntry, error) {
-	entries, _, err := upsertBatchRequestsWithRun(gormDB, reqs, profile, nil)
+	entries, _, _, err := upsertBatchRequestsWithRun(gormDB, reqs, profile, nil)
 	return entries, err
 }
 
@@ -543,12 +550,12 @@ func upsertBatchRequestsWithRun(
 	reqs []saveJobRequest,
 	profile *scoring.ScoringProfile,
 	runMeta *searchRunMetadata,
-) ([]jobEntry, uint, error) {
+) ([]jobEntry, uint, []uint, error) {
 	prepared := make([]preparedBatchJob, 0, len(reqs))
 	for i, req := range reqs {
 		jobModel, _, explicitScore, err := buildJobModelFromRequest(req)
 		if err != nil {
-			return nil, 0, fmt.Errorf("%w: %w", errBatchValidation, err)
+			return nil, 0, nil, fmt.Errorf("%w: %w", errBatchValidation, err)
 		}
 		prepared = append(prepared, preparedBatchJob{
 			origIdx:       i,
@@ -560,7 +567,7 @@ func upsertBatchRequestsWithRun(
 
 	if gormDB == nil {
 		if len(prepared) == 0 {
-			return []jobEntry{}, 0, nil
+			return []jobEntry{}, 0, nil, nil
 		}
 		entries := make([]jobEntry, 0, len(prepared))
 		for _, item := range prepared {
@@ -568,21 +575,21 @@ func upsertBatchRequestsWithRun(
 			applyDeterministicScore(&m, profile, item.explicitScore)
 			entries = append(entries, jobEntryFromModel(m))
 		}
-		return entries, 0, nil
+		return entries, 0, nil, nil
 	}
 
 	if len(prepared) == 0 && runMeta == nil {
-		return []jobEntry{}, 0, nil
+		return []jobEntry{}, 0, nil, nil
 	}
 
 	var projectKeysJSON, queriesJSON, criteriaJSON dbservice.JSONB
 	if runMeta != nil {
 		var err error
 		if projectKeysJSON, err = encodeStringSliceJSONB(runMeta.ProjectKeys); err != nil {
-			return nil, 0, err
+			return nil, 0, nil, err
 		}
 		if queriesJSON, err = encodeStringSliceJSONB(runMeta.Queries); err != nil {
-			return nil, 0, err
+			return nil, 0, nil, err
 		}
 		if runMeta.Criteria != nil {
 			if raw, mErr := json.Marshal(runMeta.Criteria); mErr == nil {
@@ -603,8 +610,10 @@ func upsertBatchRequestsWithRun(
 	const maxTxAttempts = 4
 	var entries []jobEntry
 	var createdRunID uint
+	var newJobIDs []uint
 	for attempt := 0; attempt < maxTxAttempts; attempt++ {
 		attemptEntries := make([]jobEntry, len(prepared))
+		attemptIsNew := make([]bool, len(prepared))
 		var attemptRunID uint
 		txErr := gormDB.Transaction(func(tx *gorm.DB) error {
 			if runMeta != nil {
@@ -634,9 +643,12 @@ func upsertBatchRequestsWithRun(
 					rid := attemptRunID
 					modelCopy.LastSearchRunID = &rid
 				}
-				saved, _, err := upsertJobRecord(tx, modelCopy, profile, item.explicitScore)
+				saved, didUpsert, err := upsertJobRecord(tx, modelCopy, profile, item.explicitScore)
 				if err != nil {
 					return err
+				}
+				if !didUpsert && saved.ID != 0 {
+					attemptIsNew[item.origIdx] = true
 				}
 				if attemptRunID > 0 {
 					link := dbservice.SearchRunJob{
@@ -654,15 +666,126 @@ func upsertBatchRequestsWithRun(
 		if txErr == nil {
 			entries = attemptEntries
 			createdRunID = attemptRunID
+			seenNew := make(map[uint]struct{}, len(attemptEntries))
+			for idx, isNew := range attemptIsNew {
+				if !isNew {
+					continue
+				}
+				id := attemptEntries[idx].ID
+				if id == 0 {
+					continue
+				}
+				if _, dup := seenNew[id]; dup {
+					continue
+				}
+				seenNew[id] = struct{}{}
+				newJobIDs = append(newJobIDs, id)
+			}
 			break
 		}
 		if !isRetryableTxError(txErr) || attempt == maxTxAttempts-1 {
-			return nil, 0, txErr
+			return nil, 0, nil, txErr
 		}
 		jitter := time.Duration(5+rand.IntN(21)) * time.Millisecond
 		time.Sleep(jitter)
 	}
-	return entries, createdRunID, nil
+	return entries, createdRunID, newJobIDs, nil
+}
+
+// filterUnseenJobModels builds and scores in-memory dbservice.Job models without writing to Postgres,
+// returning the subset of jobs not already present in the jobs table alongside all scored jobEntry views.
+func filterUnseenJobModels(
+	gormDB *gorm.DB,
+	reqs []saveJobRequest,
+	profile *scoring.ScoringProfile,
+) ([]dbservice.Job, []jobEntry, error) {
+	if len(reqs) == 0 {
+		return []dbservice.Job{}, []jobEntry{}, nil
+	}
+
+	models := make([]dbservice.Job, 0, len(reqs))
+	entries := make([]jobEntry, 0, len(reqs))
+	upworkIDs := make([]string, 0, len(reqs))
+	canonicalURLs := make([]string, 0, len(reqs))
+	seenIDSet := make(map[string]struct{}, len(reqs))
+	seenURLSet := make(map[string]struct{}, len(reqs))
+
+	for _, req := range reqs {
+		jobModel, _, explicitScore, err := buildJobModelFromRequest(req)
+		if err != nil {
+			return nil, nil, fmt.Errorf("%w: %w", errBatchValidation, err)
+		}
+		applyDeterministicScore(&jobModel, profile, explicitScore)
+		models = append(models, jobModel)
+		entries = append(entries, jobEntryFromModel(jobModel))
+		if jobModel.UpworkJobID != nil && *jobModel.UpworkJobID != "" {
+			id := *jobModel.UpworkJobID
+			if _, ok := seenIDSet[id]; !ok {
+				seenIDSet[id] = struct{}{}
+				upworkIDs = append(upworkIDs, id)
+			}
+		}
+		if jobModel.CanonicalURL != "" {
+			if _, ok := seenURLSet[jobModel.CanonicalURL]; !ok {
+				seenURLSet[jobModel.CanonicalURL] = struct{}{}
+				canonicalURLs = append(canonicalURLs, jobModel.CanonicalURL)
+			}
+		}
+	}
+
+	existingIDs := make(map[string]struct{})
+	existingURLs := make(map[string]struct{})
+	if gormDB != nil {
+		if len(upworkIDs) > 0 {
+			var foundIDs []string
+			if err := gormDB.Model(&dbservice.Job{}).
+				Where("upwork_job_id IN ?", upworkIDs).
+				Pluck("upwork_job_id", &foundIDs).Error; err != nil {
+				return nil, nil, err
+			}
+			for _, id := range foundIDs {
+				if id != "" {
+					existingIDs[id] = struct{}{}
+				}
+			}
+		}
+		if len(canonicalURLs) > 0 {
+			var foundURLs []string
+			if err := gormDB.Model(&dbservice.Job{}).
+				Where("canonical_url IN ?", canonicalURLs).
+				Pluck("canonical_url", &foundURLs).Error; err != nil {
+				return nil, nil, err
+			}
+			for _, u := range foundURLs {
+				if u != "" {
+					existingURLs[u] = struct{}{}
+				}
+			}
+		}
+	}
+
+	unseen := make([]dbservice.Job, 0, len(models))
+	emittedKeys := make(map[string]struct{}, len(models))
+	for _, m := range models {
+		if m.UpworkJobID != nil && *m.UpworkJobID != "" {
+			if _, exists := existingIDs[*m.UpworkJobID]; exists {
+				continue
+			}
+		}
+		if m.CanonicalURL != "" {
+			if _, exists := existingURLs[m.CanonicalURL]; exists {
+				continue
+			}
+		}
+		key := batchSortKey(m)
+		if _, dup := emittedKeys[key]; dup {
+			continue
+		}
+		emittedKeys[key] = struct{}{}
+		unseen = append(unseen, m)
+	}
+
+	return unseen, entries, nil
 }
 
 func extendWriteDeadline(w http.ResponseWriter, d time.Duration) {
@@ -836,6 +959,7 @@ func (s *Server) BatchIngestJobs(ctx context.Context, req BatchIngestJobsRequest
 	doUpsert := req.Upsert == nil || *req.Upsert
 	var entries []jobEntry
 	var searchRunID uint
+	var newJobIDs []uint
 	var err error
 	if doUpsert {
 		runMeta := &searchRunMetadata{
@@ -849,9 +973,9 @@ func (s *Server) BatchIngestJobs(ctx context.Context, req BatchIngestJobsRequest
 			FilteredCount: len(surviving),
 			StoppedReason: "completed",
 		}
-		entries, searchRunID, err = upsertBatchRequestsWithRun(gormDB, surviving, profile, runMeta)
+		entries, searchRunID, newJobIDs, err = upsertBatchRequestsWithRun(gormDB, surviving, profile, runMeta)
 	} else {
-		entries, _, err = upsertBatchRequestsWithRun(nil, surviving, profile, nil)
+		entries, _, _, err = upsertBatchRequestsWithRun(nil, surviving, profile, nil)
 	}
 	if err != nil {
 		if errors.Is(err, errBatchValidation) {
@@ -869,8 +993,10 @@ func (s *Server) BatchIngestJobs(ctx context.Context, req BatchIngestJobsRequest
 	}
 
 	persistedCount := 0
+	newCount := 0
 	if doUpsert {
 		persistedCount = len(entries)
+		newCount = len(newJobIDs)
 	}
 
 	return &BatchIngestJobsResponse{
@@ -879,6 +1005,8 @@ func (s *Server) BatchIngestJobs(ctx context.Context, req BatchIngestJobsRequest
 		DeduplicatedCount: len(deduped),
 		FilteredCount:     len(surviving),
 		PersistedCount:    persistedCount,
+		NewJobIDs:         newJobIDs,
+		NewCount:          newCount,
 		SearchRunID:       searchRunID,
 		DashboardURL:      s.buildSearchRunDashboardURL(searchRunID),
 	}, nil
@@ -1172,6 +1300,9 @@ func (s *Server) ExecuteSearchPipeline(ctx context.Context, req SearchJobsReques
 	if req.TargetJobs != nil {
 		wsParams["target_jobs"] = *req.TargetJobs
 	}
+	if req.SkipIfBusy {
+		wsParams["skip_if_busy"] = true
+	}
 
 	queryCount := len(req.Queries)
 	if queryCount == 0 {
@@ -1291,7 +1422,7 @@ func (s *Server) ExecuteSearchPipeline(ctx context.Context, req SearchJobsReques
 			}, 3*time.Minute)
 			if detailErr != nil {
 				if errors.Is(detailErr, bridge.ErrHumanActionRequired) {
-					if gormDB != nil {
+					if gormDB != nil && !req.SkipPersist {
 						stage2Meta := &searchRunMetadata{
 							Label:         strings.TrimSpace(req.RunLabel),
 							Source:        req.Source,
@@ -1304,7 +1435,7 @@ func (s *Server) ExecuteSearchPipeline(ctx context.Context, req SearchJobsReques
 							FilteredCount: len(stage2),
 							StoppedReason: "human_action_required",
 						}
-						_, _, _ = upsertBatchRequestsWithRun(gormDB, stage2, profile, stage2Meta)
+						_, _, _, _ = upsertBatchRequestsWithRun(gormDB, stage2, profile, stage2Meta)
 					}
 					s.auditBridgeChallenge("jobs_detail", strings.Join(topURLs, ","), detailErr)
 					return nil, detailErr
@@ -1356,6 +1487,23 @@ func (s *Server) ExecuteSearchPipeline(ctx context.Context, req SearchJobsReques
 		finalCandidates = filterSaveJobRequests(finalCandidates, f, scoring.StagePostEnrichment, profile)
 	}
 
+	if req.SkipPersist {
+		unseenModels, entries, err := filterUnseenJobModels(gormDB, finalCandidates, profile)
+		if err != nil {
+			return nil, err
+		}
+		return &SearchJobsResponse{
+			Jobs:               entries,
+			TotalScraped:       totalScraped,
+			FilteredCount:      len(finalCandidates),
+			EnrichedCount:      enrichedCount,
+			NewCount:           len(unseenModels),
+			UnseenModels:       unseenModels,
+			StoppedReason:      stoppedReason,
+			MatchedProjectKeys: matchedProjectKeys,
+		}, nil
+	}
+
 	var runMeta *searchRunMetadata
 	if gormDB != nil {
 		runMeta = &searchRunMetadata{
@@ -1373,7 +1521,7 @@ func (s *Server) ExecuteSearchPipeline(ctx context.Context, req SearchJobsReques
 		}
 	}
 
-	entries, searchRunID, err := upsertBatchRequestsWithRun(gormDB, finalCandidates, profile, runMeta)
+	entries, searchRunID, newJobIDs, err := upsertBatchRequestsWithRun(gormDB, finalCandidates, profile, runMeta)
 	if err != nil {
 		return nil, err
 	}
@@ -1391,6 +1539,8 @@ func (s *Server) ExecuteSearchPipeline(ctx context.Context, req SearchJobsReques
 		TotalScraped:       totalScraped,
 		FilteredCount:      len(finalCandidates),
 		EnrichedCount:      enrichedCount,
+		NewJobIDs:          newJobIDs,
+		NewCount:           len(newJobIDs),
 		StoppedReason:      stoppedReason,
 		MatchedProjectKeys: matchedProjectKeys,
 		DashboardURL:       s.buildSearchRunDashboardURL(searchRunID),

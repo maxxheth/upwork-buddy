@@ -108,6 +108,23 @@ func (s *Server) RegisterRoutes() http.Handler {
 	apiMux.HandleFunc("GET /api/enrichment-batches/{id}", s.getEnrichmentBatchHandler)
 	apiMux.HandleFunc("POST /api/enrichment-batches/{id}/cancel", s.cancelEnrichmentBatchHandler)
 
+	// Autonomous Job Watchers & Notifications
+	apiMux.HandleFunc("GET /api/watchers", s.listWatchersHandler)
+	apiMux.HandleFunc("POST /api/watchers", s.createWatcherHandler)
+	apiMux.HandleFunc("GET /api/watchers/status", s.watcherStatusHandler)
+	apiMux.HandleFunc("GET /api/watchers/{id}", s.getWatcherHandler)
+	apiMux.HandleFunc("PATCH /api/watchers/{id}", s.updateWatcherHandler)
+	apiMux.HandleFunc("DELETE /api/watchers/{id}", s.deleteWatcherHandler)
+	apiMux.HandleFunc("POST /api/watchers/{id}/toggle", s.toggleWatcherHandler)
+	apiMux.HandleFunc("POST /api/watchers/{id}/resume", s.resumeWatcherHandler)
+	apiMux.HandleFunc("POST /api/watchers/{id}/run", s.runWatcherHandler)
+	apiMux.HandleFunc("GET /api/watchers/{id}/runs", s.listWatcherRunsHandler)
+	apiMux.HandleFunc("GET /api/watchers/{id}/events", s.listWatcherEventsHandler)
+	apiMux.HandleFunc("GET /api/notifications/config", s.getNotificationConfigHandler)
+	apiMux.HandleFunc("PUT /api/notifications/config", s.updateNotificationConfigHandler)
+	apiMux.HandleFunc("POST /api/notifications/test", s.testNotificationHandler)
+	apiMux.HandleFunc("POST /api/notifications/telegram/detect-chat", s.detectTelegramChatHandler)
+
 	// Web Dashboard Session Ticket
 	apiMux.HandleFunc("POST /api/web-session/ticket", s.createWebSessionTicketHandler)
 

@@ -631,7 +631,7 @@ func TestMCP_InMemory_All26ToolsAnd10Resources(t *testing.T) {
 	session := connectInMemoryClient(t, mcpSrv)
 	ctx := context.Background()
 
-	// 1. Verify exact 26 tools
+	// 1. Verify exact 30 tools
 	toolsRes, err := session.ListTools(ctx, &mcp.ListToolsParams{})
 	if err != nil {
 		t.Fatalf("ListTools failed: %v", err)
@@ -663,6 +663,10 @@ func TestMCP_InMemory_All26ToolsAnd10Resources(t *testing.T) {
 		"upwork_save_jobs":               true,
 		"upwork_enrich_jobs":             true,
 		"upwork_enrichment_batches":      true,
+		"upwork_manage_watchers":         true,
+		"upwork_run_watcher":             true,
+		"upwork_watcher_events":          true,
+		"upwork_configure_notifications": true,
 	}
 	if len(toolsRes.Tools) != len(expectedTools) {
 		t.Fatalf("expected %d tools, got %d", len(expectedTools), len(toolsRes.Tools))
@@ -1453,7 +1457,7 @@ func TestMCP_StdioSubprocess_ProxyAndEmbeddedFallback(t *testing.T) {
 		}
 
 		toolsRes, err := cliSession.ListTools(ctx, &mcp.ListToolsParams{})
-		if err != nil || len(toolsRes.Tools) != 26 {
+		if err != nil || len(toolsRes.Tools) != 30 {
 			t.Fatalf("stdio ListTools failed: len=%d err=%v", len(toolsRes.Tools), err)
 		}
 		resList, err := cliSession.ListResources(ctx, &mcp.ListResourcesParams{})
@@ -2719,6 +2723,10 @@ func TestMCP_Unit_CompactProjectionAndToolRegistration(t *testing.T) {
 		"upwork_save_jobs":               true,
 		"upwork_enrich_jobs":             true,
 		"upwork_enrichment_batches":      true,
+		"upwork_manage_watchers":         true,
+		"upwork_run_watcher":             true,
+		"upwork_watcher_events":          true,
+		"upwork_configure_notifications": true,
 	}
 	if len(toolsRes.Tools) != len(expectedTools) {
 		t.Fatalf("expected %d tools, got %d", len(expectedTools), len(toolsRes.Tools))

@@ -1598,3 +1598,164 @@ func TestSearchProfileAndPipelineIDBoundsValidation_WithDB(t *testing.T) {
 		}
 	}
 }
+
+func TestBatchIngestJobs_DeltaNewJobIDs_WithDB(t *testing.T) {
+	s := setupTestServer(t)
+	ctx := context.Background()
+
+	// 1. First insert: 2 new jobs
+	res1, err := s.BatchIngestJobs(ctx, BatchIngestJobsRequest{
+		Jobs: []saveJobRequest{
+			{
+				UpworkJobID:    "~01delta1",
+				CanonicalURL:   "https://www.upwork.com/jobs/Delta-1_~01delta1/",
+				JobTitle:       "Delta Job 1",
+				JobDescription: "Build Go API",
+			},
+			{
+				UpworkJobID:    "~01delta2",
+				CanonicalURL:   "https://www.upwork.com/jobs/Delta-2_~01delta2/",
+				JobTitle:       "Delta Job 2",
+				JobDescription: "Build Postgres schema",
+			},
+		},
+	})
+	if err != nil {
+		t.Fatalf("BatchIngestJobs 1 failed: %v", err)
+	}
+	if res1.PersistedCount != 2 || res1.NewCount != 2 || len(res1.NewJobIDs) != 2 {
+		t.Fatalf("expected PersistedCount=2 NewCount=2 len(NewJobIDs)=2, got persisted=%d new=%d ids=%v", res1.PersistedCount, res1.NewCount, res1.NewJobIDs)
+	}
+	if res1.NewJobIDs[0] != res1.Jobs[0].ID || res1.NewJobIDs[1] != res1.Jobs[1].ID {
+		t.Fatalf("NewJobIDs=%v do not match Jobs IDs=[%d, %d]", res1.NewJobIDs, res1.Jobs[0].ID, res1.Jobs[1].ID)
+	}
+
+	// 2. Repeat ingest: 1 existing + 1 brand new
+	res2, err := s.BatchIngestJobs(ctx, BatchIngestJobsRequest{
+		Jobs: []saveJobRequest{
+			{
+				UpworkJobID:    "~01delta1",
+				CanonicalURL:   "https://www.upwork.com/jobs/Delta-1_~01delta1/",
+				JobTitle:       "Delta Job 1 Updated",
+				JobDescription: "Build Go API v2",
+			},
+			{
+				UpworkJobID:    "~01delta3",
+				CanonicalURL:   "https://www.upwork.com/jobs/Delta-3_~01delta3/",
+				JobTitle:       "Delta Job 3",
+				JobDescription: "Build React UI",
+			},
+		},
+	})
+	if err != nil {
+		t.Fatalf("BatchIngestJobs 2 failed: %v", err)
+	}
+	if res2.PersistedCount != 2 || res2.NewCount != 1 || len(res2.NewJobIDs) != 1 {
+		t.Fatalf("expected PersistedCount=2 NewCount=1 len(NewJobIDs)=1, got persisted=%d new=%d ids=%v", res2.PersistedCount, res2.NewCount, res2.NewJobIDs)
+	}
+	if res2.NewJobIDs[0] != res2.Jobs[1].ID {
+		t.Fatalf("expected NewJobIDs=[%d], got %v", res2.Jobs[1].ID, res2.NewJobIDs)
+	}
+
+	// 3. Dry-run (upsert=false): NewCount=0, NewJobIDs empty
+	doUpsert := false
+	res3, err := s.BatchIngestJobs(ctx, BatchIngestJobsRequest{
+		Upsert: &doUpsert,
+		Jobs: []saveJobRequest{
+			{
+				UpworkJobID:    "~01delta4",
+				CanonicalURL:   "https://www.upwork.com/jobs/Delta-4_~01delta4/",
+				JobTitle:       "Delta Job 4",
+				JobDescription: "Dry run job",
+			},
+		},
+	})
+	if err != nil {
+		t.Fatalf("BatchIngestJobs dry-run failed: %v", err)
+	}
+	if res3.PersistedCount != 0 || res3.NewCount != 0 || len(res3.NewJobIDs) != 0 {
+		t.Fatalf("expected 0 persisted/new on upsert=false, got persisted=%d new=%d ids=%v", res3.PersistedCount, res3.NewCount, res3.NewJobIDs)
+	}
+}
+
+func TestExecuteSearchPipeline_DeltaNewJobIDsAndSkipIfBusy_WithDB(t *testing.T) {
+	s := setupTestServer(t)
+	srv, _ := attachTestBridgeHub(t, s)
+
+	var callNum atomic.Int32
+	var seenSearchParams atomic.Value
+	dialAuthenticatedMockExtension(t, srv, s.apiToken, func(method string, params json.RawMessage) (any, *bridge.WireRPCError) {
+		if method != "jobs.search" {
+			return nil, &bridge.WireRPCError{Code: json.RawMessage(`-32601`), Message: "unexpected"}
+		}
+		var p map[string]any
+		_ = json.Unmarshal(params, &p)
+		seenSearchParams.Store(p)
+
+		n := callNum.Add(1)
+		if n == 1 {
+			return map[string]any{
+				"ok":             true,
+				"stopped_reason": "completed",
+				"jobs": []map[string]any{
+					{
+						"upwork_job_id":   "~01pipe1",
+						"canonical_url":   "https://www.upwork.com/jobs/Pipe-1_~01pipe1/",
+						"job_title":       "Pipeline Job 1",
+						"job_description": "Go microservice",
+					},
+				},
+			}, nil
+		}
+		return map[string]any{
+			"ok":             true,
+			"stopped_reason": "completed",
+			"jobs": []map[string]any{
+				{
+					"upwork_job_id":   "~01pipe1",
+					"canonical_url":   "https://www.upwork.com/jobs/Pipe-1_~01pipe1/",
+					"job_title":       "Pipeline Job 1",
+					"job_description": "Go microservice",
+				},
+				{
+					"upwork_job_id":   "~01pipe2",
+					"canonical_url":   "https://www.upwork.com/jobs/Pipe-2_~01pipe2/",
+					"job_title":       "Pipeline Job 2",
+					"job_description": "Postgres optimization",
+				},
+			},
+		}, nil
+	})
+
+	res1, err := s.ExecuteSearchPipeline(context.Background(), SearchJobsRequest{
+		Source:               "search",
+		Query:                "go",
+		SkipAutoDetailEnrich: true,
+		SkipIfBusy:           true,
+	})
+	if err != nil {
+		t.Fatalf("ExecuteSearchPipeline 1 failed: %v", err)
+	}
+	sp, _ := seenSearchParams.Load().(map[string]any)
+	if sp["skip_if_busy"] != true {
+		t.Fatalf("expected skip_if_busy=true in wsParams, got %+v", sp)
+	}
+	if res1.NewCount != 1 || len(res1.NewJobIDs) != 1 || res1.NewJobIDs[0] != res1.Jobs[0].ID {
+		t.Fatalf("run 1 expected NewCount=1 with ID %d, got new=%d ids=%v", res1.Jobs[0].ID, res1.NewCount, res1.NewJobIDs)
+	}
+
+	res2, err := s.ExecuteSearchPipeline(context.Background(), SearchJobsRequest{
+		Source:               "search",
+		Query:                "go",
+		SkipAutoDetailEnrich: true,
+	})
+	if err != nil {
+		t.Fatalf("ExecuteSearchPipeline 2 failed: %v", err)
+	}
+	if res2.NewCount != 1 || len(res2.NewJobIDs) != 1 {
+		t.Fatalf("run 2 expected NewCount=1, got new=%d ids=%v", res2.NewCount, res2.NewJobIDs)
+	}
+	if res2.NewJobIDs[0] == res1.NewJobIDs[0] {
+		t.Fatalf("run 2 NewJobIDs[0]=%d should be the new job, not existing job %d", res2.NewJobIDs[0], res1.NewJobIDs[0])
+	}
+}

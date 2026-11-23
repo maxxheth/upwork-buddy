@@ -182,6 +182,7 @@ func (s *Server) killSwitchHandler(w http.ResponseWriter, r *http.Request) {
 		respondWithError(w, http.StatusInternalServerError, err.Error())
 		return
 	}
+	s.CancelWatchers(reason)
 
 	aborted := false
 	var abortError string
