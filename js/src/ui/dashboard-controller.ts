@@ -14,6 +14,7 @@ import type {
   SaveProposalRequest,
   SearchRunSummary,
   SearchRunsListResponse,
+  WatchersStatusResponse,
 } from '../types';
 import { escapeHtml } from '../utils';
 import { JobInspectorDrawer } from './job-inspector-drawer';
@@ -23,6 +24,7 @@ import {
   isJobAiEnriched,
   JobsTable,
 } from './jobs-table';
+import { WatchersPanel } from './watchers-panel';
 
 export class ApiError extends Error {
   readonly status: number;
@@ -107,6 +109,9 @@ export class DashboardController {
   private searchRunSelectEl!: HTMLSelectElement;
   private toggleSearchPanelBtn!: HTMLButtonElement;
   private searchPanelEl!: HTMLElement;
+  private toggleWatchersPanelBtn!: HTMLButtonElement;
+  private watchersBadgeEl!: HTMLElement;
+  private watchersPanelEl!: HTMLElement;
   private errorBannerEl!: HTMLElement;
   private batchBannerEl!: HTMLElement;
   private filterQueryInput!: HTMLInputElement;
@@ -126,6 +131,8 @@ export class DashboardController {
 
   private table!: JobsTable;
   private drawer!: JobInspectorDrawer;
+  private watchersPanel: WatchersPanel | null = null;
+  private watchersPanelInitialized = false;
 
   constructor(options: DashboardControllerOptions) {
     this.root = options.root;
@@ -146,6 +153,7 @@ export class DashboardController {
       this.loadEnrichmentConfig(),
       this.loadActiveProjects(),
       this.loadSearchRuns(),
+      this.loadWatchersStatus(),
     ]);
 
     if (this.destroyed) return;
@@ -161,6 +169,7 @@ export class DashboardController {
     this.pollTokenCounter += 1;
     this.stopBatchPolling();
     this.drawer?.destroy();
+    this.watchersPanel?.destroy();
   }
 
   private readInitialUrlParams(): void {
@@ -200,6 +209,9 @@ export class DashboardController {
                 <option value="">All Runs</option>
               </select>
             </label>
+            <button type="button" id="dash-toggle-watchers-btn" data-testid="toggle-watchers-panel-btn" class="dash-btn-secondary">
+              Watchers <span id="dash-watchers-badge" data-testid="watchers-status-badge" class="dash-badge-count">0</span>
+            </button>
             <button type="button" id="dash-toggle-search-btn" data-testid="toggle-search-panel-btn" class="dash-btn-secondary">
               Run New Search
             </button>
@@ -275,6 +287,8 @@ export class DashboardController {
             </div>
           </form>
         </section>
+
+        <section id="dash-watchers-panel" data-testid="watchers-panel" class="dash-watchers-panel" hidden></section>
 
         <div id="dash-error-banner" class="dash-banner dash-banner-error" role="alert" hidden></div>
         <div id="dash-batch-banner" class="dash-batch-banner" hidden></div>
@@ -366,6 +380,9 @@ export class DashboardController {
     this.searchRunSelectEl = this.mustQuery<HTMLSelectElement>('#dash-search-run-select');
     this.toggleSearchPanelBtn = this.mustQuery<HTMLButtonElement>('#dash-toggle-search-btn');
     this.searchPanelEl = this.mustQuery('#dash-search-panel');
+    this.toggleWatchersPanelBtn = this.mustQuery<HTMLButtonElement>('#dash-toggle-watchers-btn');
+    this.watchersBadgeEl = this.mustQuery('#dash-watchers-badge');
+    this.watchersPanelEl = this.mustQuery('#dash-watchers-panel');
     this.errorBannerEl = this.mustQuery('#dash-error-banner');
     this.batchBannerEl = this.mustQuery('#dash-batch-banner');
     this.filterQueryInput = this.mustQuery<HTMLInputElement>('#dash-filter-query');
@@ -437,6 +454,14 @@ export class DashboardController {
   private bindStaticEvents(): void {
     this.toggleSearchPanelBtn.addEventListener('click', () => {
       this.searchPanelEl.hidden = !this.searchPanelEl.hidden;
+    });
+
+    this.toggleWatchersPanelBtn.addEventListener('click', () => {
+      const willOpen = this.watchersPanelEl.hidden;
+      this.watchersPanelEl.hidden = !willOpen;
+      if (willOpen) {
+        void this.ensureWatchersPanelInit();
+      }
     });
 
     this.searchRunSelectEl.addEventListener('change', () => {
@@ -568,6 +593,42 @@ export class DashboardController {
   private clearError(): void {
     this.errorBannerEl.textContent = '';
     this.errorBannerEl.hidden = true;
+  }
+
+  private async loadWatchersStatus(): Promise<void> {
+    if (this.destroyed) return;
+    try {
+      const status = await this.requestJson<WatchersStatusResponse>('/api/watchers/status', {
+        method: 'GET',
+      });
+      if (this.destroyed) return;
+      this.updateWatchersBadge(status);
+    } catch (err) {
+      if (isUnauthorizedError(err)) return;
+    }
+  }
+
+  private updateWatchersBadge(status: WatchersStatusResponse): void {
+    if (typeof status?.active_rules !== 'number') return;
+    const paused = typeof status.paused_rules === 'number' ? status.paused_rules : 0;
+    this.watchersBadgeEl.textContent =
+      paused > 0 ? `${status.active_rules} (${paused} paused)` : String(status.active_rules);
+    this.watchersBadgeEl.dataset.state = paused > 0 ? 'paused' : status.active_rules > 0 ? 'active' : 'idle';
+  }
+
+  private async ensureWatchersPanelInit(): Promise<void> {
+    if (this.destroyed || this.watchersPanelInitialized) return;
+    this.watchersPanelInitialized = true;
+    this.watchersPanel = new WatchersPanel(this.watchersPanelEl, this.transport, {
+      onUnauthorized: () => {
+        this.stopBatchPolling();
+        this.onUnauthorized?.();
+      },
+      onStatusChange: (status) => {
+        this.updateWatchersBadge(status);
+      },
+    });
+    await this.watchersPanel.init();
   }
 
   private async loadRuntimeStatus(): Promise<void> {

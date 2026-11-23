@@ -10,7 +10,7 @@ import type {
 import type { SearchProfileEntry } from '../shared/schemas';
 import type { ExtractMode } from '../shared/selectors';
 import { StateManager } from '../state';
-import type { GeneratedAgent, SavedJob } from '../types';
+import type { GeneratedAgent, SavedJob, WatchersStatusResponse } from '../types';
 import { attachCollapsibleListeners, escapeHtml, renderAnalysis, sanitizeHttpUrl } from '../utils';
 import { JobHistoryPanel } from './job-history';
 import { ProfileConfigUI } from './profile-config';
@@ -68,7 +68,8 @@ interface ProposalRow {
   boost_connects?: number | null;
   total_connects?: number | null;
   status?: string;
-  verification_snapshot_json?: ProposalSnapshotView | string | null;
+  source?: string;
+  verification_snapshot_json?: (ProposalSnapshotView & { triggered_by?: string }) | string | null;
 }
 
 interface ThreadRow {
@@ -170,6 +171,7 @@ export class SidePanelController {
     connects: '0 / 50',
     messages: '0 / 20',
   };
+  private watchersStatus: WatchersStatusResponse | null = null;
 
   constructor(
     private readonly els: SidePanelElements,
@@ -317,13 +319,18 @@ export class SidePanelController {
   async refreshHeaderStatus(): Promise<RuntimeStatusSnapshot | null> {
     let runtimeStatus: RuntimeStatusSnapshot | null = null;
     try {
-      const [status, policy, unread] = await Promise.all([
+      const [status, policy, unread, watchersStatus] = await Promise.all([
         browser.runtime
           .sendMessage({ type: 'GET_RUNTIME_STATUS' })
           .catch(() => null) as Promise<RuntimeStatusSnapshot | null>,
         this.fetchJsonSafe<PolicySnapshot>('/api/policy', { method: 'GET' }),
         this.fetchJsonSafe<{ total_unread?: number }>('/api/messages/unread', { method: 'GET' }),
+        this.fetchJsonSafe<WatchersStatusResponse>('/api/watchers/status', { method: 'GET' }),
       ]);
+
+      if (watchersStatus && typeof watchersStatus.active_rules === 'number') {
+        this.watchersStatus = watchersStatus;
+      }
 
       if (status && typeof status === 'object') {
         runtimeStatus = status;
@@ -469,6 +476,16 @@ export class SidePanelController {
     return sections.join('');
   }
 
+  private renderWatchersSummaryHtml(): string {
+    const ws = this.watchersStatus;
+    if (!ws) return '';
+    const text =
+      ws.paused_rules > 0
+        ? `Watchers: ${ws.active_rules} active · ${ws.paused_rules} paused`
+        : `Watchers: ${ws.active_rules} active`;
+    return `<div class="sp-meta" data-testid="sp-watchers-summary"><span class="${ws.paused_rules > 0 ? 'score-pill' : 'badge-tag'}">${escapeHtml(text)}</span></div>`;
+  }
+
   private async renderPipelineTab(): Promise<void> {
     const params = new URLSearchParams();
     if (this.filterMinScore) params.set('min_score', this.filterMinScore);
@@ -595,6 +612,7 @@ export class SidePanelController {
           <button type="button" id="sp-run-profile-btn" data-testid="run-profile-btn" class="btn-secondary">Run Profile</button>
         </div>
         <p id="sp-search-status" class="sp-meta">${escapeHtml(this.searchStatusMessage)}</p>
+        ${this.renderWatchersSummaryHtml()}
         <div class="sp-toolbar">
           <input type="number" data-testid="filter-min-score" id="sp-filter-min-score" placeholder="Min Score" value="${escapeHtml(this.filterMinScore)}" />
           <select data-testid="filter-fit" id="sp-filter-fit">
@@ -968,6 +986,10 @@ export class SidePanelController {
     const proposalCardsHtml = proposals
       .map((p) => {
         const connects = p.total_connects ?? (p.connects_required ?? 0) + (p.boost_connects ?? 0);
+        const snap = this.parseVerificationSnapshot(p.verification_snapshot_json) as
+          | (ProposalSnapshotView & { triggered_by?: string })
+          | null;
+        const isWatcher = p.source === 'watcher' || snap?.triggered_by === 'watcher';
         return `
           <article class="sp-card" data-proposal-id="${escapeHtml(String(p.id))}">
             <div class="sp-card-header">
@@ -977,6 +999,7 @@ export class SidePanelController {
             <div class="sp-meta">
               <span>Bid: ${escapeHtml(p.bid_type ?? '')} ${escapeHtml(p.bid_amount != null ? `$${p.bid_amount}` : '')}</span>
               <span>Status: ${escapeHtml(p.status ?? 'pending_approval')}</span>
+              ${isWatcher ? '<span class="badge-tag" data-testid="proposal-watcher-badge">Watcher</span>' : ''}
             </div>
             <p class="sp-preview">${escapeHtml((p.cover_letter ?? '').slice(0, 280))}</p>
             ${this.renderSnapshotHtml(p)}
@@ -1447,6 +1470,7 @@ export class SidePanelController {
             <div><span class="label">Connects Today</span><strong>${escapeHtml(connRatio)}</strong></div>
             <div><span class="label">Messages Today</span><strong>${escapeHtml(msgRatio)}</strong></div>
           </div>
+          ${this.renderWatchersSummaryHtml()}
           <div class="sp-toolbar" style="margin-top:10px">
             <select id="sp-policy-mode" data-testid="policy-mode-select">
               <option value="confirm_in_ui" ${mode === 'confirm_in_ui' ? 'selected' : ''}>confirm_in_ui</option>
