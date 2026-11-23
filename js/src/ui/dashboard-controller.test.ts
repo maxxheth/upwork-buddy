@@ -287,7 +287,7 @@ describe('DashboardController', () => {
       if (url.startsWith('/api/jobs?')) {
         return new Response(JSON.stringify({ jobs, total: jobs.length }), { status: 200 });
       }
-      if (url === '/api/enrichment-batches?limit=5') {
+      if (url === '/api/enrichment-batches?limit=20') {
         return new Response(
           JSON.stringify({
             batches: [
@@ -439,7 +439,7 @@ describe('DashboardController', () => {
       if (url.startsWith('/api/jobs?')) {
         return new Response(JSON.stringify({ jobs, total: 1 }), { status: 200 });
       }
-      if (url === '/api/enrichment-batches?limit=5') {
+      if (url === '/api/enrichment-batches?limit=20') {
         return new Response(
           JSON.stringify({
             batches: [{ id: 88, status: 'running' }],
@@ -521,27 +521,34 @@ describe('DashboardController', () => {
 
     // Also verify NaN / Infinity batch metrics clamp to 0%
     (
-      controller as unknown as { activeBatchDetail: EnrichmentBatchDetailResponse }
-    ).activeBatchDetail = {
-      batch: {
-        id: Number.NaN,
-        mode: 'full',
-        triggered_by: 'ui',
-        force: false,
-        status: 'running',
-        total_count: Number.POSITIVE_INFINITY,
-        queued_count: 0,
-        running_count: 0,
-        completed_count: Number.NaN,
-        skipped_count: 0,
-        failed_count: 0,
-        canceled_count: 0,
-        total_tokens_used: Number.POSITIVE_INFINITY,
-        created_at: '2026-11-20T12:00:00Z',
-        updated_at: '2026-11-20T12:00:00Z',
-      },
-      items: [],
-    };
+      controller as unknown as {
+        trackedBatches: Map<number, EnrichmentBatchDetailResponse>;
+      }
+    ).trackedBatches = new Map([
+      [
+        1,
+        {
+          batch: {
+            id: Number.NaN,
+            mode: 'full',
+            triggered_by: 'ui',
+            force: false,
+            status: 'running',
+            total_count: Number.POSITIVE_INFINITY,
+            queued_count: 0,
+            running_count: 0,
+            completed_count: Number.NaN,
+            skipped_count: 0,
+            failed_count: 0,
+            canceled_count: 0,
+            total_tokens_used: Number.POSITIVE_INFINITY,
+            created_at: '2026-11-20T12:00:00Z',
+            updated_at: '2026-11-20T12:00:00Z',
+          },
+          items: [],
+        },
+      ],
+    ]);
     (controller as unknown as { renderBatchBanner: () => void }).renderBatchBanner();
     expect(root.querySelector('#dash-batch-banner')?.textContent).toContain('0/0 (0%)');
     expect(root.querySelector<HTMLElement>('.dash-progress-fill')?.style.width).toBe('0%');
@@ -675,7 +682,7 @@ describe('DashboardController', () => {
       if (url.startsWith('/api/jobs?')) {
         return new Response(JSON.stringify({ jobs: [makeJob(1)], total: 1 }), { status: 200 });
       }
-      if (url === '/api/enrichment-batches?limit=5') {
+      if (url === '/api/enrichment-batches?limit=20') {
         return new Response(JSON.stringify({ batches: [], total: 0 }), { status: 200 });
       }
       if (url === '/api/jobs/enrich' && init?.method === 'POST') {
@@ -900,7 +907,7 @@ describe('DashboardController', () => {
       if (url.startsWith('/api/jobs?')) {
         return new Response(JSON.stringify({ jobs: [makeJob(1)], total: 1 }), { status: 200 });
       }
-      if (url === '/api/enrichment-batches?limit=5') {
+      if (url === '/api/enrichment-batches?limit=20') {
         return new Response(JSON.stringify({ batches: [], total: 0 }), { status: 200 });
       }
       if (url === '/api/jobs/enrich' && init?.method === 'POST') {
@@ -961,7 +968,7 @@ describe('DashboardController', () => {
     controller.destroy();
   });
 
-  it('PROBE-2: ignores stale Batch #1 poll resolving after startBatchEnrich starts Batch #2 and keeps Batch #2 polling alive', async () => {
+  it('PROBE-2: updates Batch #1 on poll completion while keeping Batch #2 polling alive', async () => {
     window.history.replaceState(null, '', '/dashboard/');
     let resolveBatch1Poll!: (res: Response) => void;
     let batch1PollAttempts = 0;
@@ -981,7 +988,7 @@ describe('DashboardController', () => {
       skipped_count: 0,
       failed_count: 0,
       canceled_count: 0,
-      total_tokens_used: 500,
+      total_tokens_used: status === 'completed' ? 500 : 0,
       created_at: '2026-11-20T12:00:00Z',
       updated_at: '2026-11-20T12:00:02Z',
     });
@@ -1017,7 +1024,7 @@ describe('DashboardController', () => {
           status: 200,
         });
       }
-      if (url === '/api/enrichment-batches?limit=5') {
+      if (url === '/api/enrichment-batches?limit=20') {
         return new Response(JSON.stringify({ batches: [], total: 0 }), { status: 200 });
       }
       if (url === '/api/jobs/enrich' && init?.method === 'POST') {
@@ -1057,34 +1064,35 @@ describe('DashboardController', () => {
     // Start Batch #2 while Batch #1 poll is still in-flight
     await controller.startBatchEnrich([2]);
     expect(root.querySelector('#dash-batch-banner')?.textContent).toContain(
-      'Batch #2 (full) — running',
+      '2 batches (full) — running',
     );
     expect((controller as unknown as { pollTimer: unknown }).pollTimer).not.toBeNull();
 
-    // Stale Batch #1 poll resolves with terminal status 'completed'
+    // Batch #1 poll resolves with terminal status 'completed'
     resolveBatch1Poll(
       new Response(JSON.stringify({ batch: makeBatch(1, 'completed'), items: [] }), {
         status: 200,
       }),
     );
-    await Promise.resolve();
-    await Promise.resolve();
-    await Promise.resolve();
 
-    // Banner and poller must remain on Batch #2
-    expect(root.querySelector('#dash-batch-banner')?.textContent).toContain(
-      'Batch #2 (full) — running',
-    );
+    // Aggregate updates with Batch #1 completion while Batch #2 remains running and polling stays alive
+    await vi.waitFor(() => {
+      const bannerText = root.querySelector('#dash-batch-banner')?.textContent ?? '';
+      expect(bannerText).toContain('2 batches (full) — running');
+      expect(bannerText).toContain('2/4 (50%)');
+      expect(bannerText).toContain('500 tokens');
+    });
     expect((controller as unknown as { pollTimer: unknown }).pollTimer).not.toBeNull();
 
-    // Subsequent 2s tick continues polling Batch #2
+    // Subsequent 2s tick continues polling Batch #2 (and does not re-poll terminal Batch #1)
     await vi.advanceTimersByTimeAsync(2050);
     expect(batch2PollAttempts).toBeGreaterThanOrEqual(1);
+    expect(batch1PollAttempts).toBe(1);
 
     controller.destroy();
   });
 
-  it('ignores slow cancelBatch(1) resolving after startBatchEnrich starts Batch #2', async () => {
+  it('keeps Batch #2 running and polling when slow cancelBatch(1) resolves after startBatchEnrich starts Batch #2', async () => {
     window.history.replaceState(null, '', '/dashboard/');
     let resolveSlowCancel!: (res: Response) => void;
     let enrichCalls = 0;
@@ -1138,7 +1146,7 @@ describe('DashboardController', () => {
           status: 200,
         });
       }
-      if (url === '/api/enrichment-batches?limit=5') {
+      if (url === '/api/enrichment-batches?limit=20') {
         return new Response(JSON.stringify({ batches: [], total: 0 }), { status: 200 });
       }
       if (url === '/api/jobs/enrich' && init?.method === 'POST') {
@@ -1171,7 +1179,7 @@ describe('DashboardController', () => {
     // Before cancel resolves, start Batch #2
     await controller.startBatchEnrich([2]);
     expect(root.querySelector('#dash-batch-banner')?.textContent).toContain(
-      'Batch #2 (full) — running',
+      '2 batches (full) — running',
     );
     expect((controller as unknown as { pollTimer: unknown }).pollTimer).not.toBeNull();
 
@@ -1179,13 +1187,13 @@ describe('DashboardController', () => {
     resolveSlowCancel(
       new Response(JSON.stringify({ batch: makeBatch(1, 'canceled'), items: [] }), { status: 200 }),
     );
-    await Promise.resolve();
-    await Promise.resolve();
-    await Promise.resolve();
 
-    expect(root.querySelector('#dash-batch-banner')?.textContent).toContain(
-      'Batch #2 (full) — running',
-    );
+    await vi.waitFor(() => {
+      const bannerText = root.querySelector('#dash-batch-banner')?.textContent ?? '';
+      expect(bannerText).toContain('2 batches (full) — running');
+      expect(bannerText).toContain('canceled 1');
+    });
+    expect(root.querySelector('[data-testid="cancel-batch-btn"]')).not.toBeNull();
     expect((controller as unknown as { pollTimer: unknown }).pollTimer).not.toBeNull();
 
     controller.destroy();
@@ -1311,6 +1319,645 @@ describe('DashboardController', () => {
     expect(tbodyText).toContain('Run 2 Exclusive Job');
     expect(tbodyText).not.toContain('Stale Run 1 Job');
     expect(runSelect.value).toBe('2');
+
+    controller.destroy();
+  });
+
+  it('aggregates 3 row-click batches live (running, queued, completed, tokens), guards double-clicks, and renders grouped items', async () => {
+    window.history.replaceState(null, '', '/dashboard/');
+    const jobs = [makeJob(1), makeJob(2), makeJob(3)];
+    const enrichBodies: Array<{ job_ids: number[] }> = [];
+    let resolveFirstPost!: (res: Response) => void;
+    let firstPostDeferred = true;
+    let nextBatchId = 0;
+
+    const batchDetails = new Map<number, EnrichmentBatchDetailResponse>();
+    const makeDetail = (
+      id: number,
+      jobId: number,
+      status: string,
+      opts: { queued: number; running: number; completed: number; tokens: number },
+    ): EnrichmentBatchDetailResponse => ({
+      batch: {
+        id,
+        mode: 'full',
+        triggered_by: 'ui',
+        force: false,
+        status,
+        total_count: 1,
+        queued_count: opts.queued,
+        running_count: opts.running,
+        completed_count: opts.completed,
+        skipped_count: 0,
+        failed_count: 0,
+        canceled_count: 0,
+        total_tokens_used: opts.tokens,
+        created_at: '2026-11-20T12:00:00Z',
+        updated_at: '2026-11-20T12:00:00Z',
+      },
+      items: [
+        {
+          id: id * 10,
+          batch_id: id,
+          job_id: jobId,
+          status,
+          detail_fetched: false,
+          llm_invoked: opts.completed > 0,
+          input_tokens: 0,
+          output_tokens: 0,
+          thought_tokens: 0,
+          total_tokens: opts.tokens,
+          created_at: '2026-11-20T12:00:00Z',
+          updated_at: '2026-11-20T12:00:00Z',
+        },
+      ],
+    });
+
+    const transport: ApiTransport = vi.fn(async (url, init) => {
+      if (url === '/api/enrichment-config') {
+        return new Response(
+          JSON.stringify({
+            max_batch_size: 25,
+            default_mode: 'full',
+            default_force: false,
+            skip_detail_if_present: true,
+            require_details: false,
+            max_concurrency: 2,
+            default_model: '',
+            default_effort: '',
+            confirm_threshold: 5,
+            wait_timeout_seconds: 60,
+            web_ui_enabled: true,
+            web_session_ttl_minutes: 720,
+          }),
+          { status: 200 },
+        );
+      }
+      if (url.startsWith('/api/active-projects')) {
+        return new Response(JSON.stringify({ projects: [], count: 0 }), { status: 200 });
+      }
+      if (url.startsWith('/api/search-runs')) {
+        return new Response(JSON.stringify({ search_runs: [], total: 0 }), { status: 200 });
+      }
+      if (url.startsWith('/api/jobs?')) {
+        return new Response(JSON.stringify({ jobs, total: jobs.length }), { status: 200 });
+      }
+      if (url === '/api/enrichment-batches?limit=20') {
+        return new Response(JSON.stringify({ batches: [], total: 0 }), { status: 200 });
+      }
+      if (url === '/api/jobs/enrich' && init?.method === 'POST') {
+        const body = JSON.parse(String(init.body)) as { job_ids: number[] };
+        enrichBodies.push(body);
+        nextBatchId += 1;
+        const id = nextBatchId;
+        const jobId = body.job_ids[0];
+        const detail = makeDetail(id, jobId, 'running', {
+          queued: 0,
+          running: 1,
+          completed: 0,
+          tokens: 0,
+        });
+        batchDetails.set(id, detail);
+        if (firstPostDeferred) {
+          firstPostDeferred = false;
+          return new Promise<Response>((res) => {
+            resolveFirstPost = res;
+          });
+        }
+        return new Response(JSON.stringify(detail), { status: 202 });
+      }
+      const match = url.match(/^\/api\/enrichment-batches\/(\d+)$/);
+      if (match) {
+        const id = Number(match[1]);
+        return new Response(JSON.stringify(batchDetails.get(id)), { status: 200 });
+      }
+      return new Response(JSON.stringify({ ok: true }), { status: 200 });
+    });
+
+    const controller = new DashboardController({ root, transport, surface: 'web' });
+    await controller.init();
+
+    // Double-click row 1 Enrich while first POST is in-flight -> only 1 POST sent for job 1
+    const btn1 = root.querySelector<HTMLButtonElement>('[data-testid="row-enrich-btn-1"]');
+    btn1?.click();
+    btn1?.click();
+    expect(enrichBodies).toEqual([expect.objectContaining({ job_ids: [1] })]);
+
+    // Click row 2 and row 3 while row 1 POST is still in-flight
+    root.querySelector<HTMLButtonElement>('[data-testid="row-enrich-btn-2"]')?.click();
+    root.querySelector<HTMLButtonElement>('[data-testid="row-enrich-btn-3"]')?.click();
+    await vi.waitFor(() => expect(enrichBodies.length).toBe(3));
+
+    // Resolve row 1 POST
+    resolveFirstPost(new Response(JSON.stringify(batchDetails.get(1)), { status: 202 }));
+    await vi.waitFor(() => {
+      expect(root.querySelector('#dash-batch-banner')?.textContent).toContain(
+        '3 batches (full) — running',
+      );
+    });
+
+    let bannerText = root.querySelector('#dash-batch-banner')?.textContent ?? '';
+    expect(bannerText).toContain('0/3 (0%)');
+    expect(bannerText).toContain('running 3 · queued 0');
+
+    // Simulate Batch #1 completing, Batch #2 queued, Batch #3 running
+    batchDetails.set(
+      1,
+      makeDetail(1, 1, 'completed', { queued: 0, running: 0, completed: 1, tokens: 320 }),
+    );
+    batchDetails.set(
+      2,
+      makeDetail(2, 2, 'queued', { queued: 1, running: 0, completed: 0, tokens: 0 }),
+    );
+    batchDetails.set(
+      3,
+      makeDetail(3, 3, 'running', { queued: 0, running: 1, completed: 0, tokens: 0 }),
+    );
+
+    await vi.advanceTimersByTimeAsync(2050);
+    bannerText = root.querySelector('#dash-batch-banner')?.textContent ?? '';
+    expect(bannerText).toContain('3 batches (full) — running');
+    expect(bannerText).toContain('1/3 (33%)');
+    expect(bannerText).toContain('running 1 · queued 1 · completed 1');
+    expect(bannerText).toContain('320 tokens');
+
+    // Expand items and verify Batch # labels + job titles
+    root.querySelector<HTMLButtonElement>('[data-testid="batch-items-toggle"]')?.click();
+    const itemsText = root.querySelector('.dash-batch-items')?.textContent ?? '';
+    expect(itemsText).toContain('Batch #1');
+    expect(itemsText).toContain('Job #1 · Job Title 1');
+    expect(itemsText).toContain('Batch #2');
+    expect(itemsText).toContain('Job #2 · Job Title 2');
+    expect(itemsText).toContain('Batch #3');
+    expect(itemsText).toContain('Job #3 · Job Title 3');
+
+    controller.destroy();
+  });
+
+  it('Cancel Remaining cancels all active tracked batches in parallel and stops polling', async () => {
+    window.history.replaceState(null, '', '/dashboard/');
+    const canceledIds: number[] = [];
+    let nextId = 0;
+
+    const makeBatch = (id: number, status: string) => ({
+      id,
+      mode: 'full',
+      triggered_by: 'ui',
+      force: false,
+      status,
+      total_count: 1,
+      queued_count: status === 'running' ? 1 : 0,
+      running_count: 0,
+      completed_count: 0,
+      skipped_count: 0,
+      failed_count: 0,
+      canceled_count: status === 'canceled' ? 1 : 0,
+      total_tokens_used: 0,
+      created_at: '2026-11-20T12:00:00Z',
+      updated_at: '2026-11-20T12:00:00Z',
+    });
+
+    const transport: ApiTransport = vi.fn(async (url, init) => {
+      if (url === '/api/enrichment-config') {
+        return new Response(JSON.stringify({ confirm_threshold: 5, default_mode: 'full' }), {
+          status: 200,
+        });
+      }
+      if (url.startsWith('/api/active-projects')) {
+        return new Response(JSON.stringify({ projects: [], count: 0 }), { status: 200 });
+      }
+      if (url.startsWith('/api/search-runs')) {
+        return new Response(JSON.stringify({ search_runs: [], total: 0 }), { status: 200 });
+      }
+      if (url.startsWith('/api/jobs?')) {
+        return new Response(JSON.stringify({ jobs: [makeJob(1), makeJob(2)], total: 2 }), {
+          status: 200,
+        });
+      }
+      if (url === '/api/enrichment-batches?limit=20') {
+        return new Response(JSON.stringify({ batches: [], total: 0 }), { status: 200 });
+      }
+      if (url === '/api/jobs/enrich' && init?.method === 'POST') {
+        nextId += 1;
+        return new Response(JSON.stringify({ batch: makeBatch(nextId, 'running'), items: [] }), {
+          status: 202,
+        });
+      }
+      const cancelMatch = url.match(/^\/api\/enrichment-batches\/(\d+)\/cancel$/);
+      if (cancelMatch && init?.method === 'POST') {
+        const id = Number(cancelMatch[1]);
+        canceledIds.push(id);
+        return new Response(JSON.stringify({ batch: makeBatch(id, 'canceled'), items: [] }), {
+          status: 200,
+        });
+      }
+      return new Response(JSON.stringify({ ok: true }), { status: 200 });
+    });
+
+    const controller = new DashboardController({ root, transport, surface: 'web' });
+    await controller.init();
+    await controller.startBatchEnrich([1]);
+    await controller.startBatchEnrich([2]);
+
+    root.querySelector<HTMLButtonElement>('[data-testid="cancel-batch-btn"]')?.click();
+    await vi.waitFor(() => {
+      expect(canceledIds.sort()).toEqual([1, 2]);
+      const bannerText = root.querySelector('#dash-batch-banner')?.textContent ?? '';
+      expect(bannerText).toContain('2 batches (full) — canceled');
+      expect(bannerText).toContain('2/2 (100%)');
+      expect(bannerText).toContain('canceled 2');
+    });
+    expect(root.querySelector('[data-testid="dismiss-batch-banner-btn"]')).not.toBeNull();
+    expect((controller as unknown as { pollTimer: unknown }).pollTimer).toBeNull();
+
+    controller.destroy();
+  });
+
+  it('clears prior terminal session batches when starting a fresh batch after completion', async () => {
+    window.history.replaceState(null, '', '/dashboard/');
+    let nextId = 0;
+
+    const transport: ApiTransport = vi.fn(async (url, init) => {
+      if (url === '/api/enrichment-config') {
+        return new Response(JSON.stringify({ confirm_threshold: 5, default_mode: 'full' }), {
+          status: 200,
+        });
+      }
+      if (url.startsWith('/api/active-projects')) {
+        return new Response(JSON.stringify({ projects: [], count: 0 }), { status: 200 });
+      }
+      if (url.startsWith('/api/search-runs')) {
+        return new Response(JSON.stringify({ search_runs: [], total: 0 }), { status: 200 });
+      }
+      if (url.startsWith('/api/jobs?')) {
+        return new Response(JSON.stringify({ jobs: [makeJob(1), makeJob(2)], total: 2 }), {
+          status: 200,
+        });
+      }
+      if (url === '/api/enrichment-batches?limit=20') {
+        return new Response(JSON.stringify({ batches: [], total: 0 }), { status: 200 });
+      }
+      if (url === '/api/jobs/enrich' && init?.method === 'POST') {
+        nextId += 1;
+        const isFirst = nextId === 1;
+        return new Response(
+          JSON.stringify({
+            batch: {
+              id: nextId,
+              mode: 'full',
+              triggered_by: 'ui',
+              force: false,
+              status: isFirst ? 'completed' : 'running',
+              total_count: 1,
+              queued_count: isFirst ? 0 : 1,
+              running_count: 0,
+              completed_count: isFirst ? 1 : 0,
+              skipped_count: 0,
+              failed_count: 0,
+              canceled_count: 0,
+              total_tokens_used: isFirst ? 900 : 0,
+              created_at: '2026-11-20T12:00:00Z',
+              updated_at: '2026-11-20T12:00:00Z',
+            },
+            items: [],
+          }),
+          { status: 202 },
+        );
+      }
+      return new Response(JSON.stringify({ ok: true }), { status: 200 });
+    });
+
+    const controller = new DashboardController({ root, transport, surface: 'web' });
+    await controller.init();
+
+    // First batch finishes immediately
+    await controller.startBatchEnrich([1]);
+    expect(root.querySelector('#dash-batch-banner')?.textContent).toContain(
+      'Batch #1 (full) — completed',
+    );
+    expect(root.querySelector('#dash-batch-banner')?.textContent).toContain('900 tokens');
+
+    // Starting Batch #2 after Batch #1 completed resets old terminal totals
+    await controller.startBatchEnrich([2]);
+    const bannerText = root.querySelector('#dash-batch-banner')?.textContent ?? '';
+    expect(bannerText).toContain('Batch #2 (full) — running');
+    expect(bannerText).toContain('0/1 (0%)');
+    expect(bannerText).toContain('0 tokens');
+    expect(bannerText).not.toContain('900 tokens');
+
+    controller.destroy();
+  });
+
+  it('restores multiple active batches on reload via /api/enrichment-batches?limit=20', async () => {
+    window.history.replaceState(null, '', '/dashboard/');
+    const makeBatch = (id: number, status: string, tokens: number) => ({
+      id,
+      mode: 'full',
+      triggered_by: 'ui',
+      force: false,
+      status,
+      total_count: 1,
+      queued_count: status === 'queued' ? 1 : 0,
+      running_count: status === 'running' ? 1 : 0,
+      completed_count: 0,
+      skipped_count: 0,
+      failed_count: 0,
+      canceled_count: 0,
+      total_tokens_used: tokens,
+      created_at: '2026-11-20T12:00:00Z',
+      updated_at: '2026-11-20T12:00:00Z',
+    });
+
+    const transport: ApiTransport = vi.fn(async (url) => {
+      if (url === '/api/enrichment-config') {
+        return new Response(JSON.stringify({ confirm_threshold: 5, default_mode: 'full' }), {
+          status: 200,
+        });
+      }
+      if (url.startsWith('/api/active-projects')) {
+        return new Response(JSON.stringify({ projects: [], count: 0 }), { status: 200 });
+      }
+      if (url.startsWith('/api/search-runs')) {
+        return new Response(JSON.stringify({ search_runs: [], total: 0 }), { status: 200 });
+      }
+      if (url.startsWith('/api/jobs?')) {
+        return new Response(JSON.stringify({ jobs: [makeJob(1), makeJob(2)], total: 2 }), {
+          status: 200,
+        });
+      }
+      if (url === '/api/enrichment-batches?limit=20') {
+        return new Response(
+          JSON.stringify({
+            batches: [
+              makeBatch(10, 'completed', 400),
+              makeBatch(11, 'running', 50),
+              makeBatch(12, 'queued', 0),
+            ],
+            total: 3,
+          }),
+          { status: 200 },
+        );
+      }
+      if (url === '/api/enrichment-batches/11') {
+        return new Response(JSON.stringify({ batch: makeBatch(11, 'running', 50), items: [] }), {
+          status: 200,
+        });
+      }
+      if (url === '/api/enrichment-batches/12') {
+        return new Response(JSON.stringify({ batch: makeBatch(12, 'queued', 0), items: [] }), {
+          status: 200,
+        });
+      }
+      return new Response(JSON.stringify({ ok: true }), { status: 200 });
+    });
+
+    const controller = new DashboardController({ root, transport, surface: 'web' });
+    await controller.init();
+
+    const bannerText = root.querySelector('#dash-batch-banner')?.textContent ?? '';
+    expect(bannerText).toContain('2 batches (full) — running');
+    expect(bannerText).toContain('0/2 (0%)');
+    expect(bannerText).toContain('running 1 · queued 1');
+    expect(bannerText).toContain('50 tokens');
+    expect((controller as unknown as { pollTimer: unknown }).pollTimer).not.toBeNull();
+
+    controller.destroy();
+  });
+
+  it('skips polling a batch while its cancel POST is in-flight and ignores out-of-order overlapping polls', async () => {
+    window.history.replaceState(null, '', '/dashboard/');
+    let resolveCancel1!: (res: Response) => void;
+    let resolvePoll1Slow!: (res: Response) => void;
+    let batch1PollCount = 0;
+    let batch2Status = 'running';
+
+    const makeBatch = (id: number, status: string) => ({
+      id,
+      mode: 'full',
+      triggered_by: 'ui',
+      force: false,
+      status,
+      total_count: 1,
+      queued_count: status === 'running' ? 1 : 0,
+      running_count: 0,
+      completed_count: status === 'completed' ? 1 : 0,
+      skipped_count: 0,
+      failed_count: 0,
+      canceled_count: status === 'canceled' ? 1 : 0,
+      total_tokens_used: status === 'completed' ? 100 : 0,
+      created_at: '2026-11-20T12:00:00Z',
+      updated_at: '2026-11-20T12:00:00Z',
+    });
+
+    let enrichCount = 0;
+    const transport: ApiTransport = vi.fn(async (url, init) => {
+      if (url === '/api/enrichment-config') {
+        return new Response(JSON.stringify({ confirm_threshold: 5, default_mode: 'full' }), {
+          status: 200,
+        });
+      }
+      if (url.startsWith('/api/active-projects')) {
+        return new Response(JSON.stringify({ projects: [], count: 0 }), { status: 200 });
+      }
+      if (url.startsWith('/api/search-runs')) {
+        return new Response(JSON.stringify({ search_runs: [], total: 0 }), { status: 200 });
+      }
+      if (url.startsWith('/api/jobs?')) {
+        return new Response(JSON.stringify({ jobs: [makeJob(1), makeJob(2)], total: 2 }), {
+          status: 200,
+        });
+      }
+      if (url === '/api/enrichment-batches?limit=20') {
+        return new Response(JSON.stringify({ batches: [], total: 0 }), { status: 200 });
+      }
+      if (url === '/api/jobs/enrich' && init?.method === 'POST') {
+        enrichCount += 1;
+        return new Response(
+          JSON.stringify({ batch: makeBatch(enrichCount, 'running'), items: [] }),
+          { status: 202 },
+        );
+      }
+      if (url.endsWith('/cancel') && init?.method === 'POST') {
+        return new Promise<Response>((res) => {
+          resolveCancel1 = res;
+        });
+      }
+      if (url === '/api/enrichment-batches/1') {
+        batch1PollCount += 1;
+        if (batch1PollCount === 1) {
+          return new Promise<Response>((res) => {
+            resolvePoll1Slow = res;
+          });
+        }
+        return new Response(JSON.stringify({ batch: makeBatch(1, 'completed'), items: [] }), {
+          status: 200,
+        });
+      }
+      if (url === '/api/enrichment-batches/2') {
+        return new Response(JSON.stringify({ batch: makeBatch(2, batch2Status), items: [] }), {
+          status: 200,
+        });
+      }
+      return new Response(JSON.stringify({ ok: true }), { status: 200 });
+    });
+
+    const controller = new DashboardController({ root, transport, surface: 'web' });
+    await controller.init();
+
+    // Path B: overlapping polls out-of-order after adding Batch #2
+    await controller.startBatchEnrich([1]);
+    await vi.advanceTimersByTimeAsync(2050); // Poll #1 for Batch #1 is slow & in-flight
+    expect(batch1PollCount).toBe(1);
+
+    await controller.startBatchEnrich([2]); // resets isPollInFlight
+    batch2Status = 'completed';
+    await vi.advanceTimersByTimeAsync(2050); // Poll #2 for Batch #1 + Batch #2 both complete
+    expect(batch1PollCount).toBe(2);
+    await vi.waitFor(() => {
+      expect(root.querySelector('#dash-batch-banner')?.textContent).toContain(
+        '2 batches (full) — completed',
+      );
+    });
+    expect((controller as unknown as { pollTimer: unknown }).pollTimer).toBeNull();
+
+    // Slow Poll #1 resolves late with stale 'running' -> must NOT revert Batch #1
+    resolvePoll1Slow(
+      new Response(JSON.stringify({ batch: makeBatch(1, 'running'), items: [] }), { status: 200 }),
+    );
+    await Promise.resolve();
+    await Promise.resolve();
+    expect(root.querySelector('#dash-batch-banner')?.textContent).toContain(
+      '2 batches (full) — completed',
+    );
+    expect((controller as unknown as { pollTimer: unknown }).pollTimer).toBeNull();
+
+    // Path A: cancel in-flight skips polling for Batch #3
+    await controller.startBatchEnrich([1]); // Batch #3
+    root.querySelector<HTMLButtonElement>('[data-testid="cancel-batch-btn"]')?.click();
+    await Promise.resolve();
+    const callsBeforeTick = (transport as ReturnType<typeof vi.fn>).mock.calls.length;
+    await vi.advanceTimersByTimeAsync(2050);
+    const callsAfterTick = (transport as ReturnType<typeof vi.fn>).mock.calls
+      .slice(callsBeforeTick)
+      .map((c) => c[0]);
+    expect(callsAfterTick).not.toContain('/api/enrichment-batches/3');
+
+    resolveCancel1(
+      new Response(JSON.stringify({ batch: makeBatch(3, 'canceled'), items: [] }), { status: 200 }),
+    );
+    controller.destroy();
+  });
+
+  it('handles overlapping startBatchEnrich calls after a terminal session without deleting new terminal batches or keeping stale ones', async () => {
+    window.history.replaceState(null, '', '/dashboard/');
+    let postCall = 0;
+    let resolveCallA!: (res: Response) => void;
+    let resolveCallC!: (res: Response) => void;
+
+    const makeBatch = (id: number, status: string, tokens: number) => ({
+      id,
+      mode: 'full',
+      triggered_by: 'ui',
+      force: false,
+      status,
+      total_count: 1,
+      queued_count: status === 'running' ? 1 : 0,
+      running_count: 0,
+      completed_count: status === 'completed' ? 1 : 0,
+      skipped_count: 0,
+      failed_count: 0,
+      canceled_count: 0,
+      total_tokens_used: tokens,
+      created_at: '2026-11-20T12:00:00Z',
+      updated_at: '2026-11-20T12:00:00Z',
+    });
+
+    const transport: ApiTransport = vi.fn(async (url, init) => {
+      if (url === '/api/enrichment-config') {
+        return new Response(JSON.stringify({ confirm_threshold: 5, default_mode: 'full' }), {
+          status: 200,
+        });
+      }
+      if (url.startsWith('/api/active-projects')) {
+        return new Response(JSON.stringify({ projects: [], count: 0 }), { status: 200 });
+      }
+      if (url.startsWith('/api/search-runs')) {
+        return new Response(JSON.stringify({ search_runs: [], total: 0 }), { status: 200 });
+      }
+      if (url.startsWith('/api/jobs?')) {
+        return new Response(JSON.stringify({ jobs: [makeJob(1), makeJob(2)], total: 2 }), {
+          status: 200,
+        });
+      }
+      if (url === '/api/enrichment-batches?limit=20') {
+        return new Response(JSON.stringify({ batches: [], total: 0 }), { status: 200 });
+      }
+      if (url === '/api/jobs/enrich' && init?.method === 'POST') {
+        postCall += 1;
+        if (postCall === 1) {
+          // Prior terminal session Batch #1
+          return new Response(JSON.stringify({ batch: makeBatch(1, 'completed', 900), items: [] }), {
+            status: 202,
+          });
+        }
+        if (postCall === 2) {
+          // Call A (deferred)
+          return new Promise<Response>((res) => {
+            resolveCallA = res;
+          });
+        }
+        if (postCall === 3) {
+          // Call B (resolves first as terminal completed Batch #3)
+          return new Response(JSON.stringify({ batch: makeBatch(3, 'completed', 120), items: [] }), {
+            status: 202,
+          });
+        }
+        if (postCall === 4) {
+          // Call C (deferred, will fail)
+          return new Promise<Response>((res) => {
+            resolveCallC = res;
+          });
+        }
+        // Call D (resolves first as terminal completed Batch #4)
+        return new Response(JSON.stringify({ batch: makeBatch(4, 'completed', 50), items: [] }), {
+          status: 202,
+        });
+      }
+      return new Response(JSON.stringify({ ok: true }), { status: 200 });
+    });
+
+    const controller = new DashboardController({ root, transport, surface: 'web' });
+    await controller.init();
+
+    // Establish prior terminal Batch #1 (900 tokens)
+    await controller.startBatchEnrich([1]);
+    expect(root.querySelector('#dash-batch-banner')?.textContent).toContain('900 tokens');
+
+    // Case (a): Call A and Call B overlap; Call B resolves first as terminal Batch #3, then Call A resolves as Batch #2
+    const promiseA = controller.startBatchEnrich([1]);
+    const promiseB = controller.startBatchEnrich([2]);
+    await promiseB;
+    resolveCallA(
+      new Response(JSON.stringify({ batch: makeBatch(2, 'completed', 80), items: [] }), {
+        status: 202,
+      }),
+    );
+    await promiseA;
+
+    let bannerText = root.querySelector('#dash-batch-banner')?.textContent ?? '';
+    expect(bannerText).toContain('2 batches (full) — completed');
+    expect(bannerText).toContain('200 tokens'); // 120 + 80 (Batch #1's 900 cleared, Batch #3 preserved!)
+
+    // Case (b): Call C fails while Call D succeeds -> old Batch #2/#3 are cleared and Batch #4 remains
+    const promiseC = controller.startBatchEnrich([1]);
+    const promiseD = controller.startBatchEnrich([2]);
+    await promiseD;
+    resolveCallC(new Response(JSON.stringify({ error: 'server error' }), { status: 500 }));
+    await promiseC;
+
+    bannerText = root.querySelector('#dash-batch-banner')?.textContent ?? '';
+    expect(bannerText).toContain('Batch #4 (full) — completed');
+    expect(bannerText).toContain('50 tokens');
 
     controller.destroy();
   });

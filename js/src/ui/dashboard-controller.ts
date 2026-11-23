@@ -84,9 +84,14 @@ export class DashboardController {
   private allJobs: SavedJob[] = [];
   private searchRuns: SearchRunSummary[] = [];
   private activeProjects: ActiveProjectEntry[] = [];
-  private activeBatchDetail: EnrichmentBatchDetailResponse | null = null;
+  private trackedBatches = new Map<number, EnrichmentBatchDetailResponse>();
+  private pinnedBatchId: number | null = null;
+  private batchSeqById = new Map<number, number>();
+  private cancelingBatchIds = new Set<number>();
+  private pendingSessionResetIds = new Set<number>();
+  private inFlightSingleEnrichIds = new Set<number>();
+  private inFlightStartBatchCount = 0;
   private batchItemsExpanded = false;
-  private batchBannerDismissedId: number | null = null;
 
   private selectedRunId = '';
   private filterQuery = '';
@@ -167,6 +172,9 @@ export class DashboardController {
     this.loadJobsSeq += 1;
     this.isPollInFlight = false;
     this.pollTokenCounter += 1;
+    this.cancelingBatchIds.clear();
+    this.pendingSessionResetIds.clear();
+    this.inFlightSingleEnrichIds.clear();
     this.stopBatchPolling();
     this.drawer?.destroy();
     this.watchersPanel?.destroy();
@@ -178,6 +186,7 @@ export class DashboardController {
       const run = params.get('run');
       const fit = params.get('fit');
       const q = params.get('q');
+      const batch = params.get('batch');
       if (run && /^\d+$/.test(run)) {
         this.selectedRunId = run;
       }
@@ -186,6 +195,12 @@ export class DashboardController {
       }
       if (q) {
         this.filterQuery = q;
+      }
+      if (batch && /^\d+$/.test(batch)) {
+        const parsed = Number.parseInt(batch, 10);
+        if (Number.isFinite(parsed) && parsed > 0) {
+          this.pinnedBatchId = parsed;
+        }
       }
     } catch {
       // ignore invalid URLSearchParams in synthetic environments
@@ -408,10 +423,7 @@ export class DashboardController {
       callbacks: {
         onInspectJob: (job) => this.drawer.open(job),
         onEnrichSingleJob: (job) => {
-          void this.startBatchEnrich([job.id], {
-            mode: this.config.default_mode,
-            force: isJobAiEnriched(job),
-          });
+          void this.handleSingleJobEnrich(job);
         },
         onStatusChange: (jobId, status) => {
           void this.handleStatusChange(jobId, status);
@@ -506,7 +518,12 @@ export class DashboardController {
     });
 
     this.mustQuery('#dash-refresh-btn').addEventListener('click', () => {
-      void Promise.all([this.loadSearchRuns(), this.loadActiveProjects(), this.loadJobs()]);
+      void Promise.all([
+        this.loadSearchRuns(),
+        this.loadActiveProjects(),
+        this.loadJobs(),
+        this.loadActiveBatches(),
+      ]);
     });
 
     this.bulkModeSelect.addEventListener('change', () => this.updateBulkSelectionBar());
@@ -533,10 +550,7 @@ export class DashboardController {
       const target = e.target as HTMLElement | null;
       if (!target) return;
       if (target.closest('[data-testid="cancel-batch-btn"]')) {
-        const batchId = this.activeBatchDetail?.batch.id;
-        if (batchId) {
-          void this.cancelBatch(batchId);
-        }
+        void this.cancelActiveBatches();
         return;
       }
       if (target.closest('[data-testid="batch-items-toggle"]')) {
@@ -545,9 +559,12 @@ export class DashboardController {
         return;
       }
       if (target.closest('[data-testid="dismiss-batch-banner-btn"]')) {
-        if (this.activeBatchDetail) {
-          this.batchBannerDismissedId = this.activeBatchDetail.batch.id;
-        }
+        this.trackedBatches.clear();
+        this.pinnedBatchId = null;
+        this.cancelingBatchIds.clear();
+        this.pendingSessionResetIds.clear();
+        this.batchStateSeq += 1;
+        this.batchItemsExpanded = false;
         this.renderBatchBanner();
       }
     });
@@ -901,12 +918,36 @@ export class DashboardController {
     });
   }
 
+  private async handleSingleJobEnrich(job: SavedJob): Promise<void> {
+    if (this.destroyed || this.inFlightSingleEnrichIds.has(job.id)) return;
+    this.inFlightSingleEnrichIds.add(job.id);
+    try {
+      await this.startBatchEnrich([job.id], {
+        mode: this.config.default_mode,
+        force: isJobAiEnriched(job),
+      });
+    } finally {
+      if (!this.destroyed) {
+        this.inFlightSingleEnrichIds.delete(job.id);
+      }
+    }
+  }
+
   async startBatchEnrich(
     jobIds: number[],
     opts?: Partial<Omit<BatchEnrichRequest, 'job_ids'>>,
   ): Promise<void> {
     if (this.destroyed) return;
-    const seq = ++this.batchStateSeq;
+    const sessionSeq = this.batchStateSeq;
+    if (!this.hasActiveTrackedBatches() && this.inFlightStartBatchCount === 0) {
+      this.pendingSessionResetIds.clear();
+      for (const [id, existing] of this.trackedBatches.entries()) {
+        if (!this.isBatchActive(existing.batch)) {
+          this.pendingSessionResetIds.add(id);
+        }
+      }
+    }
+    this.inFlightStartBatchCount += 1;
     this.clearError();
     try {
       const payload: BatchEnrichRequest = {
@@ -922,22 +963,38 @@ export class DashboardController {
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(payload),
       });
-      if (this.destroyed || seq !== this.batchStateSeq) return;
-      this.batchStateSeq += 1;
+      if (this.destroyed || sessionSeq !== this.batchStateSeq) return;
+      if (this.pendingSessionResetIds.size > 0) {
+        for (const id of this.pendingSessionResetIds) {
+          const existing = this.trackedBatches.get(id);
+          if (existing && !this.isBatchActive(existing.batch)) {
+            this.trackedBatches.delete(id);
+          }
+        }
+        this.pendingSessionResetIds.clear();
+      }
       this.isPollInFlight = false;
       this.pollTokenCounter += 1;
-      this.batchBannerDismissedId = null;
-      this.activeBatchDetail = detail;
+      this.pinnedBatchId = null;
+      this.nextBatchSeq(detail.batch.id);
+      this.trackedBatches.set(detail.batch.id, detail);
       this.renderBatchBanner();
-      if (this.isBatchActive(detail.batch)) {
+      if (this.hasActiveTrackedBatches()) {
         this.startBatchPolling();
       } else {
         this.stopBatchPolling();
       }
       await this.loadJobs();
     } catch (err) {
-      if (this.destroyed || seq !== this.batchStateSeq) return;
+      if (this.destroyed || sessionSeq !== this.batchStateSeq) return;
       this.showError(err instanceof Error ? err.message : 'Failed to start enrichment batch');
+    } finally {
+      if (!this.destroyed) {
+        this.inFlightStartBatchCount = Math.max(0, this.inFlightStartBatchCount - 1);
+        if (this.inFlightStartBatchCount === 0) {
+          this.pendingSessionResetIds.clear();
+        }
+      }
     }
   }
 
@@ -945,50 +1002,105 @@ export class DashboardController {
     return batch.status === 'queued' || batch.status === 'running';
   }
 
+  private hasActiveTrackedBatches(): boolean {
+    for (const detail of this.trackedBatches.values()) {
+      if (this.isBatchActive(detail.batch)) return true;
+    }
+    return false;
+  }
+
+  private nextBatchSeq(batchId: number): number {
+    const next = (this.batchSeqById.get(batchId) ?? 0) + 1;
+    this.batchSeqById.set(batchId, next);
+    return next;
+  }
+
   private async loadActiveBatches(): Promise<void> {
     if (this.destroyed) return;
-    const seq = ++this.batchStateSeq;
+    const sessionSeq = this.batchStateSeq;
     try {
-      const params = new URLSearchParams(window.location.search);
-      const batchParam = params.get('batch');
-      if (batchParam && /^\d+$/.test(batchParam)) {
+      if (this.pinnedBatchId !== null) {
+        const targetId = this.pinnedBatchId;
+        if (this.cancelingBatchIds.has(targetId)) return;
+        const reqSeq = this.nextBatchSeq(targetId);
         const detail = await this.requestJson<EnrichmentBatchDetailResponse>(
-          `/api/enrichment-batches/${batchParam}`,
+          `/api/enrichment-batches/${targetId}`,
           { method: 'GET' },
         );
-        if (this.destroyed || seq !== this.batchStateSeq) return;
-        this.batchStateSeq += 1;
+        if (
+          this.destroyed ||
+          sessionSeq !== this.batchStateSeq ||
+          this.pinnedBatchId !== targetId ||
+          (this.batchSeqById.get(targetId) ?? 0) !== reqSeq
+        ) {
+          return;
+        }
         this.isPollInFlight = false;
         this.pollTokenCounter += 1;
-        this.activeBatchDetail = detail;
+        this.trackedBatches.set(detail.batch.id, detail);
         this.renderBatchBanner();
-        if (this.isBatchActive(detail.batch)) {
+        if (this.hasActiveTrackedBatches()) {
           this.startBatchPolling();
+        } else {
+          this.stopBatchPolling();
         }
         return;
       }
 
       const list = await this.requestJson<EnrichmentBatchesListResponse>(
-        '/api/enrichment-batches?limit=5',
+        '/api/enrichment-batches?limit=20',
         { method: 'GET' },
       );
-      if (this.destroyed || seq !== this.batchStateSeq) return;
-      const running = list.batches.find((b) => this.isBatchActive(b));
-      if (running) {
-        const detail = await this.requestJson<EnrichmentBatchDetailResponse>(
-          `/api/enrichment-batches/${running.id}`,
-          { method: 'GET' },
-        );
-        if (this.destroyed || seq !== this.batchStateSeq) return;
-        this.batchStateSeq += 1;
+      if (this.destroyed || sessionSeq !== this.batchStateSeq) return;
+      const activeSummaries = (Array.isArray(list.batches) ? list.batches : []).filter(
+        (b) => this.isBatchActive(b) && !this.cancelingBatchIds.has(b.id),
+      );
+      if (activeSummaries.length === 0) {
+        return;
+      }
+
+      const snapshots = activeSummaries.map((b) => ({
+        id: b.id,
+        reqSeq: this.nextBatchSeq(b.id),
+      }));
+      const details = await Promise.all(
+        snapshots.map(async (snap) => {
+          try {
+            const detail = await this.requestJson<EnrichmentBatchDetailResponse>(
+              `/api/enrichment-batches/${snap.id}`,
+              { method: 'GET' },
+            );
+            return { snap, detail };
+          } catch (err) {
+            if (isUnauthorizedError(err)) throw err;
+            return null;
+          }
+        }),
+      );
+      if (this.destroyed || sessionSeq !== this.batchStateSeq) return;
+
+      let updated = false;
+      for (const entry of details) {
+        if (!entry) continue;
+        const { snap, detail } = entry;
+        if ((this.batchSeqById.get(snap.id) ?? 0) !== snap.reqSeq) {
+          continue;
+        }
+        this.trackedBatches.set(detail.batch.id, detail);
+        updated = true;
+      }
+      if (updated) {
         this.isPollInFlight = false;
         this.pollTokenCounter += 1;
-        this.activeBatchDetail = detail;
         this.renderBatchBanner();
-        this.startBatchPolling();
+        if (this.hasActiveTrackedBatches()) {
+          this.startBatchPolling();
+        } else {
+          this.stopBatchPolling();
+        }
       }
     } catch {
-      // ignore on initial load
+      // ignore non-fatal errors on initial/refresh load; 401 is handled by requestJson
     }
   }
 
@@ -1007,43 +1119,68 @@ export class DashboardController {
   }
 
   private async pollBatchTick(): Promise<void> {
-    if (this.destroyed || this.isPollInFlight || !this.activeBatchDetail) return;
+    if (this.destroyed || this.isPollInFlight) return;
+    const activeEntries: Array<{ id: number; reqSeq: number }> = [];
+    for (const [id, detail] of this.trackedBatches.entries()) {
+      if (this.isBatchActive(detail.batch) && !this.cancelingBatchIds.has(id)) {
+        activeEntries.push({ id, reqSeq: this.nextBatchSeq(id) });
+      }
+    }
+    if (activeEntries.length === 0) {
+      if (!this.hasActiveTrackedBatches()) {
+        this.stopBatchPolling();
+      }
+      return;
+    }
+
     this.isPollInFlight = true;
     const pollToken = ++this.pollTokenCounter;
-    const seq = this.batchStateSeq;
-    const batchId = this.activeBatchDetail.batch.id;
+    const sessionSeq = this.batchStateSeq;
     try {
-      const detail = await this.requestJson<EnrichmentBatchDetailResponse>(
-        `/api/enrichment-batches/${batchId}`,
-        { method: 'GET' },
+      const results = await Promise.all(
+        activeEntries.map(async ({ id, reqSeq }) => {
+          try {
+            const detail = await this.requestJson<EnrichmentBatchDetailResponse>(
+              `/api/enrichment-batches/${id}`,
+              { method: 'GET' },
+            );
+            return { id, reqSeq, detail };
+          } catch (err) {
+            if (isUnauthorizedError(err)) {
+              throw err;
+            }
+            return null;
+          }
+        }),
       );
-      if (
-        this.destroyed ||
-        seq !== this.batchStateSeq ||
-        this.activeBatchDetail?.batch.id !== batchId
-      ) {
-        return;
-      }
-      this.activeBatchDetail = detail;
-      this.renderBatchBanner();
-      await this.loadJobs();
-      if (
-        this.destroyed ||
-        seq !== this.batchStateSeq ||
-        this.activeBatchDetail?.batch.id !== batchId
-      ) {
+
+      if (this.destroyed || sessionSeq !== this.batchStateSeq) {
         return;
       }
 
-      if (!this.isBatchActive(detail.batch)) {
+      let anyUpdated = false;
+      for (const item of results) {
+        if (!item) continue;
+        if ((this.batchSeqById.get(item.id) ?? 0) !== item.reqSeq) {
+          continue;
+        }
+        this.trackedBatches.set(item.id, item.detail);
+        anyUpdated = true;
+      }
+
+      if (anyUpdated) {
+        this.renderBatchBanner();
+        await this.loadJobs();
+        if (this.destroyed || sessionSeq !== this.batchStateSeq) {
+          return;
+        }
+      }
+
+      if (!this.hasActiveTrackedBatches()) {
         this.stopBatchPolling();
       }
     } catch (err) {
-      if (
-        this.destroyed ||
-        seq !== this.batchStateSeq ||
-        this.activeBatchDetail?.batch.id !== batchId
-      ) {
+      if (this.destroyed || sessionSeq !== this.batchStateSeq) {
         return;
       }
       if (isUnauthorizedError(err)) {
@@ -1058,91 +1195,190 @@ export class DashboardController {
     }
   }
 
-  private async cancelBatch(batchId: number): Promise<void> {
+  private async cancelActiveBatches(): Promise<void> {
     if (this.destroyed) return;
-    const cancelSeq = ++this.batchStateSeq;
-    try {
-      const detail = await this.requestJson<EnrichmentBatchDetailResponse>(
-        `/api/enrichment-batches/${batchId}/cancel`,
-        {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({}),
-        },
-      );
-      if (this.destroyed || cancelSeq !== this.batchStateSeq) return;
-      this.batchStateSeq += 1;
-      this.isPollInFlight = false;
-      this.pollTokenCounter += 1;
-      this.activeBatchDetail = detail;
-      this.renderBatchBanner();
-      if (!this.isBatchActive(detail.batch)) {
-        this.stopBatchPolling();
+    const targets: Array<{ id: number; cancelSeq: number }> = [];
+    for (const [id, detail] of this.trackedBatches.entries()) {
+      if (this.isBatchActive(detail.batch) && !this.cancelingBatchIds.has(id)) {
+        const cancelSeq = this.nextBatchSeq(id);
+        this.cancelingBatchIds.add(id);
+        targets.push({ id, cancelSeq });
       }
-      await this.loadJobs();
+    }
+    if (targets.length === 0) return;
+
+    const sessionSeq = this.batchStateSeq;
+    try {
+      const settled = await Promise.allSettled(
+        targets.map(async ({ id, cancelSeq }) => {
+          const detail = await this.requestJson<EnrichmentBatchDetailResponse>(
+            `/api/enrichment-batches/${id}/cancel`,
+            {
+              method: 'POST',
+              headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify({}),
+            },
+          );
+          return { id, cancelSeq, detail };
+        }),
+      );
+      if (this.destroyed || sessionSeq !== this.batchStateSeq) return;
+
+      let firstError: unknown = null;
+      let anyUpdated = false;
+      for (const result of settled) {
+        if (result.status === 'fulfilled') {
+          const { id, cancelSeq, detail } = result.value;
+          if ((this.batchSeqById.get(id) ?? 0) === cancelSeq) {
+            this.nextBatchSeq(id);
+            this.trackedBatches.set(id, detail);
+            anyUpdated = true;
+          }
+        } else if (firstError === null) {
+          firstError = result.reason;
+        }
+      }
+
+      if (anyUpdated) {
+        this.isPollInFlight = false;
+        this.pollTokenCounter += 1;
+        this.renderBatchBanner();
+        if (!this.hasActiveTrackedBatches()) {
+          this.stopBatchPolling();
+        }
+        await this.loadJobs();
+      }
+      if (firstError !== null && !this.destroyed && sessionSeq === this.batchStateSeq) {
+        this.showError(firstError instanceof Error ? firstError.message : 'Failed to cancel batch');
+      }
     } catch (err) {
-      if (this.destroyed || cancelSeq !== this.batchStateSeq) return;
+      if (this.destroyed || sessionSeq !== this.batchStateSeq) return;
       this.showError(err instanceof Error ? err.message : 'Failed to cancel batch');
+    } finally {
+      for (const { id } of targets) {
+        this.cancelingBatchIds.delete(id);
+      }
     }
   }
 
+  private aggregateBatchStatus(details: EnrichmentBatchDetailResponse[]): string {
+    const priority = ['running', 'queued', 'canceled', 'failed', 'completed_with_errors', 'completed'];
+    const statuses = new Set(details.map((d) => String(d.batch.status ?? '')));
+    for (const candidate of priority) {
+      if (statuses.has(candidate)) {
+        return candidate;
+      }
+    }
+    return String(details[0]?.batch.status ?? 'completed');
+  }
+
   private renderBatchBanner(): void {
-    const detail = this.activeBatchDetail;
-    const rawBatchId = detail ? finiteNumberOr(detail.batch.id, 0) : 0;
-    if (!detail || this.batchBannerDismissedId === rawBatchId) {
+    if (this.trackedBatches.size === 0) {
       this.batchBannerEl.innerHTML = '';
       this.batchBannerEl.hidden = true;
       return;
     }
 
-    const b = detail.batch;
-    const batchId = finiteNumberOr(b.id, 0);
-    const totalCount = Math.max(0, finiteNumberOr(b.total_count, 0));
-    const completedCount = Math.max(0, finiteNumberOr(b.completed_count, 0));
-    const skippedCount = Math.max(0, finiteNumberOr(b.skipped_count, 0));
-    const failedCount = Math.max(0, finiteNumberOr(b.failed_count, 0));
-    const canceledCount = Math.max(0, finiteNumberOr(b.canceled_count, 0));
-    const totalTokensUsed = Math.max(0, finiteNumberOr(b.total_tokens_used, 0));
+    const details = Array.from(this.trackedBatches.values());
+    let totalCount = 0;
+    let queuedCount = 0;
+    let runningCount = 0;
+    let completedCount = 0;
+    let skippedCount = 0;
+    let failedCount = 0;
+    let canceledCount = 0;
+    let totalTokensUsed = 0;
+    let totalItemsCount = 0;
+
+    for (const detail of details) {
+      const b = detail.batch;
+      totalCount += Math.max(0, finiteNumberOr(b.total_count, 0));
+      queuedCount += Math.max(0, finiteNumberOr(b.queued_count, 0));
+      runningCount += Math.max(0, finiteNumberOr(b.running_count, 0));
+      completedCount += Math.max(0, finiteNumberOr(b.completed_count, 0));
+      skippedCount += Math.max(0, finiteNumberOr(b.skipped_count, 0));
+      failedCount += Math.max(0, finiteNumberOr(b.failed_count, 0));
+      canceledCount += Math.max(0, finiteNumberOr(b.canceled_count, 0));
+      totalTokensUsed += Math.max(0, finiteNumberOr(b.total_tokens_used, 0));
+      if (Array.isArray(detail.items)) {
+        totalItemsCount += detail.items.length;
+      }
+    }
+
     const finishedCount = completedCount + skippedCount + failedCount + canceledCount;
     const rawPct = totalCount > 0 ? Math.round((finishedCount / totalCount) * 100) : 0;
     const pct = Number.isFinite(rawPct) ? Math.max(0, Math.min(100, rawPct)) : 0;
-    const isRunning = this.isBatchActive(b);
-    const items = Array.isArray(detail.items) ? detail.items : [];
+    const isRunning = details.some((d) => this.isBatchActive(d.batch));
+
+    let headerText: string;
+    if (details.length === 1) {
+      const only = details[0].batch;
+      const safeBatchId = escapeHtml(String(finiteNumberOr(only.id, 0)));
+      headerText = `Batch #${safeBatchId} (${escapeHtml(String(only.mode ?? ''))}) — ${escapeHtml(String(only.status ?? ''))}`;
+    } else {
+      const modes = new Set(details.map((d) => String(d.batch.mode ?? '')));
+      const aggMode = modes.size === 1 ? Array.from(modes)[0] : 'mixed';
+      const aggStatus = this.aggregateBatchStatus(details);
+      headerText = `${escapeHtml(String(details.length))} batches (${escapeHtml(aggMode)}) — ${escapeHtml(aggStatus)}`;
+    }
+
+    const jobTitlesById = new Map<number, string>();
+    for (const job of this.allJobs) {
+      if (job.job_title) {
+        jobTitlesById.set(job.id, job.job_title);
+      }
+    }
 
     const itemsHtml = this.batchItemsExpanded
-      ? `<div class="dash-batch-items">${items
-          .map((item) => {
-            const safeJobId = escapeHtml(String(finiteNumberOr(item.job_id, 0)));
-            const safeItemTokens = escapeHtml(
-              String(Math.max(0, finiteNumberOr(item.total_tokens, 0))),
-            );
-            return `<div class="dash-batch-item-row">
-                <span>Job #${safeJobId}</span>
+      ? `<div class="dash-batch-items">${details
+          .flatMap((detail) => {
+            const batchId = finiteNumberOr(detail.batch.id, 0);
+            const safeBatchId = escapeHtml(String(batchId));
+            const items = Array.isArray(detail.items) ? detail.items : [];
+            return items.map((item) => {
+              const jobIdNum = finiteNumberOr(item.job_id, 0);
+              const safeJobId = escapeHtml(String(jobIdNum));
+              const rawTitle = jobTitlesById.get(jobIdNum) ?? '';
+              const truncatedTitle =
+                rawTitle.length > 60 ? `${rawTitle.slice(0, 57)}...` : rawTitle;
+              const safeTitleHtml = truncatedTitle ? ` · ${escapeHtml(truncatedTitle)}` : '';
+              const safeItemTokens = escapeHtml(
+                String(Math.max(0, finiteNumberOr(item.total_tokens, 0))),
+              );
+              return `<div class="dash-batch-item-row">
+                ${details.length > 1 ? `<span>Batch #${safeBatchId}</span>` : ''}
+                <span>Job #${safeJobId}${safeTitleHtml}</span>
                 <span>${escapeHtml(String(item.status ?? ''))}</span>
                 <span>${safeItemTokens} tokens</span>
                 ${item.error_message ? `<span class="dash-err-text">${escapeHtml(String(item.error_message))}</span>` : ''}
               </div>`;
+            });
           })
           .join('')}</div>`
       : '';
 
-    const safeBatchId = escapeHtml(String(batchId));
     const safeFinished = escapeHtml(String(finishedCount));
     const safeTotal = escapeHtml(String(totalCount));
     const safePct = escapeHtml(String(pct));
+    const safeRunning = escapeHtml(String(runningCount));
+    const safeQueued = escapeHtml(String(queuedCount));
     const safeCompleted = escapeHtml(String(completedCount));
     const safeSkipped = escapeHtml(String(skippedCount));
     const safeFailed = escapeHtml(String(failedCount));
     const safeCanceled = escapeHtml(String(canceledCount));
     const safeTokens = escapeHtml(String(totalTokensUsed));
-    const safeItemsLen = escapeHtml(String(items.length));
+    const safeItemsLen = escapeHtml(String(totalItemsCount));
+    const activePart =
+      isRunning || runningCount > 0 || queuedCount > 0
+        ? `running ${safeRunning} · queued ${safeQueued} · `
+        : '';
 
     this.batchBannerEl.hidden = false;
     this.batchBannerEl.innerHTML = `
       <div class="dash-batch-row">
         <div class="dash-batch-meta">
-          <strong>Batch #${safeBatchId} (${escapeHtml(String(b.mode ?? ''))}) — ${escapeHtml(String(b.status ?? ''))}</strong>
-          <span>${safeFinished}/${safeTotal} (${safePct}%) · completed ${safeCompleted} · skipped ${safeSkipped} · failed ${safeFailed} · canceled ${safeCanceled} · ${safeTokens} tokens</span>
+          <strong>${headerText}</strong>
+          <span>${safeFinished}/${safeTotal} (${safePct}%) · ${activePart}completed ${safeCompleted} · skipped ${safeSkipped} · failed ${safeFailed} · canceled ${safeCanceled} · ${safeTokens} tokens</span>
         </div>
         <div class="dash-batch-actions">
           <button type="button" class="dash-btn-sm" data-testid="batch-items-toggle">

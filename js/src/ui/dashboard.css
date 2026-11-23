@@ -188,6 +188,7 @@ select {
   background: #0c6cb3;
 }
 
+.dash-btn-sm:disabled,
 button:disabled {
   opacity: 0.55;
   cursor: not-allowed;

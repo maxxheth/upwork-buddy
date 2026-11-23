@@ -535,8 +535,8 @@ export class JobsTable {
         return;
       }
 
-      const enrichBtn = target.closest<HTMLElement>('.js-row-enrich');
-      if (enrichBtn) {
+      const enrichBtn = target.closest<HTMLButtonElement>('.js-row-enrich');
+      if (enrichBtn && !enrichBtn.disabled) {
         const idNum = Number.parseInt(enrichBtn.dataset.jobId ?? '', 10);
         const job = this.jobs.find((j) => j.id === idNum);
         if (job) {
@@ -686,6 +686,19 @@ export class JobsTable {
               }
 
               const enrichState = getEffectiveEnrichmentState(job);
+              const isEnrichInProgress =
+                enrichState.key === 'queued' ||
+                enrichState.key === 'scraping_details' ||
+                enrichState.key === 'analyzing';
+              const enrichBtnLabel =
+                enrichState.key === 'queued'
+                  ? 'Queued'
+                  : isEnrichInProgress
+                    ? 'Enriching...'
+                    : 'Enrich';
+              const enrichBtnAttrs = isEnrichInProgress
+                ? ' disabled title="Enrichment in progress"'
+                : '';
               const currentStatus = job.status ?? 'discovered';
               const statusOptions = JOB_STATUS_OPTIONS.includes(
                 currentStatus as (typeof JOB_STATUS_OPTIONS)[number],
@@ -724,7 +737,7 @@ export class JobsTable {
                 <td class="dash-td-actions">
                   <div class="dash-row-actions">
                     <button type="button" class="dash-btn-sm js-row-inspect" data-testid="row-inspect-btn-${idStr}" data-job-id="${idStr}">Inspect</button>
-                    <button type="button" class="dash-btn-sm dash-btn-accent js-row-enrich" data-testid="row-enrich-btn-${idStr}" data-job-id="${idStr}">Enrich</button>
+                    <button type="button" class="dash-btn-sm dash-btn-accent js-row-enrich" data-testid="row-enrich-btn-${idStr}" data-job-id="${idStr}"${enrichBtnAttrs}>${enrichBtnLabel}</button>
                     <select class="dash-status-select js-row-status" data-testid="row-status-select-${idStr}" data-job-id="${idStr}" aria-label="Status for ${escapeHtml(job.job_title || 'job')}">
                       ${statusOptions
                         .map(

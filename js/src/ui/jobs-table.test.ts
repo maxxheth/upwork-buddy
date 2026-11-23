@@ -352,4 +352,64 @@ describe('JobsTable & parseNumericBudget', () => {
     );
     expect(descTitles).toEqual(['Score 90', 'Score 50', 'Score 10', 'Score NaN']);
   });
+
+  it('disables row Enrich button with Queued / Enriching... label while enrichment is in progress', () => {
+    const onEnrichSingleJob = vi.fn();
+    const table = new JobsTable({
+      tableWrap,
+      paginationWrap,
+      callbacks: {
+        onInspectJob: vi.fn(),
+        onEnrichSingleJob,
+        onStatusChange: vi.fn(),
+        onSelectionChange: vi.fn(),
+      },
+    });
+
+    table.setJobs([
+      makeJob({ id: 1, ai_enrichment_status: 'none' }),
+      makeJob({ id: 2, ai_enrichment_status: 'queued' }),
+      makeJob({ id: 3, ai_enrichment_status: 'scraping_details' }),
+      makeJob({ id: 4, ai_enrichment_status: 'analyzing' }),
+      makeJob({ id: 5, ai_enrichment_status: 'completed' }),
+      makeJob({ id: 6, ai_enrichment_status: 'failed' }),
+    ]);
+
+    const btn1 = tableWrap.querySelector<HTMLButtonElement>('[data-testid="row-enrich-btn-1"]');
+    const btn2 = tableWrap.querySelector<HTMLButtonElement>('[data-testid="row-enrich-btn-2"]');
+    const btn3 = tableWrap.querySelector<HTMLButtonElement>('[data-testid="row-enrich-btn-3"]');
+    const btn4 = tableWrap.querySelector<HTMLButtonElement>('[data-testid="row-enrich-btn-4"]');
+    const btn5 = tableWrap.querySelector<HTMLButtonElement>('[data-testid="row-enrich-btn-5"]');
+    const btn6 = tableWrap.querySelector<HTMLButtonElement>('[data-testid="row-enrich-btn-6"]');
+
+    expect(btn1?.disabled).toBe(false);
+    expect(btn1?.textContent).toBe('Enrich');
+
+    expect(btn2?.disabled).toBe(true);
+    expect(btn2?.textContent).toBe('Queued');
+    expect(btn2?.title).toBe('Enrichment in progress');
+
+    expect(btn3?.disabled).toBe(true);
+    expect(btn3?.textContent).toBe('Enriching...');
+    expect(btn3?.title).toBe('Enrichment in progress');
+
+    expect(btn4?.disabled).toBe(true);
+    expect(btn4?.textContent).toBe('Enriching...');
+    expect(btn4?.title).toBe('Enrichment in progress');
+
+    expect(btn5?.disabled).toBe(false);
+    expect(btn5?.textContent).toBe('Enrich');
+
+    expect(btn6?.disabled).toBe(false);
+    expect(btn6?.textContent).toBe('Enrich');
+
+    btn2?.click();
+    btn3?.click();
+    btn4?.click();
+    expect(onEnrichSingleJob).not.toHaveBeenCalled();
+
+    btn1?.click();
+    expect(onEnrichSingleJob).toHaveBeenCalledTimes(1);
+    expect(onEnrichSingleJob).toHaveBeenCalledWith(expect.objectContaining({ id: 1 }));
+  });
 });
