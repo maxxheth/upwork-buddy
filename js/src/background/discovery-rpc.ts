@@ -6,7 +6,10 @@ import type {
   ChallengeType,
   DiagnosticScope,
   DriftAuditReport,
+  PassiveSearchBatch,
   PassiveTapPayload,
+  ProjectedGraphQLJob,
+  SearchPaginationMeta,
   SelectorPatchTestResult,
   UiDiagnosticCapture,
   UpWorkPageBlueprint,
@@ -15,6 +18,7 @@ import {
   DetailEnrichRequestSchema,
   type JobUpsertPayload,
   SearchRunRequestSchema,
+  type SearchSource,
 } from '../shared/schemas';
 import {
   BUNDLED_SELECTORS,
@@ -39,6 +43,7 @@ export interface DiscoveryRpcDeps {
   captureVisibleTab?: (windowId: number) => Promise<string>;
   recordActivity?: (entry: Omit<ActivityLogEntry, 'id' | 'timestamp'>) => void;
   getPassivePayloads?: () => PassiveTapPayload[];
+  getTabSearchBatches?: (tabId: number, sinceIso?: string) => PassiveSearchBatch[];
 }
 
 export type ProgressCallback = (
@@ -52,6 +57,8 @@ interface ContentSearchReply {
   ok: boolean;
   jobs?: JobUpsertPayload[];
   hasNextPage?: boolean;
+  extractionSource?: 'graphql' | 'hybrid' | 'dom';
+  apiPagination?: SearchPaginationMeta;
   errorCode?: string;
   challengeType?: ChallengeType;
   reason?: string;
@@ -144,6 +151,122 @@ async function findUpworkTab(
   return null;
 }
 
+function mergeProjectedSearchJob(
+  existing: ProjectedGraphQLJob,
+  incoming: ProjectedGraphQLJob,
+): ProjectedGraphQLJob {
+  const merged: ProjectedGraphQLJob = { ...existing };
+  for (const [rawKey, rawVal] of Object.entries(incoming)) {
+    if (rawVal === undefined || rawVal === null) {
+      continue;
+    }
+    const key = rawKey as keyof ProjectedGraphQLJob;
+    if (key === 'job_description') {
+      const nextDesc = typeof rawVal === 'string' ? rawVal : '';
+      const prevDesc = typeof merged.job_description === 'string' ? merged.job_description : '';
+      if (nextDesc.length >= prevDesc.length && nextDesc.length > 0) {
+        merged.job_description = nextDesc;
+      }
+      continue;
+    }
+    if (typeof rawVal === 'string') {
+      if (rawVal.trim().length > 0 || merged[key] === undefined) {
+        (merged as unknown as Record<string, unknown>)[key] = rawVal;
+      }
+      continue;
+    }
+    (merged as unknown as Record<string, unknown>)[key] = rawVal;
+  }
+  return merged;
+}
+
+function materializeJobsFromCachedBatches(
+  batches: PassiveSearchBatch[],
+  source: SearchSource,
+  query: string,
+): { jobs: JobUpsertPayload[]; apiPagination?: SearchPaginationMeta } {
+  const validBatches = batches
+    .filter(
+      (b) =>
+        (b.captureKind === 'graphql' || b.captureKind === 'xhr') &&
+        (b.graphqlErrorCodes?.length ?? 0) === 0,
+    )
+    .sort((a, b) => a.captureSeq - b.captureSeq);
+
+  const byJobId = new Map<string, ProjectedGraphQLJob>();
+  let latestPaging: SearchPaginationMeta | undefined;
+  let fallbackQuery = '';
+
+  for (const batch of validBatches) {
+    if (batch.paging) {
+      latestPaging = batch.paging;
+    }
+    const batchQuery = batch.query?.trim();
+    if (batchQuery) {
+      fallbackQuery = batchQuery;
+    }
+    for (const job of batch.jobs) {
+      const prev = byJobId.get(job.upwork_job_id);
+      byJobId.set(job.upwork_job_id, prev ? mergeProjectedSearchJob(prev, job) : job);
+    }
+  }
+
+  const effectiveQuery = query.trim() || fallbackQuery;
+  const jobs: JobUpsertPayload[] = [];
+
+  for (const gql of byJobId.values()) {
+    if (!gql.job_title?.trim()) {
+      continue;
+    }
+    const canonicalUrl =
+      gql.canonical_url?.trim() || `https://www.upwork.com/jobs/${gql.upwork_job_id}/`;
+    const url = gql.url?.trim() || canonicalUrl;
+    const postedAtEst = gql.posted_at_est?.trim();
+
+    const payload: JobUpsertPayload = {
+      upwork_job_id: gql.upwork_job_id,
+      job_title: gql.job_title,
+      job_description: gql.job_description ?? '',
+      canonical_url: canonicalUrl,
+      url,
+      job_url: url,
+      source: 'chrome_extension_graphql',
+      source_feed: source,
+      ...(effectiveQuery ? { source_query: effectiveQuery } : {}),
+      status: 'ready',
+      ...(gql.contract_type !== undefined ? { contract_type: gql.contract_type } : {}),
+      ...(gql.budget !== undefined ? { budget: gql.budget } : {}),
+      ...(gql.budget_amount !== undefined ? { budget_amount: gql.budget_amount } : {}),
+      ...(gql.rate_range !== undefined ? { rate_range: gql.rate_range } : {}),
+      ...(gql.rate_min !== undefined ? { rate_min: gql.rate_min } : {}),
+      ...(gql.rate_max !== undefined ? { rate_max: gql.rate_max } : {}),
+      ...(gql.experience_level !== undefined ? { experience_level: gql.experience_level } : {}),
+      ...(gql.duration !== undefined ? { duration: gql.duration } : {}),
+      ...(gql.hours_per_week !== undefined ? { hours_per_week: gql.hours_per_week } : {}),
+      ...(gql.skills !== undefined ? { skills: gql.skills } : {}),
+      ...(gql.posted_text !== undefined ? { posted_text: gql.posted_text } : {}),
+      ...(postedAtEst ? { posted_at_est: postedAtEst } : {}),
+      ...(gql.proposals_tier !== undefined ? { proposals_tier: gql.proposals_tier } : {}),
+      ...(gql.proposals_count !== undefined ? { proposals_count: gql.proposals_count } : {}),
+      ...(gql.connects_required !== undefined ? { connects_required: gql.connects_required } : {}),
+      ...(gql.client_country !== undefined ? { client_country: gql.client_country } : {}),
+      ...(gql.client_rating !== undefined ? { client_rating: gql.client_rating } : {}),
+      ...(gql.client_reviews !== undefined ? { client_reviews: gql.client_reviews } : {}),
+      ...(gql.client_spent !== undefined ? { client_spent: gql.client_spent } : {}),
+      ...(gql.client_spent_usd !== undefined ? { client_spent_usd: gql.client_spent_usd } : {}),
+      ...(gql.client_hires !== undefined ? { client_hires: gql.client_hires } : {}),
+      ...(gql.client_hire_rate !== undefined ? { client_hire_rate: gql.client_hire_rate } : {}),
+      ...(gql.payment_verified !== undefined ? { payment_verified: gql.payment_verified } : {}),
+    };
+    jobs.push(payload);
+  }
+
+  return {
+    jobs,
+    ...(latestPaging ? { apiPagination: latestPaging } : {}),
+  };
+}
+
 export async function executeSearchSweep(
   deps: DiscoveryRpcDeps,
   rawParams: Record<string, unknown>,
@@ -159,6 +282,40 @@ export async function executeSearchSweep(
     );
   }
   const params = parsed.data;
+  if (params.skip_if_busy === true) {
+    const tabState = deps.tabController.getState();
+    if (tabState.busy || tabState.queuedCount > 0) {
+      throw new BridgeRpcError('TAB_BUSY', 'Automation tab is busy');
+    }
+    if (tabState.automationTabId !== null) {
+      let automationTabUrl: string | undefined;
+      try {
+        if (deps.queryTabs) {
+          const tabs = await deps.queryTabs({});
+          automationTabUrl = tabs.find((t) => t.id === tabState.automationTabId)?.url;
+        } else {
+          const tab = await browser.tabs.get(tabState.automationTabId);
+          automationTabUrl = tab?.url;
+        }
+      } catch {
+        // Ignore tab lookup errors (e.g. closed tab)
+      }
+      if (typeof automationTabUrl === 'string') {
+        let pathname = automationTabUrl;
+        try {
+          pathname = new URL(automationTabUrl).pathname;
+        } catch {
+          // Keep raw string if URL parsing fails
+        }
+        if (pathname.includes('/nx/proposals/job/') && pathname.includes('/apply')) {
+          throw new BridgeRpcError(
+            'TAB_BUSY',
+            'Automation tab is holding an active proposal apply form',
+          );
+        }
+      }
+    }
+  }
   const selectors = await deps.getSelectors();
   const sendTab = deps.sendTabMessage ?? defaultSendTabMessage;
 
@@ -187,6 +344,7 @@ export async function executeSearchSweep(
   return deps.tabController.runSerialized(requestId, async (signal) => {
     const collected: JobUpsertPayload[] = [];
     const seenJobKeys = new Set<string>();
+    const extractionSources = new Set<'graphql' | 'hybrid' | 'dom'>();
     let navCount = 0;
     let stoppedReason = 'completed';
 
@@ -222,11 +380,13 @@ export async function executeSearchSweep(
           navCount += 1;
           sendProgress?.('search', navCount, totalExpectedPages, `Scanning page ${pageNum}`);
 
+          const pageStartedAt = new Date().toISOString();
           const nav = await deps.tabController.navigateAndWaitForHydration(
             targetUrl,
             {
               guards: selectors.auth_and_challenge_guards,
               waitForSelectors,
+              waitForSearchApi: true,
               scroll: { steps: 4, intervalMs: 300 },
             },
             signal,
@@ -237,6 +397,9 @@ export async function executeSearchSweep(
             source: params.source,
             query,
             selectorConfig: selectors,
+            capturedSince: pageStartedAt,
+            expectedPage: pageNum,
+            waitForApiMs: 4000,
           })) as ContentSearchReply | undefined;
 
           if (!reply) {
@@ -251,7 +414,30 @@ export async function executeSearchSweep(
             );
           }
 
-          const pageJobs = reply.jobs ?? [];
+          let pageJobs = reply.jobs ?? [];
+          let apiPagination = reply.apiPagination;
+          let extractionSource = reply.extractionSource;
+
+          if (reply.ok && pageJobs.length === 0 && deps.getTabSearchBatches) {
+            const cachedBatches = deps.getTabSearchBatches(nav.tabId, pageStartedAt);
+            if (cachedBatches.length > 0) {
+              const materialized = materializeJobsFromCachedBatches(
+                cachedBatches,
+                params.source,
+                query,
+              );
+              if (materialized.jobs.length > 0) {
+                pageJobs = materialized.jobs;
+                apiPagination = apiPagination ?? materialized.apiPagination;
+                extractionSource = 'graphql';
+              }
+            }
+          }
+
+          if (extractionSource) {
+            extractionSources.add(extractionSource);
+          }
+
           if (pageJobs.length === 0) {
             stoppedReason = 'empty_page';
             break;
@@ -279,6 +465,11 @@ export async function executeSearchSweep(
 
           if (params.source !== 'search' && !reply.hasNextPage) {
             stoppedReason = 'end_of_feed';
+            break;
+          }
+
+          if (apiPagination?.hasNextPage === false) {
+            stoppedReason = 'end_of_results';
             break;
           }
         }
@@ -326,10 +517,12 @@ export async function executeSearchSweep(
       }
     }
 
+    const sourceSummary =
+      extractionSources.size > 0 ? ` via ${Array.from(extractionSources).join('+')}` : '';
     deps.recordActivity?.({
       source: 'tab',
       action: 'jobs.search',
-      detail: `Scraped ${collected.length} jobs across ${navCount} page(s) (${stoppedReason})`,
+      detail: `Scraped ${collected.length} jobs across ${navCount} page(s)${sourceSummary} (${stoppedReason})`,
       status: 'ok',
     });
 

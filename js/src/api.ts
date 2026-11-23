@@ -16,6 +16,10 @@ import type {
   GenerateAgentsResponse,
   GeneratedAgent,
   JobInfo,
+  NotificationChannel,
+  NotificationConfig,
+  NotificationConfigUpdateRequest,
+  NotificationTestResponse,
   ProfileApiResponse,
   ProfileState,
   ProposalEntry,
@@ -26,8 +30,15 @@ import type {
   SearchRunDetailResponse,
   SearchRunsListResponse,
   SyncedProfile,
+  TelegramDetectChatResponse,
   TemplateCategory,
   TemplatesListResponse,
+  WatchersStatusResponse,
+  WatchEvent,
+  WatchRule,
+  WatchRuleCreateInput,
+  WatchRuleUpdateInput,
+  WatchRun,
 } from './types';
 import { CONFIG } from './types';
 
@@ -571,4 +582,238 @@ export class ApiClient {
 
     return mapped;
   }
+
+  // ── Watchers & Notifications ──────────────────────────────────────
+
+  private watchersApi() {
+    return createWatchersApi((url, init) => this.request(url, init), CONFIG.apiBaseUrl);
+  }
+
+  listWatchers(): Promise<{ rules: WatchRule[] }> {
+    return this.watchersApi().listWatchers();
+  }
+
+  createWatcher(rule: WatchRuleCreateInput): Promise<{ rule: WatchRule }> {
+    return this.watchersApi().createWatcher(rule);
+  }
+
+  getWatchersStatus(): Promise<WatchersStatusResponse> {
+    return this.watchersApi().getWatchersStatus();
+  }
+
+  getWatcher(id: number): Promise<{ rule: WatchRule }> {
+    return this.watchersApi().getWatcher(id);
+  }
+
+  updateWatcher(id: number, patch: WatchRuleUpdateInput): Promise<{ rule: WatchRule }> {
+    return this.watchersApi().updateWatcher(id, patch);
+  }
+
+  deleteWatcher(id: number): Promise<void> {
+    return this.watchersApi().deleteWatcher(id);
+  }
+
+  toggleWatcher(id: number, enabled?: boolean): Promise<{ rule: WatchRule }> {
+    return this.watchersApi().toggleWatcher(id, enabled);
+  }
+
+  resumeWatcher(id: number): Promise<{ rule: WatchRule }> {
+    return this.watchersApi().resumeWatcher(id);
+  }
+
+  runWatcher(
+    id: number,
+    opts?: { dry_run?: boolean; ignore_baseline?: boolean },
+  ): Promise<{ run: WatchRun; events?: WatchEvent[] }> {
+    return this.watchersApi().runWatcher(id, opts);
+  }
+
+  listWatcherRuns(
+    id: number,
+    opts?: { limit?: number; offset?: number },
+  ): Promise<{ runs: WatchRun[]; total: number }> {
+    return this.watchersApi().listWatcherRuns(id, opts);
+  }
+
+  listWatcherEvents(
+    id: number,
+    opts?: { limit?: number; offset?: number },
+  ): Promise<{ events: WatchEvent[]; total: number }> {
+    return this.watchersApi().listWatcherEvents(id, opts);
+  }
+
+  getNotificationConfig(): Promise<{ config: NotificationConfig }> {
+    return this.watchersApi().getNotificationConfig();
+  }
+
+  updateNotificationConfig(
+    config: NotificationConfigUpdateRequest,
+  ): Promise<{ config: NotificationConfig }> {
+    return this.watchersApi().updateNotificationConfig(config);
+  }
+
+  testNotifications(channel?: NotificationChannel): Promise<NotificationTestResponse> {
+    return this.watchersApi().testNotifications(channel);
+  }
+}
+
+export class WatchersApiError extends Error {
+  readonly status: number;
+
+  constructor(status: number, message: string) {
+    super(message);
+    this.name = 'WatchersApiError';
+    this.status = status;
+  }
+}
+
+async function requestWatchersJson<T>(
+  transport: ApiTransport,
+  url: string,
+  init?: RequestInit,
+): Promise<T> {
+  const response = await transport(url, init);
+  if (response.status === 204) {
+    return undefined as T;
+  }
+  const text = await response.text();
+  let parsed: unknown = {};
+  if (text) {
+    try {
+      parsed = JSON.parse(text);
+    } catch {
+      parsed = {};
+    }
+  }
+  if (!response.ok) {
+    const errObj = parsed as { error?: string; message?: string };
+    throw new WatchersApiError(
+      response.status,
+      errObj.error || errObj.message || `Request failed (${response.status})`,
+    );
+  }
+  return parsed as T;
+}
+
+export function createWatchersApi(transport: ApiTransport, baseUrl = '') {
+  const base = baseUrl.replace(/\/+$/, '');
+  const jsonHeaders = { 'Content-Type': 'application/json' };
+
+  return {
+    listWatchers(): Promise<{ rules: WatchRule[] }> {
+      return requestWatchersJson(transport, `${base}/api/watchers`, { method: 'GET' });
+    },
+
+    createWatcher(rule: WatchRuleCreateInput): Promise<{ rule: WatchRule }> {
+      return requestWatchersJson(transport, `${base}/api/watchers`, {
+        method: 'POST',
+        headers: jsonHeaders,
+        body: JSON.stringify(rule),
+      });
+    },
+
+    getWatchersStatus(): Promise<WatchersStatusResponse> {
+      return requestWatchersJson(transport, `${base}/api/watchers/status`, { method: 'GET' });
+    },
+
+    getWatcher(id: number): Promise<{ rule: WatchRule }> {
+      return requestWatchersJson(transport, `${base}/api/watchers/${id}`, { method: 'GET' });
+    },
+
+    updateWatcher(id: number, patch: WatchRuleUpdateInput): Promise<{ rule: WatchRule }> {
+      return requestWatchersJson(transport, `${base}/api/watchers/${id}`, {
+        method: 'PATCH',
+        headers: jsonHeaders,
+        body: JSON.stringify(patch),
+      });
+    },
+
+    deleteWatcher(id: number): Promise<void> {
+      return requestWatchersJson(transport, `${base}/api/watchers/${id}`, { method: 'DELETE' });
+    },
+
+    toggleWatcher(id: number, enabled?: boolean): Promise<{ rule: WatchRule }> {
+      return requestWatchersJson(transport, `${base}/api/watchers/${id}/toggle`, {
+        method: 'POST',
+        headers: jsonHeaders,
+        body: JSON.stringify(enabled === undefined ? {} : { enabled }),
+      });
+    },
+
+    resumeWatcher(id: number): Promise<{ rule: WatchRule }> {
+      return requestWatchersJson(transport, `${base}/api/watchers/${id}/resume`, {
+        method: 'POST',
+        headers: jsonHeaders,
+        body: '{}',
+      });
+    },
+
+    runWatcher(
+      id: number,
+      opts?: { dry_run?: boolean; ignore_baseline?: boolean },
+    ): Promise<{ run: WatchRun; events?: WatchEvent[] }> {
+      return requestWatchersJson(transport, `${base}/api/watchers/${id}/run`, {
+        method: 'POST',
+        headers: jsonHeaders,
+        body: JSON.stringify(opts ?? {}),
+      });
+    },
+
+    listWatcherRuns(
+      id: number,
+      opts?: { limit?: number; offset?: number },
+    ): Promise<{ runs: WatchRun[]; total: number }> {
+      const params = new URLSearchParams();
+      params.set('limit', String(opts?.limit ?? 20));
+      params.set('offset', String(opts?.offset ?? 0));
+      return requestWatchersJson(transport, `${base}/api/watchers/${id}/runs?${params}`, {
+        method: 'GET',
+      });
+    },
+
+    listWatcherEvents(
+      id: number,
+      opts?: { limit?: number; offset?: number },
+    ): Promise<{ events: WatchEvent[]; total: number }> {
+      const params = new URLSearchParams();
+      params.set('limit', String(opts?.limit ?? 50));
+      params.set('offset', String(opts?.offset ?? 0));
+      return requestWatchersJson(transport, `${base}/api/watchers/${id}/events?${params}`, {
+        method: 'GET',
+      });
+    },
+
+    getNotificationConfig(): Promise<{ config: NotificationConfig }> {
+      return requestWatchersJson(transport, `${base}/api/notifications/config`, { method: 'GET' });
+    },
+
+    updateNotificationConfig(
+      config: NotificationConfigUpdateRequest,
+    ): Promise<{ config: NotificationConfig }> {
+      return requestWatchersJson(transport, `${base}/api/notifications/config`, {
+        method: 'PUT',
+        headers: jsonHeaders,
+        body: JSON.stringify(config),
+      });
+    },
+
+    testNotifications(channel?: NotificationChannel): Promise<NotificationTestResponse> {
+      return requestWatchersJson(transport, `${base}/api/notifications/test`, {
+        method: 'POST',
+        headers: jsonHeaders,
+        body: JSON.stringify(channel ? { channel } : {}),
+      });
+    },
+
+    detectTelegramChat(opts?: {
+      telegram_bot_token?: string;
+      auto_save?: boolean;
+    }): Promise<TelegramDetectChatResponse> {
+      return requestWatchersJson(transport, `${base}/api/notifications/telegram/detect-chat`, {
+        method: 'POST',
+        headers: jsonHeaders,
+        body: JSON.stringify(opts ?? {}),
+      });
+    },
+  };
 }

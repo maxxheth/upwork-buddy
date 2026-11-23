@@ -616,4 +616,57 @@ describe('Automation Tab Controller', () => {
       isChallengeOrLoginUrl('https://www.upwork.com/cdn-cgi/challenge-platform/h/b'),
     ).toMatchObject({ matched: true, challengeType: 'cloudflare' });
   });
+
+  it('forwards waitForSearchApi in CONTENT_CHECK_GUARDS only when defined', async () => {
+    const sentMessages: Array<Record<string, unknown>> = [];
+    const targetUrl = 'https://www.upwork.com/nx/search/jobs/?q=golang';
+    const messenger = vi.fn(async (_tabId: number, msg: Record<string, unknown>) => {
+      sentMessages.push(msg);
+      return {
+        ok: true,
+        loggedIn: true,
+        url: targetUrl,
+      };
+    });
+
+    const controller = new AutomationTabController({
+      tabMessenger: messenger,
+      tabLoadTimeoutMs: 2000,
+    });
+
+    const tab = await fakeBrowser.tabs.create({ url: targetUrl, active: false });
+    if (tab.id === undefined) {
+      throw new Error('Expected tab.id');
+    }
+    await fakeBrowser.tabs.update(tab.id, { status: 'complete' } as never);
+    await controller.ensureAutomationTab(targetUrl);
+    const autoTabId = controller.getState().automationTabId ?? tab.id;
+
+    const triggerComplete = () => {
+      setTimeout(() => {
+        void fakeBrowser.tabs.onUpdated.trigger(autoTabId, { status: 'complete', url: targetUrl }, {
+          id: autoTabId,
+          url: targetUrl,
+          status: 'complete',
+        } as never);
+      }, 10);
+    };
+
+    // 1. Omitted -> waitForSearchApi not present on CONTENT_CHECK_GUARDS
+    triggerComplete();
+    await controller.navigateAndWaitForHydration(targetUrl, {
+      waitForSelectors: ['article.job-tile'],
+    });
+    expect(sentMessages).toHaveLength(1);
+    expect('waitForSearchApi' in sentMessages[0]).toBe(false);
+
+    // 2. Provided as true -> forwarded on CONTENT_CHECK_GUARDS
+    triggerComplete();
+    await controller.navigateAndWaitForHydration(targetUrl, {
+      waitForSelectors: ['article.job-tile'],
+      waitForSearchApi: true,
+    });
+    expect(sentMessages).toHaveLength(2);
+    expect(sentMessages[1]?.waitForSearchApi).toBe(true);
+  });
 });

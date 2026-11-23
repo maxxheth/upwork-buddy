@@ -44,6 +44,9 @@ describe('Background API Proxy', () => {
     expect(isRuntimeSenderAuthorized('PASSIVE_TAP_PAYLOAD', { id: 'evil-ext-id' }, extId)).toBe(
       false,
     );
+    expect(isRuntimeSenderAuthorized('PASSIVE_SEARCH_BATCH', { id: 'evil-ext-id' }, extId)).toBe(
+      false,
+    );
 
     // Content script on upwork.com allowed only content-safe commands
     const contentSender = {
@@ -52,6 +55,7 @@ describe('Background API Proxy', () => {
       tab: { id: 1, url: 'https://www.upwork.com/nx/search/jobs/' },
     };
     expect(isRuntimeSenderAuthorized('PASSIVE_TAP_PAYLOAD', contentSender, extId)).toBe(true);
+    expect(isRuntimeSenderAuthorized('PASSIVE_SEARCH_BATCH', contentSender, extId)).toBe(true);
     expect(isRuntimeSenderAuthorized('API_PROXY_REQUEST', contentSender, extId)).toBe(true);
     expect(isRuntimeSenderAuthorized('TRIGGER_KILL_SWITCH', contentSender, extId)).toBe(false);
     expect(isRuntimeSenderAuthorized('PAIR_AND_RECONNECT', contentSender, extId)).toBe(false);
@@ -61,6 +65,13 @@ describe('Background API Proxy', () => {
     expect(
       isRuntimeSenderAuthorized(
         'PASSIVE_TAP_PAYLOAD',
+        { id: extId, url: 'https://evil.example/', tab: { id: 2, url: 'https://evil.example/' } },
+        extId,
+      ),
+    ).toBe(false);
+    expect(
+      isRuntimeSenderAuthorized(
+        'PASSIVE_SEARCH_BATCH',
         { id: extId, url: 'https://evil.example/', tab: { id: 2, url: 'https://evil.example/' } },
         extId,
       ),

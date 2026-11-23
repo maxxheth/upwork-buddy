@@ -716,3 +716,215 @@ export interface WebSessionExchangeResponse {
   session_token: string;
   expires_at: string;
 }
+
+// ── Watchers & Notifications ─────────────────────────────────────────
+
+export type WatcherDiscoveryBackend = 'chrome' | 'scraper_fs';
+
+export type WatcherActionMode = 'alert_only' | 'draft_and_fill' | 'auto_submit';
+
+export interface WatcherDiscoveryConfig {
+  source?: string;
+  query?: string;
+  queries?: string[];
+  sort?: string;
+  per_page?: number;
+  max_pages?: number;
+  contract_type?: string;
+  budget_min?: number | null;
+  budget_max?: number | null;
+  hourly_rate_min?: number | null;
+  hourly_rate_max?: number | null;
+  payment_verified_only?: boolean;
+  proposal_tiers?: string[];
+  from_active_projects?: boolean;
+  scraper_fs_profile?: string;
+  scraper_fs_adapter?: string;
+  scraper_fs_proxy_mode?: string;
+}
+
+export interface WatcherBidStrategy {
+  hourly_rate?: number | null;
+  fixed_multiplier?: number | null;
+  min_fixed_bid?: number | null;
+  max_fixed_bid?: number | null;
+  rate_increase?: string;
+  boost_connects?: number | null;
+}
+
+export interface WatchRule {
+  id: number;
+  name: string;
+  description: string;
+  enabled: boolean;
+  discovery_backend: WatcherDiscoveryBackend;
+  search_profile_id?: number | null;
+  discovery_config: WatcherDiscoveryConfig;
+  interval_minutes: number;
+  jitter_ratio: number;
+  active_hours: string;
+  min_score: number;
+  max_proposals?: number | null;
+  max_posted_age_minutes?: number | null;
+  max_connects_per_job?: number | null;
+  require_payment_verified: boolean;
+  required_keywords: string[];
+  exclude_keywords: string[];
+  action_mode: WatcherActionMode;
+  llm_model: string;
+  llm_effort: string;
+  bid_strategy: WatcherBidStrategy;
+  auto_submit_min_confidence: number;
+  fallback_on_screening_questions: boolean;
+  max_reactions_per_tick: number;
+  seed_baseline_on_first_run: boolean;
+  seeded_at?: string | null;
+  paused_reason: string;
+  consecutive_errors: number;
+  next_run_at?: string | null;
+  last_run_at?: string | null;
+  last_success_at?: string | null;
+  last_error: string;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface WatchRuleCreateInput {
+  name: string;
+  description?: string;
+  enabled?: boolean;
+  discovery_backend: WatcherDiscoveryBackend;
+  search_profile_id?: number | null;
+  discovery_config?: WatcherDiscoveryConfig;
+  interval_minutes?: number;
+  jitter_ratio?: number;
+  active_hours?: string;
+  min_score?: number;
+  max_proposals?: number | null;
+  max_posted_age_minutes?: number | null;
+  max_connects_per_job?: number | null;
+  require_payment_verified?: boolean;
+  required_keywords?: string[];
+  exclude_keywords?: string[];
+  action_mode?: WatcherActionMode;
+  llm_model?: string;
+  llm_effort?: string;
+  bid_strategy?: WatcherBidStrategy;
+  auto_submit_min_confidence?: number;
+  fallback_on_screening_questions?: boolean;
+  max_reactions_per_tick?: number;
+  seed_baseline_on_first_run?: boolean;
+}
+
+export type WatchRuleUpdateInput = Partial<WatchRuleCreateInput>;
+
+export interface WatchersStatusResponse {
+  running: boolean;
+  active_rules: number;
+  paused_rules: number;
+  active_reactions: number;
+  scraper_fs_available: boolean;
+  scraper_fs_dir: string;
+  scraper_fs_reason: string;
+  live_ingest_enabled?: boolean;
+  live_ingest_include_scraper_fs?: boolean;
+  live_batches_seen?: number;
+  live_jobs_ingested?: number;
+  live_dropped_batches?: number;
+}
+
+export interface WatchRun {
+  id: number;
+  watch_rule_id: number;
+  discovery_backend: WatcherDiscoveryBackend | string;
+  triggered_by: string;
+  search_run_id?: number | null;
+  status: string;
+  scraped_count: number;
+  new_jobs_count: number;
+  qualified_count: number;
+  drafted_count: number;
+  filled_count: number;
+  submitted_count: number;
+  alerted_count: number;
+  error_code?: string | null;
+  error_message?: string | null;
+  started_at: string;
+  completed_at?: string | null;
+  created_at: string;
+}
+
+export interface WatchEvent {
+  id: number;
+  watch_rule_id: number;
+  watch_run_id?: number | null;
+  job_id: number;
+  job_title?: string;
+  upwork_job_id: string;
+  proposal_id?: number | null;
+  stage: string;
+  decision_reason: string;
+  confidence?: number | null;
+  error_code?: string | null;
+  error_message?: string | null;
+  created_at: string;
+  updated_at: string;
+}
+
+export type NotificationChannel = 'all' | 'chrome' | 'webhook' | 'telegram';
+
+export interface NotificationConfig {
+  chrome_notifications_enabled: boolean;
+  webhook_enabled: boolean;
+  webhook_url: string;
+  has_webhook_secret: boolean;
+  telegram_enabled: boolean;
+  has_telegram_bot_token: boolean;
+  telegram_chat_id: string;
+  notify_events: string[];
+  updated_at: string;
+}
+
+export interface NotificationConfigUpdateRequest {
+  chrome_notifications_enabled?: boolean;
+  webhook_enabled?: boolean;
+  webhook_url?: string;
+  webhook_secret?: string;
+  clear_webhook_secret?: boolean;
+  telegram_enabled?: boolean;
+  telegram_bot_token?: string;
+  clear_telegram_bot_token?: boolean;
+  telegram_chat_id?: string;
+  notify_events?: string[];
+}
+
+export interface NotificationTestChannelResult {
+  sent?: boolean;
+  ok?: boolean;
+  attempted?: boolean;
+  error?: string;
+}
+
+export interface NotificationTestResponse {
+  ok: boolean;
+  results: Record<string, NotificationTestChannelResult>;
+}
+
+export interface TelegramChatCandidate {
+  chat_id: string;
+  type: string;
+  title?: string;
+  username?: string;
+  display_name: string;
+  last_text?: string;
+  last_date?: string;
+}
+
+export interface TelegramDetectChatResponse {
+  bot_username?: string;
+  chats: TelegramChatCandidate[];
+  hint?: string;
+  saved?: boolean;
+  selected_chat_id?: string;
+  config?: NotificationConfig;
+}

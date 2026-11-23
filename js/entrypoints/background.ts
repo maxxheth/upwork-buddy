@@ -19,6 +19,7 @@ import {
   handleBgCaptureUiDiagnosticCommand,
   handleBgSelectorAuditCommand,
 } from '../src/background/discovery-rpc';
+import { LiveSearchStream } from '../src/background/live-search-stream';
 import { BadgeManager, NativeLauncher } from '../src/background/native-launcher';
 import {
   extractPolicyPatchFromProxyResponse,
@@ -61,12 +62,29 @@ import {
 
 const MAX_ACTIVITY_ENTRIES = 60;
 const MAX_PASSIVE_TAP_CACHE = 40;
+const MAX_NOTIFICATION_TARGETS = 50;
+
+interface NotificationClickTarget {
+  dashboardUrl?: string;
+  openSidePanel?: boolean;
+  tab?: string;
+}
 
 export default defineBackground(() => {
   const badgeManager = new BadgeManager();
   const nativeLauncher = new NativeLauncher();
   const recentActivity: ActivityLogEntry[] = [];
   const passiveTapCache: PassiveTapPayload[] = [];
+  const notificationTargets = new Map<string, NotificationClickTarget>();
+
+  const storeNotificationTarget = (id: string, target: NotificationClickTarget): void => {
+    notificationTargets.set(id, target);
+    while (notificationTargets.size > MAX_NOTIFICATION_TARGETS) {
+      const oldestKey = notificationTargets.keys().next().value;
+      if (oldestKey === undefined) break;
+      notificationTargets.delete(oldestKey);
+    }
+  };
 
   let policyMode: PolicyMode = 'confirm_in_ui';
   let killSwitchActive = false;
@@ -174,6 +192,13 @@ export default defineBackground(() => {
     },
   });
 
+  const liveSearchStream = new LiveSearchStream({
+    getTabControllerState: () => tabController.getState(),
+    isKillSwitchActive: () => killSwitchActive,
+    sendWsNotification: (method, params) => wsClient.sendNotification(method, params),
+    recordActivity,
+  });
+
   // Register M3 JSON-RPC 2.0 handlers
   wsClient.registerMethod('session.status', async () => {
     const wsState = wsClient.getState();
@@ -231,6 +256,7 @@ export default defineBackground(() => {
         : 'Aborted by kill switch';
     killSwitchActive = true;
     policyMode = 'draft_only';
+    liveSearchStream.cancelPendingFlushes();
     const result = tabController.abortAll(reason);
     recordActivity({
       source: 'policy',
@@ -257,6 +283,8 @@ export default defineBackground(() => {
       fetchAndCacheSelectors((path, init) => proxyDaemonFetch(path, init), forceRefresh),
     recordActivity,
     getPassivePayloads: () => [...passiveTapCache],
+    getTabSearchBatches: (tabId: number, sinceIso?: string) =>
+      liveSearchStream.getBatchesForTab(tabId, sinceIso),
   };
 
   wsClient.registerMethod('jobs.search', (params, ctx) =>
@@ -353,6 +381,190 @@ export default defineBackground(() => {
     executeMessagesSend(workflowDeps, params, ctx.sendProgress, ctx.requestId),
   );
 
+  const openSidePanelView = async (
+    tab?: string,
+    requestedWindowId?: number,
+  ): Promise<{ ok: boolean; mode?: string; error?: string }> => {
+    if (tab) {
+      pendingSidePanelTab = tab;
+      void browser.runtime
+        .sendMessage({ type: 'SIDEPANEL_SWITCH_TAB', tab })
+        .catch(() => undefined);
+    }
+    try {
+      const sidePanelApi = (
+        globalThis as unknown as {
+          chrome?: {
+            sidePanel?: {
+              open?: (opts: { windowId?: number; tabId?: number }) => Promise<void>;
+            };
+          };
+        }
+      ).chrome?.sidePanel;
+
+      if (sidePanelApi?.open) {
+        let windowId = requestedWindowId;
+        if (windowId === undefined) {
+          const win = await browser.windows.getCurrent();
+          windowId = win.id;
+        }
+        if (windowId !== undefined) {
+          await sidePanelApi.open({ windowId });
+          return { ok: true, mode: 'sidePanel' };
+        }
+      }
+
+      const sidebarApi = (browser as unknown as { sidebarAction?: { open?: () => Promise<void> } })
+        .sidebarAction;
+      if (sidebarApi?.open) {
+        await sidebarApi.open();
+        return { ok: true, mode: 'sidebarAction' };
+      }
+
+      const tabUrl = tab
+        ? `${browser.runtime.getURL('/sidepanel.html')}?tab=${encodeURIComponent(tab)}`
+        : browser.runtime.getURL('/sidepanel.html');
+      await browser.tabs.create({ url: tabUrl });
+      return { ok: true, mode: 'tab' };
+    } catch (error) {
+      return {
+        ok: false,
+        error: error instanceof Error ? error.message : String(error),
+      };
+    }
+  };
+
+  const openDashboardUrl = async (
+    targetUrl: string,
+    forceUpdateUrl = false,
+  ): Promise<{ ok: boolean; mode?: string; tabId?: number; url?: string; error?: string }> => {
+    try {
+      const baseUrl = browser.runtime.getURL('/dashboard.html');
+      const resolvedUrl =
+        targetUrl.startsWith('http://') ||
+        targetUrl.startsWith('https://') ||
+        targetUrl.startsWith('chrome-extension://') ||
+        targetUrl.startsWith('moz-extension://')
+          ? targetUrl
+          : new URL(targetUrl.startsWith('/') ? targetUrl : `/${targetUrl}`, baseUrl).toString();
+
+      const existingTabs = await browser.tabs.query({});
+      const match = existingTabs.find(
+        (t) =>
+          typeof t.id === 'number' &&
+          typeof t.url === 'string' &&
+          (resolvedUrl.startsWith(baseUrl) ? t.url.startsWith(baseUrl) : t.url === resolvedUrl),
+      );
+      if (match && match.id !== undefined) {
+        await browser.tabs.update(match.id, {
+          active: true,
+          ...(forceUpdateUrl || match.url !== resolvedUrl ? { url: resolvedUrl } : {}),
+        });
+        if (match.windowId !== undefined) {
+          await browser.windows.update(match.windowId, { focused: true }).catch(() => undefined);
+        }
+        return { ok: true, mode: 'reused', tabId: match.id, url: resolvedUrl };
+      }
+
+      const created = await browser.tabs.create({ url: resolvedUrl });
+      return { ok: true, mode: 'tab', tabId: created.id, url: resolvedUrl };
+    } catch (error) {
+      return {
+        ok: false,
+        error: error instanceof Error ? error.message : String(error),
+      };
+    }
+  };
+
+  wsClient.registerNotification('watch.alert', async (params) => {
+    if (typeof params.pending_approvals === 'number' && Number.isFinite(params.pending_approvals)) {
+      pendingApprovalsCount = params.pending_approvals;
+      await badgeManager.setPendingApprovals(params.pending_approvals);
+    }
+
+    const eventName = typeof params.event === 'string' ? params.event : '';
+    const title =
+      typeof params.title === 'string' && params.title.trim()
+        ? params.title.trim()
+        : 'Upwork Buddy alert';
+
+    let message =
+      typeof params.message === 'string' && params.message.trim() ? params.message.trim() : '';
+    if (!message) {
+      const parts: string[] = [];
+      if (typeof params.job_title === 'string' && params.job_title.trim()) {
+        parts.push(params.job_title.trim());
+      }
+      if (typeof params.score === 'number' && Number.isFinite(params.score)) {
+        parts.push(`Score: ${params.score}`);
+      }
+      const connects =
+        typeof params.connects_required === 'number' && Number.isFinite(params.connects_required)
+          ? params.connects_required
+          : typeof params.connects === 'number' && Number.isFinite(params.connects)
+            ? params.connects
+            : null;
+      if (connects !== null) {
+        parts.push(`Connects: ${connects}`);
+      }
+      message =
+        parts.length > 0
+          ? parts.join(' • ')
+          : eventName
+            ? `Event: ${eventName}`
+            : 'Check Upwork Buddy for details.';
+    }
+
+    const status =
+      eventName === 'human_action_required' || eventName === 'watcher_paused' ? 'warn' : 'ok';
+    recordActivity({
+      source: 'ws',
+      action: 'watch.alert',
+      detail: `${title}: ${message}`,
+      status,
+    });
+
+    const notificationsApi = browser.notifications;
+    if (params.chrome_notifications !== false && typeof notificationsApi?.create === 'function') {
+      const dashboardUrl =
+        typeof params.dashboard_url === 'string' && params.dashboard_url.trim()
+          ? params.dashboard_url.trim()
+          : typeof params.dashboardUrl === 'string' && params.dashboardUrl.trim()
+            ? params.dashboardUrl.trim()
+            : undefined;
+      const tab =
+        typeof params.tab === 'string' && params.tab.trim() ? params.tab.trim() : 'approvals';
+      const openSidePanel =
+        typeof params.open_sidepanel === 'boolean'
+          ? params.open_sidepanel
+          : typeof params.openSidePanel === 'boolean'
+            ? params.openSidePanel
+            : !dashboardUrl;
+
+      try {
+        const iconUrl =
+          typeof browser.runtime?.getURL === 'function'
+            ? browser.runtime.getURL('/icons/icon-128.png')
+            : 'icons/icon-128.png';
+        const notificationId = await notificationsApi.create({
+          type: 'basic',
+          iconUrl,
+          title,
+          message,
+        });
+        if (typeof notificationId === 'string' && notificationId) {
+          storeNotificationTarget(notificationId, {
+            ...(dashboardUrl ? { dashboardUrl } : {}),
+            openSidePanel,
+            tab,
+          });
+        }
+      } catch {
+        // Notification API may be unavailable or denied
+      }
+    }
+  });
+
   const buildRuntimeSnapshot = (): RuntimeStatusSnapshot => {
     const wsState = wsClient.getState();
     const tabState = tabController.getState();
@@ -407,6 +619,9 @@ export default defineBackground(() => {
           }
           if (patch?.killSwitchActive !== undefined) {
             killSwitchActive = patch.killSwitchActive;
+            if (killSwitchActive) {
+              liveSearchStream.cancelPendingFlushes();
+            }
           }
         }
         return proxyRes;
@@ -427,6 +642,9 @@ export default defineBackground(() => {
               }
               if (patch?.killSwitchActive !== undefined) {
                 killSwitchActive = patch.killSwitchActive;
+                if (killSwitchActive) {
+                  liveSearchStream.cancelPendingFlushes();
+                }
               }
             }
           } catch {
@@ -529,6 +747,7 @@ export default defineBackground(() => {
         const reason = msg.reason?.trim() || 'Triggered by user in extension UI';
         killSwitchActive = true;
         policyMode = 'draft_only';
+        liveSearchStream.cancelPendingFlushes();
         const preState = tabController.getState();
         let abortResult: { aborted: boolean; activeRequestId: string | null } = {
           aborted: false,
@@ -682,95 +901,21 @@ export default defineBackground(() => {
       }
 
       case 'OPEN_SIDEPANEL': {
-        if (msg.tab) {
-          pendingSidePanelTab = msg.tab;
-          void browser.runtime
-            .sendMessage({ type: 'SIDEPANEL_SWITCH_TAB', tab: msg.tab })
-            .catch(() => undefined);
-        }
-        try {
-          const sidePanelApi = (
-            globalThis as unknown as {
-              chrome?: {
-                sidePanel?: {
-                  open?: (opts: { windowId?: number; tabId?: number }) => Promise<void>;
-                };
-              };
-            }
-          ).chrome?.sidePanel;
-
-          if (sidePanelApi?.open) {
-            let windowId = msg.windowId;
-            if (windowId === undefined) {
-              const win = await browser.windows.getCurrent();
-              windowId = win.id;
-            }
-            if (windowId !== undefined) {
-              await sidePanelApi.open({ windowId });
-              return { ok: true, mode: 'sidePanel' };
-            }
-          }
-
-          const sidebarApi = (
-            browser as unknown as { sidebarAction?: { open?: () => Promise<void> } }
-          ).sidebarAction;
-          if (sidebarApi?.open) {
-            await sidebarApi.open();
-            return { ok: true, mode: 'sidebarAction' };
-          }
-
-          const tabUrl = msg.tab
-            ? `${browser.runtime.getURL('/sidepanel.html')}?tab=${encodeURIComponent(msg.tab)}`
-            : browser.runtime.getURL('/sidepanel.html');
-          await browser.tabs.create({ url: tabUrl });
-          return { ok: true, mode: 'tab' };
-        } catch (error) {
-          return {
-            ok: false,
-            error: error instanceof Error ? error.message : String(error),
-          };
-        }
+        return openSidePanelView(msg.tab, msg.windowId);
       }
 
       case 'OPEN_JOBS_DASHBOARD': {
-        try {
-          const baseUrl = browser.runtime.getURL('/dashboard.html');
-          const params = new URLSearchParams(
-            msg.queryString ? msg.queryString.replace(/^\?/, '') : '',
-          );
-          if (msg.runId !== undefined) params.set('run', String(msg.runId));
-          if (msg.fit) params.set('fit', msg.fit);
-          if (msg.q) params.set('q', msg.q);
-          if (msg.batchId !== undefined) params.set('batch', String(msg.batchId));
-          const qs = params.toString();
-          const targetUrl = qs ? `${baseUrl}?${qs}` : baseUrl;
-
-          const existingTabs = await browser.tabs.query({});
-          const match = existingTabs.find(
-            (t) =>
-              typeof t.id === 'number' && typeof t.url === 'string' && t.url.startsWith(baseUrl),
-          );
-          if (match && match.id !== undefined) {
-            await browser.tabs.update(match.id, {
-              active: true,
-              ...(qs || match.url !== targetUrl ? { url: targetUrl } : {}),
-            });
-            if (match.windowId !== undefined) {
-              await browser.windows
-                .update(match.windowId, { focused: true })
-                .catch(() => undefined);
-            }
-            return { ok: true, mode: 'reused', tabId: match.id, url: targetUrl };
-          }
-
-          const created = await browser.tabs.create({ url: targetUrl });
-          return { ok: true, mode: 'tab', tabId: created.id, url: targetUrl };
-        } catch (error) {
-          return {
-            ok: false,
-            error: error instanceof Error ? error.message : String(error),
-          };
-        }
+        const baseUrl = browser.runtime.getURL('/dashboard.html');
+        const params = new URLSearchParams(
+          msg.queryString ? msg.queryString.replace(/^\?/, '') : '',
+        );
+        if (msg.runId !== undefined) params.set('run', String(msg.runId));
+        if (msg.fit) params.set('fit', msg.fit);
+        if (msg.q) params.set('q', msg.q);
+        if (msg.batchId !== undefined) params.set('batch', String(msg.batchId));
+        const qs = params.toString();
+        const targetUrl = qs ? `${baseUrl}?${qs}` : baseUrl;
+        return openDashboardUrl(targetUrl, Boolean(qs));
       }
 
       case 'PASSIVE_TAP_PAYLOAD': {
@@ -780,11 +925,19 @@ export default defineBackground(() => {
           operationName: msg.operationName,
           data: msg.data,
           capturedAt: msg.capturedAt,
+          ...(msg.truncated !== undefined ? { truncated: msg.truncated } : {}),
+          ...(msg.originalBytes !== undefined ? { originalBytes: msg.originalBytes } : {}),
         });
         if (passiveTapCache.length > MAX_PASSIVE_TAP_CACHE) {
           passiveTapCache.length = MAX_PASSIVE_TAP_CACHE;
         }
         return { ok: true, cached: passiveTapCache.length };
+      }
+
+      case 'PASSIVE_SEARCH_BATCH': {
+        const tabId = typeof sender?.tab?.id === 'number' ? sender.tab.id : null;
+        const result = liveSearchStream.handleIncomingBatch(tabId, msg.batch);
+        return { ok: true, ...result };
       }
     }
   };
@@ -833,6 +986,27 @@ export default defineBackground(() => {
     }
     void wsClient.handleAlarm(alarm);
   });
+
+  if (typeof browser.notifications?.onClicked?.addListener === 'function') {
+    browser.notifications.onClicked.addListener((notificationId) => {
+      const target = notificationTargets.get(notificationId);
+      notificationTargets.delete(notificationId);
+      if (typeof browser.notifications?.clear === 'function') {
+        void browser.notifications.clear(notificationId).catch(() => undefined);
+      }
+      if (target?.dashboardUrl) {
+        void openDashboardUrl(target.dashboardUrl, true);
+        return;
+      }
+      void openSidePanelView(target?.tab ?? 'approvals');
+    });
+  }
+
+  if (typeof browser.tabs?.onRemoved?.addListener === 'function') {
+    browser.tabs.onRemoved.addListener((tabId) => {
+      liveSearchStream.clearTab(tabId);
+    });
+  }
 
   authTokenItem.watch(() => {
     void wsClient.reconnectNow();

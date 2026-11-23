@@ -198,6 +198,8 @@ export async function waitForHydration(options: {
   timeoutMs?: number;
   scroll?: { steps?: number; intervalMs?: number };
   signal?: AbortSignal;
+  isApiReady?: () => boolean;
+  subscribeApiReady?: (cb: () => void) => () => void;
 }): Promise<ContentGuardCheckResponse> {
   const doc = options.doc ?? document;
   const loc = options.loc ?? window.location;
@@ -224,7 +226,15 @@ export async function waitForHydration(options: {
         url: probe.url,
       };
     }
-    if (selectors.length === 0 || matchesAnySelector(doc, selectors)) {
+    let apiReady = false;
+    if (options.isApiReady) {
+      try {
+        apiReady = Boolean(options.isApiReady());
+      } catch {
+        apiReady = false;
+      }
+    }
+    if (selectors.length === 0 || matchesAnySelector(doc, selectors) || apiReady) {
       return {
         ok: true,
         loggedIn: probe.loggedIn,
@@ -245,7 +255,12 @@ export async function waitForHydration(options: {
 
   const immediate = checkNow();
   if (immediate) {
-    if (options.scroll?.steps && typeof window.scrollBy === 'function') {
+    if (
+      immediate.ok &&
+      options.scroll?.steps &&
+      options.scroll.steps > 0 &&
+      typeof window.scrollBy === 'function'
+    ) {
       await runProgressiveScroll(
         options.scroll.steps,
         options.scroll.intervalMs ?? 120,
@@ -257,12 +272,27 @@ export async function waitForHydration(options: {
 
   const waitResult = await new Promise<ContentGuardCheckResponse>((resolve) => {
     let settled = false;
+    let unsubscribeApi: (() => void) | undefined;
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    let observer: MutationObserver | undefined;
+
     const finish = (res: ContentGuardCheckResponse) => {
       if (settled) return;
       settled = true;
-      observer.disconnect();
-      clearTimeout(timer);
+      observer?.disconnect();
+      if (timer !== undefined) {
+        clearTimeout(timer);
+      }
       options.signal?.removeEventListener('abort', onAbort);
+      const unsub = unsubscribeApi;
+      unsubscribeApi = undefined;
+      if (unsub) {
+        try {
+          unsub();
+        } catch {
+          // ignore unsubscribe errors
+        }
+      }
       resolve(res);
     };
 
@@ -282,12 +312,12 @@ export async function waitForHydration(options: {
       });
     };
 
-    const observer = new MutationObserver(evaluate);
+    observer = new MutationObserver(evaluate);
     if (doc.body) {
       observer.observe(doc.body, { childList: true, subtree: true });
     }
 
-    const timer = setTimeout(() => {
+    timer = setTimeout(() => {
       const probe = detectChallengeOrAuth(doc, loc, options.guards);
       if (probe.challengeDetected || !probe.loggedIn) {
         finish({
@@ -309,9 +339,37 @@ export async function waitForHydration(options: {
     }, timeoutMs);
 
     options.signal?.addEventListener('abort', onAbort, { once: true });
+
+    if (options.subscribeApiReady) {
+      try {
+        const unsub = options.subscribeApiReady(evaluate);
+        if (typeof unsub === 'function') {
+          if (settled) {
+            try {
+              unsub();
+            } catch {
+              // ignore unsubscribe errors
+            }
+          } else {
+            unsubscribeApi = unsub;
+          }
+        }
+      } catch {
+        // ignore subscribe errors so MutationObserver / timeout fallback remains active
+      }
+    }
+
+    if (!settled) {
+      evaluate();
+    }
   });
 
-  if (waitResult.ok && options.scroll?.steps && typeof window.scrollBy === 'function') {
+  if (
+    waitResult.ok &&
+    options.scroll?.steps &&
+    options.scroll.steps > 0 &&
+    typeof window.scrollBy === 'function'
+  ) {
     await runProgressiveScroll(
       options.scroll.steps,
       options.scroll.intervalMs ?? 120,

@@ -7,6 +7,7 @@ import {
 } from '../content/adapters/drift-auditor';
 import { extractSearchListings } from '../content/adapters/search-adapter';
 import { waitForHydration } from '../content/guards';
+import type { ActivityLogEntry, PassiveSearchBatch } from '../shared/protocol';
 import { BUNDLED_SELECTORS } from '../shared/selectors';
 import { executeDetailEnrich, executeSearchSweep, executeSelectorAuditRpc } from './discovery-rpc';
 import { AutomationTabController } from './tab-controller';
@@ -867,5 +868,261 @@ describe('Background Search, Detail & Selector Audit RPC Orchestration', () => {
     ).rejects.toMatchObject({
       code: 'INVALID_PARAMS',
     });
+  });
+
+  it('executeSearchSweep with skip_if_busy=true throws TAB_BUSY when busy or on proposal apply form, and runs normally when idle', async () => {
+    // 1. Busy tabController
+    const { controller: busyController } = createMockTabController();
+    vi.spyOn(busyController, 'getState').mockReturnValue({
+      automationTabId: null,
+      busy: true,
+      activeRequestId: 'req-1',
+      queuedCount: 0,
+    });
+    const busyRunSpy = vi.spyOn(busyController, 'runSerialized');
+
+    await expect(
+      executeSearchSweep(
+        {
+          tabController: busyController,
+          proxyFetch: vi.fn(),
+          getSelectors: async () => BUNDLED_SELECTORS,
+        },
+        { source: 'search', query: 'golang', skip_if_busy: true },
+      ),
+    ).rejects.toThrowError(BridgeRpcError);
+
+    await expect(
+      executeSearchSweep(
+        {
+          tabController: busyController,
+          proxyFetch: vi.fn(),
+          getSelectors: async () => BUNDLED_SELECTORS,
+        },
+        { source: 'search', query: 'golang', skip_if_busy: true },
+      ),
+    ).rejects.toMatchObject({ code: 'TAB_BUSY' });
+    expect(busyRunSpy).not.toHaveBeenCalled();
+
+    // 2. Idle tabController, but automationTabId is on /nx/proposals/job/*/apply
+    const { controller: applyController } = createMockTabController();
+    vi.spyOn(applyController, 'getState').mockReturnValue({
+      automationTabId: 42,
+      busy: false,
+      activeRequestId: null,
+      queuedCount: 0,
+    });
+    const applyRunSpy = vi.spyOn(applyController, 'runSerialized');
+
+    await expect(
+      executeSearchSweep(
+        {
+          tabController: applyController,
+          proxyFetch: vi.fn(),
+          getSelectors: async () => BUNDLED_SELECTORS,
+          queryTabs: async () => [
+            { id: 42, url: 'https://www.upwork.com/nx/proposals/job/~01abc123/apply' },
+          ],
+        },
+        { source: 'search', query: 'golang', skip_if_busy: true },
+      ),
+    ).rejects.toMatchObject({ code: 'TAB_BUSY' });
+    expect(applyRunSpy).not.toHaveBeenCalled();
+
+    // 3. Idle tabController on non-apply URL -> runs normally
+    const { controller: idleController } = createMockTabController();
+    vi.spyOn(idleController, 'getState').mockReturnValue({
+      automationTabId: 42,
+      busy: false,
+      activeRequestId: null,
+      queuedCount: 0,
+    });
+    const res = await executeSearchSweep(
+      {
+        tabController: idleController,
+        proxyFetch: vi.fn(async () => new Response(JSON.stringify({}), { status: 200 })),
+        getSelectors: async () => BUNDLED_SELECTORS,
+        queryTabs: async () => [{ id: 42, url: 'https://www.upwork.com/nx/search/jobs/?q=go' }],
+        sendTabMessage: vi.fn(async () => ({ ok: true, hasNextPage: false, jobs: [] })),
+      },
+      { source: 'search', query: 'golang', skip_if_busy: true },
+    );
+    expect(res.ok).toBe(true);
+  });
+
+  it('executeSearchSweep forwards waitForSearchApi, capturedSince, expectedPage, waitForApiMs and logs extractionSource', async () => {
+    const { controller } = createMockTabController();
+    const navSpy = vi.spyOn(controller, 'navigateAndWaitForHydration');
+    const sentMessages: Array<Record<string, unknown>> = [];
+    const activities: Array<Omit<ActivityLogEntry, 'id' | 'timestamp'>> = [];
+
+    const sendTabMessage = vi.fn(async (_tabId: number, msg: unknown) => {
+      sentMessages.push((msg ?? {}) as Record<string, unknown>);
+      return {
+        ok: true,
+        hasNextPage: false,
+        extractionSource: 'graphql' as const,
+        apiPagination: { hasNextPage: false, totalCount: 1, offset: 0, count: 1 },
+        jobs: [
+          {
+            upwork_job_id: '~0888',
+            job_title: 'GraphQL Engineer',
+            canonical_url: 'https://www.upwork.com/jobs/~0888/',
+          },
+        ],
+      };
+    });
+
+    const res = await executeSearchSweep(
+      {
+        tabController: controller,
+        proxyFetch: vi.fn(async () => new Response('{}', { status: 200 })),
+        getSelectors: async () => BUNDLED_SELECTORS,
+        sendTabMessage,
+        recordActivity: (entry) => activities.push(entry),
+      },
+      { source: 'search', query: 'graphql', start_page: 2, max_pages: 4 },
+    );
+
+    expect(navSpy).toHaveBeenCalledTimes(1);
+    expect(navSpy.mock.calls[0]?.[1]?.waitForSearchApi).toBe(true);
+    expect(sentMessages).toHaveLength(1);
+    expect(sentMessages[0]?.type).toBe('CONTENT_SCRAPE_SEARCH');
+    expect(sentMessages[0]?.expectedPage).toBe(2);
+    expect(sentMessages[0]?.waitForApiMs).toBe(4000);
+    expect(typeof sentMessages[0]?.capturedSince).toBe('string');
+    expect(Number.isFinite(Date.parse(String(sentMessages[0]?.capturedSince)))).toBe(true);
+
+    // Stops cleanly with end_of_results without navigating to page 3
+    expect(res.stopped_reason).toBe('end_of_results');
+    expect(res.pages_scanned).toBe(1);
+    expect(activities[0]?.detail).toContain('via graphql (end_of_results)');
+  });
+
+  it('executeSearchSweep materializes jobs from getTabSearchBatches only when reply.ok is true and never bypasses failures or HUMAN_ACTION_REQUIRED', async () => {
+    const { controller } = createMockTabController();
+    const cachedBatches: PassiveSearchBatch[] = [
+      {
+        captureSeq: 1,
+        navigationEpoch: 1,
+        captureKind: 'graphql',
+        requestUrl: 'https://www.upwork.com/api/graphql/v1',
+        pageUrl: 'https://www.upwork.com/nx/search/jobs/?q=rust',
+        sourceFeed: 'search',
+        query: 'rust',
+        graphqlErrorCodes: ['UNAUTHENTICATED'],
+        jobs: [{ upwork_job_id: '~0err', job_title: 'Should Be Ignored' }],
+        capturedAt: new Date().toISOString(),
+      },
+      {
+        captureSeq: 2,
+        navigationEpoch: 1,
+        captureKind: 'graphql',
+        requestUrl: 'https://www.upwork.com/api/graphql/v1',
+        pageUrl: 'https://www.upwork.com/nx/search/jobs/?q=rust',
+        sourceFeed: 'search',
+        query: 'rust',
+        jobs: [
+          { upwork_job_id: '~0notitle', job_description: 'Missing title' },
+          { upwork_job_id: '~0101', job_title: 'Rust Systems Engineer', connects_required: 10 },
+        ],
+        paging: { totalCount: 1, offset: 0, count: 1, hasNextPage: false },
+        capturedAt: new Date().toISOString(),
+      },
+      {
+        captureSeq: 3,
+        navigationEpoch: 1,
+        captureKind: 'xhr',
+        requestUrl: 'https://www.upwork.com/api/graphql/v1',
+        pageUrl: 'https://www.upwork.com/nx/search/jobs/?q=rust',
+        sourceFeed: 'search',
+        query: 'rust',
+        jobs: [
+          {
+            upwork_job_id: '~0101',
+            job_title: 'Rust Systems Engineer',
+            job_description: 'Merged description from chunk 2',
+          },
+        ],
+        capturedAt: new Date().toISOString(),
+      },
+    ];
+
+    const getBatchesCalls: Array<{ tabId: number; sinceIso?: string }> = [];
+    const activities: Array<Omit<ActivityLogEntry, 'id' | 'timestamp'>> = [];
+
+    const res = await executeSearchSweep(
+      {
+        tabController: controller,
+        proxyFetch: vi.fn(async () => new Response('{}', { status: 200 })),
+        getSelectors: async () => BUNDLED_SELECTORS,
+        sendTabMessage: vi.fn(async () => ({
+          ok: true,
+          hasNextPage: true,
+          extractionSource: 'dom',
+          jobs: [],
+        })),
+        getTabSearchBatches: (tabId, sinceIso) => {
+          getBatchesCalls.push({ tabId, sinceIso });
+          return cachedBatches;
+        },
+        recordActivity: (entry) => activities.push(entry),
+      },
+      { source: 'search', query: 'rust', max_pages: 3 },
+    );
+
+    expect(getBatchesCalls).toHaveLength(1);
+    expect(getBatchesCalls[0]?.tabId).toBe(101);
+    expect(res.ok).toBe(true);
+    expect(res.total_scraped).toBe(1);
+    expect(res.stopped_reason).toBe('end_of_results');
+    const jobs = res.jobs as Array<Record<string, unknown>>;
+    expect(jobs[0]).toMatchObject({
+      upwork_job_id: '~0101',
+      job_title: 'Rust Systems Engineer',
+      job_description: 'Merged description from chunk 2',
+      connects_required: 10,
+      source: 'chrome_extension_graphql',
+      source_feed: 'search',
+      source_query: 'rust',
+      canonical_url: 'https://www.upwork.com/jobs/~0101/',
+      url: 'https://www.upwork.com/jobs/~0101/',
+      job_url: 'https://www.upwork.com/jobs/~0101/',
+      status: 'ready',
+    });
+    expect(activities[0]?.detail).toContain('via graphql (end_of_results)');
+
+    // reply.ok === false must NOT trigger fallback
+    const failedRes = await executeSearchSweep(
+      {
+        tabController: controller,
+        proxyFetch: vi.fn(async () => new Response('{}', { status: 200 })),
+        getSelectors: async () => BUNDLED_SELECTORS,
+        sendTabMessage: vi.fn(async () => ({ ok: false, errorCode: 'SELECTOR_BROKEN', jobs: [] })),
+        getTabSearchBatches: () => cachedBatches,
+      },
+      { source: 'search', query: 'rust', max_pages: 1 },
+    );
+    expect(failedRes.total_scraped).toBe(0);
+    expect(failedRes.stopped_reason).toBe('empty_page');
+
+    // HUMAN_ACTION_REQUIRED must still throw immediately
+    await expect(
+      executeSearchSweep(
+        {
+          tabController: controller,
+          proxyFetch: vi.fn(),
+          getSelectors: async () => BUNDLED_SELECTORS,
+          sendTabMessage: vi.fn(async () => ({
+            ok: false,
+            errorCode: 'HUMAN_ACTION_REQUIRED',
+            challengeType: 'captcha',
+            reason: 'Blocked',
+          })),
+          getTabSearchBatches: () => cachedBatches,
+        },
+        { source: 'search', query: 'rust', max_pages: 1 },
+      ),
+    ).rejects.toBeInstanceOf(HumanActionRequiredError);
   });
 });

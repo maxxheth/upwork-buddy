@@ -235,4 +235,141 @@ describe('Background WS Client', () => {
       vi.useRealTimers();
     }
   });
+
+  it('dispatches WsNotification frames without id, swallows handler errors, and ignores unregistered notifications without RPC errors', async () => {
+    const receivedAlerts: Array<Record<string, unknown>> = [];
+    const client = new ExtensionWsClient({
+      WebSocketImpl: MockWebSocket,
+      getConfig: async () => ({ apiUrl: 'http://127.0.0.1:9090', token: 'tok-notif' }),
+    });
+
+    client.registerNotification('watch.alert', async (params) => {
+      receivedAlerts.push(params);
+    });
+    client.registerNotification('broken.notice', async () => {
+      throw new Error('notification handler boom');
+    });
+
+    await client.connect();
+    const ws = MockWebSocket.instances[0];
+    ws.simulateOpen();
+    ws.simulateMessage({
+      jsonrpc: '2.0',
+      id: 'auth-1',
+      result: { ok: true, session_id: 'sess-notif' },
+    });
+    const sentCountAfterAuth = ws.sent.length;
+
+    // Registered notification without id
+    ws.simulateMessage({
+      jsonrpc: '2.0',
+      method: 'watch.alert',
+      params: { event: 'match', pending_approvals: 2 },
+    });
+    await vi.advanceTimersByTimeAsync(0);
+    expect(receivedAlerts).toEqual([{ event: 'match', pending_approvals: 2 }]);
+    expect(ws.sent).toHaveLength(sentCountAfterAuth);
+
+    // Unregistered notification without id must NOT emit an RPC -32601 error
+    ws.simulateMessage({
+      jsonrpc: '2.0',
+      method: 'unregistered.notice',
+      params: { foo: 'bar' },
+    });
+    await vi.advanceTimersByTimeAsync(0);
+    expect(ws.sent).toHaveLength(sentCountAfterAuth);
+
+    // Failing notification handler must be swallowed safely
+    ws.simulateMessage({
+      jsonrpc: '2.0',
+      method: 'broken.notice',
+      params: {},
+    });
+    await vi.advanceTimersByTimeAsync(0);
+    expect(ws.sent).toHaveLength(sentCountAfterAuth);
+
+    client.dispose();
+  });
+
+  it('sendNotification enforces connection/auth state, non-blank method, and socket error safety', async () => {
+    const client = new ExtensionWsClient({
+      WebSocketImpl: MockWebSocket,
+      getConfig: async () => ({ apiUrl: 'http://127.0.0.1:9090', token: 'tok-out' }),
+    });
+
+    // Disconnected -> false
+    expect(client.sendNotification('search.observed', { jobs: [] })).toBe(false);
+
+    await client.connect();
+    const ws = MockWebSocket.instances[0];
+    ws.simulateOpen();
+
+    // WS_OPEN but before auth-1 ack -> false
+    expect(client.sendNotification('search.observed', { jobs: [] })).toBe(false);
+
+    ws.simulateMessage({
+      jsonrpc: '2.0',
+      id: 'auth-1',
+      result: { ok: true, session_id: 'sess-out' },
+    });
+
+    // Blank method -> false
+    expect(client.sendNotification('   ', { jobs: [] })).toBe(false);
+
+    // Authenticated + valid method -> true, sends JSON-RPC 2.0 notification (no id)
+    const sentBefore = ws.sent.length;
+    expect(
+      client.sendNotification('search.observed', {
+        page_url: 'https://www.upwork.com/nx/search/jobs/?q=go',
+        source_feed: 'search',
+        jobs: [{ upwork_job_id: '~0111' }],
+      }),
+    ).toBe(true);
+    expect(ws.sent).toHaveLength(sentBefore + 1);
+    const frame = JSON.parse(ws.sent[sentBefore] ?? '{}') as Record<string, unknown>;
+    expect(frame).toEqual({
+      jsonrpc: '2.0',
+      method: 'search.observed',
+      params: {
+        page_url: 'https://www.upwork.com/nx/search/jobs/?q=go',
+        source_feed: 'search',
+        jobs: [{ upwork_job_id: '~0111' }],
+      },
+    });
+    expect('id' in frame).toBe(false);
+
+    // Socket close -> false
+    ws.close(1000, 'bye');
+    expect(client.sendNotification('search.observed', { jobs: [] })).toBe(false);
+
+    // Throwing ws.send -> false
+    class ThrowingAfterAuthSocket extends MockWebSocket {
+      throwNext = false;
+      override send(data: string): void {
+        if (this.throwNext) {
+          throw new Error('send boom');
+        }
+        super.send(data);
+      }
+    }
+    const errClient = new ExtensionWsClient({
+      WebSocketImpl: ThrowingAfterAuthSocket,
+      getConfig: async () => ({ apiUrl: 'http://127.0.0.1:9090', token: 'tok-err' }),
+    });
+    await errClient.connect();
+    const errWs = MockWebSocket.instances[
+      MockWebSocket.instances.length - 1
+    ] as ThrowingAfterAuthSocket;
+    errWs.simulateOpen();
+    errWs.simulateMessage({
+      jsonrpc: '2.0',
+      id: 'auth-1',
+      result: { ok: true, session_id: 'sess-err' },
+    });
+    errWs.throwNext = true;
+    expect(errClient.sendNotification('search.observed', { jobs: [] })).toBe(false);
+
+    client.dispose();
+    errClient.dispose();
+  });
 });

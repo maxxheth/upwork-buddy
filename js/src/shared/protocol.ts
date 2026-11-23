@@ -1,8 +1,17 @@
 import { z } from 'zod';
 import {
+  PASSIVE_SEARCH_BATCH_EVENT,
+  PASSIVE_SEARCH_STATUS_EVENT,
+  PASSIVE_SPA_NAV_EVENT,
   PASSIVE_TAP_EVENT,
   PASSIVE_TAP_READY_EVENT,
+  type PassiveSearchBatch,
+  type PassiveSearchStatusDetail,
+  type PassiveSpaNavDetail,
   type PassiveTapPayload,
+  type ProjectedGraphQLJob,
+  type SearchFeedKind,
+  type SearchPaginationMeta,
 } from './passive-tap-types';
 import {
   AuthAndChallengeGuardsConfigSchema,
@@ -11,7 +20,20 @@ import {
   type SelectorConfig,
 } from './selectors';
 
-export { PASSIVE_TAP_EVENT, PASSIVE_TAP_READY_EVENT, type PassiveTapPayload };
+export {
+  PASSIVE_SEARCH_BATCH_EVENT,
+  PASSIVE_SEARCH_STATUS_EVENT,
+  PASSIVE_SPA_NAV_EVENT,
+  PASSIVE_TAP_EVENT,
+  PASSIVE_TAP_READY_EVENT,
+  type PassiveSearchBatch,
+  type PassiveSearchStatusDetail,
+  type PassiveSpaNavDetail,
+  type PassiveTapPayload,
+  type ProjectedGraphQLJob,
+  type SearchFeedKind,
+  type SearchPaginationMeta,
+};
 
 export const BridgeErrorCodeSchema = z.enum([
   'EXTENSION_DISCONNECTED',
@@ -29,6 +51,7 @@ export const BridgeErrorCodeSchema = z.enum([
   'MESSAGE_SEND_UNCONFIRMED',
   'ROOM_NOT_FOUND',
   'ABORTED',
+  'TAB_BUSY',
   'TAB_NOT_FOUND',
   'SELECTOR_BROKEN',
   'TIMEOUT',
@@ -151,6 +174,13 @@ export const WsRpcRequestSchema = z.object({
 });
 export type WsRpcRequest = z.infer<typeof WsRpcRequestSchema>;
 
+export const WsNotificationSchema = z.object({
+  jsonrpc: z.literal('2.0'),
+  method: z.string().min(1),
+  params: z.record(z.string(), z.unknown()).optional(),
+});
+export type WsNotification = z.infer<typeof WsNotificationSchema>;
+
 export const WsRpcErrorObjectSchema = z.object({
   code: z.number().int(),
   message: z.string(),
@@ -222,13 +252,115 @@ export const PassiveTapPayloadSchema = z.object({
   operationName: z.string().optional(),
   data: z.unknown(),
   capturedAt: z.string(),
+  truncated: z.boolean().optional(),
+  originalBytes: z.number().int().nonnegative().optional(),
 });
+
+export const SearchFeedKindSchema = z.enum(['search', 'best_matches', 'most_recent', 'saved_jobs']);
+
+export const ProjectedGraphQLJobSchema = z.object({
+  upwork_job_id: z.string().min(1),
+  job_title: z.string().optional(),
+  job_description: z.string().optional(),
+  canonical_url: z.string().optional(),
+  url: z.string().optional(),
+  contract_type: z.enum(['hourly', 'fixed', '']).optional(),
+  budget: z.string().optional(),
+  budget_amount: z.string().optional(),
+  rate_range: z.string().optional(),
+  rate_min: z.string().optional(),
+  rate_max: z.string().optional(),
+  experience_level: z.string().optional(),
+  duration: z.string().optional(),
+  hours_per_week: z.string().optional(),
+  skills: z.string().optional(),
+  posted_text: z.string().optional(),
+  posted_at_est: z.string().optional(),
+  proposals_tier: z.string().optional(),
+  proposals_count: z.number().int().nonnegative().optional(),
+  connects_required: z.number().int().nonnegative().optional(),
+  client_country: z.string().optional(),
+  client_rating: z.number().optional(),
+  client_reviews: z.number().int().nonnegative().optional(),
+  client_spent: z.string().optional(),
+  client_spent_usd: z.number().nonnegative().optional(),
+  client_hires: z.number().int().nonnegative().optional(),
+  client_hire_rate: z.number().nonnegative().optional(),
+  payment_verified: z.boolean().optional(),
+});
+
+export const SearchPaginationMetaSchema = z.object({
+  totalCount: z.number().int().nonnegative().optional(),
+  offset: z.number().int().nonnegative().optional(),
+  count: z.number().int().nonnegative().optional(),
+  page: z.number().int().nonnegative().optional(),
+  perPage: z.number().int().nonnegative().optional(),
+  hasNextPage: z.boolean().optional(),
+  nextCursor: z.string().optional(),
+});
+
+export const PassiveSearchBatchSchema = z.object({
+  captureSeq: z.number().int().nonnegative(),
+  navigationEpoch: z.number().int().nonnegative(),
+  captureKind: z.enum(['graphql', 'xhr', 'spa_dom']),
+  requestUrl: z.string(),
+  pageUrl: z.string(),
+  operationName: z.string().optional(),
+  sourceFeed: SearchFeedKindSchema,
+  query: z.string().optional(),
+  jobs: z.array(ProjectedGraphQLJobSchema),
+  paging: SearchPaginationMetaSchema.optional(),
+  isExplicitEmpty: z.boolean().optional(),
+  graphqlErrorCodes: z.array(z.string()).optional(),
+  rawBytes: z.number().int().nonnegative().optional(),
+  chunkIndex: z.number().int().nonnegative().optional(),
+  chunkCount: z.number().int().positive().optional(),
+  capturedAt: z.string(),
+});
+
+export const WsSearchObservedPaginationSchema = z.object({
+  total_count: z.number().int().nonnegative().optional(),
+  offset: z.number().int().nonnegative().optional(),
+  count: z.number().int().nonnegative().optional(),
+  page: z.number().int().nonnegative().optional(),
+  per_page: z.number().int().nonnegative().optional(),
+  has_next_page: z.boolean().optional(),
+  next_cursor: z.string().optional(),
+});
+export type WsSearchObservedPagination = z.infer<typeof WsSearchObservedPaginationSchema>;
+
+export const WsSearchObservedJobSchema = ProjectedGraphQLJobSchema.extend({
+  source: z.string().optional(),
+  source_feed: SearchFeedKindSchema.optional(),
+  source_query: z.string().optional(),
+  job_url: z.string().optional(),
+  status: z.string().optional(),
+});
+export type WsSearchObservedJob = z.infer<typeof WsSearchObservedJobSchema>;
+
+export const WsSearchObservedNotificationSchema = z.object({
+  jsonrpc: z.literal('2.0'),
+  method: z.literal('search.observed'),
+  params: z.object({
+    tab_id: z.number().int().nonnegative().optional(),
+    page_url: z.string(),
+    source_feed: SearchFeedKindSchema,
+    query: z.string().optional(),
+    operation_name: z.string().optional(),
+    capture_kind: z.enum(['graphql', 'xhr', 'spa_dom']).optional(),
+    paging: WsSearchObservedPaginationSchema.optional(),
+    jobs: z.array(WsSearchObservedJobSchema),
+    captured_at: z.string().optional(),
+  }),
+});
+export type WsSearchObservedNotification = z.infer<typeof WsSearchObservedNotificationSchema>;
 
 export const ContentGuardCheckRequestSchema = z.object({
   type: z.literal('CONTENT_CHECK_GUARDS'),
   guards: AuthAndChallengeGuardsConfigSchema.optional(),
   waitForSelectors: z.array(z.string()).optional(),
   timeoutMs: z.number().int().positive().optional(),
+  waitForSearchApi: z.boolean().optional(),
   scroll: z
     .object({
       steps: z.number().int().positive().optional(),
@@ -664,6 +796,12 @@ export const BackgroundCommandMessageSchema = z.discriminatedUnion('type', [
     operationName: z.string().optional(),
     data: z.unknown(),
     capturedAt: z.string(),
+    truncated: z.boolean().optional(),
+    originalBytes: z.number().int().nonnegative().optional(),
+  }),
+  z.object({
+    type: z.literal('PASSIVE_SEARCH_BATCH'),
+    batch: PassiveSearchBatchSchema,
   }),
 ]);
 export type BackgroundCommandMessage = z.infer<typeof BackgroundCommandMessageSchema>;
@@ -682,6 +820,9 @@ export interface ContentScrapeSearchRequest {
   source: 'search' | 'best_matches' | 'most_recent' | 'saved_jobs';
   query?: string;
   selectorConfig?: SelectorConfig;
+  capturedSince?: string;
+  expectedPage?: number;
+  waitForApiMs?: number;
 }
 
 export interface ContentScrapeDetailRequest {

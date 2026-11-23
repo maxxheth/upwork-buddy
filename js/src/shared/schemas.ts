@@ -372,6 +372,7 @@ export const SearchRunRequestSchema = z
     target_jobs: z.number().int().min(1).max(200).optional(),
     enrich_top_n: z.number().int().min(0).max(50).optional(),
     skip_auto_detail_enrich: z.boolean().optional(),
+    skip_if_busy: z.boolean().optional(),
     auto_ingest: z.boolean().optional(),
     profile_id: z.number().int().positive().optional(),
     run_label: z.string().optional(),

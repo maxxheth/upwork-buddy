@@ -6,6 +6,7 @@ import {
   type JsonRpcId,
   WsAuthRequestSchema,
   WsAuthSuccessResponseSchema,
+  WsNotificationSchema,
   WsPongSchema,
   WsRpcRequestSchema,
   WsTaskProgressSchema,
@@ -74,6 +75,8 @@ export type RpcHandler = (
   ctx: RpcHandlerContext,
 ) => Promise<Record<string, unknown>>;
 
+export type NotificationHandler = (params: Record<string, unknown>) => void | Promise<void>;
+
 export interface WsClientStateDetail {
   sessionId?: string | null;
   lastError?: string | null;
@@ -122,6 +125,7 @@ export class ExtensionWsClient {
   private readonly randomFn: () => number;
 
   private readonly handlers = new Map<string, RpcHandler>();
+  private readonly notificationHandlers = new Map<string, NotificationHandler>();
   private ws: WebSocketLike | null = null;
   private state: BadgeConnectionState = 'disconnected';
   private sessionId: string | null = null;
@@ -152,6 +156,10 @@ export class ExtensionWsClient {
 
   registerMethod(method: string, handler: RpcHandler): void {
     this.handlers.set(method, handler);
+  }
+
+  registerNotification(method: string, handler: NotificationHandler): void {
+    this.notificationHandlers.set(method, handler);
   }
 
   getState(): {
@@ -346,6 +354,24 @@ export class ExtensionWsClient {
     this.ws.send(JSON.stringify(payload));
   }
 
+  sendNotification(method: string, params: Record<string, unknown>): boolean {
+    if (!method.trim() || !this.ws || this.ws.readyState !== WS_OPEN || !this.authenticated) {
+      return false;
+    }
+    try {
+      this.ws.send(
+        JSON.stringify({
+          jsonrpc: '2.0',
+          method,
+          params,
+        }),
+      );
+      return true;
+    } catch {
+      return false;
+    }
+  }
+
   dispose(): void {
     this.disposed = true;
     this.pendingReconnect = false;
@@ -405,6 +431,27 @@ export class ExtensionWsClient {
         lastError: this.lastError,
       });
       return;
+    }
+
+    // Check notification frames (JSON-RPC 2.0 notifications have no id)
+    const hasId =
+      typeof parsedJson === 'object' &&
+      parsedJson !== null &&
+      'id' in parsedJson &&
+      (parsedJson as { id?: unknown }).id !== undefined;
+    if (!hasId) {
+      const notification = WsNotificationSchema.safeParse(parsedJson);
+      if (notification.success) {
+        const notifHandler = this.notificationHandlers.get(notification.data.method);
+        if (notifHandler) {
+          try {
+            await notifHandler(notification.data.params ?? {});
+          } catch {
+            // Swallow notification handler errors so unhandled rejections never crash handleMessage
+          }
+        }
+        return;
+      }
     }
 
     // Check RPC request frames

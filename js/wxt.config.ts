@@ -12,6 +12,7 @@ export default defineConfig({
       'tabs',
       'nativeMessaging',
       'activeTab',
+      'notifications',
     ];
     if (!isFirefox) {
       permissions.push('sidePanel');

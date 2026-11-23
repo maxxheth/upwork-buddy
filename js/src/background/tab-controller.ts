@@ -315,6 +315,7 @@ export class AutomationTabController {
       guards?: AuthAndChallengeGuardsConfig;
       waitForSelectors?: string[];
       timeoutMs?: number;
+      waitForSearchApi?: boolean;
       scroll?: { steps?: number; intervalMs?: number };
       allowSelectorTimeout?: boolean;
     } = {},
@@ -389,6 +390,9 @@ export class AutomationTabController {
         guards,
         waitForSelectors: options.waitForSelectors,
         timeoutMs: options.timeoutMs,
+        ...(options.waitForSearchApi !== undefined
+          ? { waitForSearchApi: options.waitForSearchApi }
+          : {}),
         scroll: options.scroll,
       },
       signal,

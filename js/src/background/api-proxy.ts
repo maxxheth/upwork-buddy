@@ -33,6 +33,7 @@ function isLoopbackHost(hostname: string): boolean {
 
 const CONTENT_SCRIPT_ALLOWED_COMMANDS = new Set([
   'PASSIVE_TAP_PAYLOAD',
+  'PASSIVE_SEARCH_BATCH',
   'GET_RUNTIME_STATUS',
   'BG_SELECTORS_GET',
   'BG_CAPTURE_UI_DIAGNOSTIC',
