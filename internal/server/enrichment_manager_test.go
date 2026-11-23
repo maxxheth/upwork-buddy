@@ -1072,3 +1072,426 @@ func TestEnrichmentManager_BatchIDBoundsValidation_WithDB(t *testing.T) {
 		}
 	}
 }
+
+func TestEnrichmentManager_GlobalLLMSemaphoreAcrossConcurrentBatches_WithDB(t *testing.T) {
+	s := setupTestServerWithEnrichment(t)
+	clearServerLLMEnv(t)
+	clearEnrichmentEnv(t)
+	gormDB := s.db.GetGorm()
+	mgr := s.getEnrichmentManager()
+
+	var inflight atomic.Int32
+	var maxInflight atomic.Int32
+	startedCh := make(chan struct{}, 5)
+	releaseGate := make(chan struct{})
+
+	mockLLM := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		cur := inflight.Add(1)
+		for {
+			prev := maxInflight.Load()
+			if cur <= prev || maxInflight.CompareAndSwap(prev, cur) {
+				break
+			}
+		}
+		defer inflight.Add(-1)
+
+		select {
+		case startedCh <- struct{}{}:
+		default:
+		}
+
+		select {
+		case <-releaseGate:
+		case <-r.Context().Done():
+			return
+		}
+
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{
+			"model": "gemini-pro-orchestrator-neon",
+			"applied_effort": "medium",
+			"usage": {"inputTokens": 10, "outputTokens": 20, "thoughtTokens": 0, "totalTokens": 30},
+			"message": {"role": "assistant", "content": "{\"proposal\":\"Done\",\"execution_prompt\":\"Go\",\"time_estimate\":\"1h\",\"workload_division\":\"50/50\",\"questions_for_client\":[],\"tips_and_advice\":[],\"tone_analysis\":\"Direct\"}"}
+		}`))
+	}))
+	defer mockLLM.Close()
+
+	t.Setenv("LLM_PROVIDER", "agy")
+	t.Setenv("AGY_ENDPOINT_URL", mockLLM.URL)
+	t.Setenv("ENRICHMENT_MAX_CONCURRENCY", "2")
+
+	var batchIDs []uint
+	waitFalse := false
+	for i := 0; i < 5; i++ {
+		uid := "~01global" + string(rune('a'+i))
+		j := dbservice.Job{UpworkJobID: &uid, Title: "Global Sem Job " + uid, Description: "Desc"}
+		if err := gormDB.Create(&j).Error; err != nil {
+			t.Fatalf("create job %d: %v", i, err)
+		}
+		res, err := mgr.StartBatch(context.Background(), BatchEnrichRequest{
+			JobIDs: []any{j.ID},
+			Mode:   "ai_only",
+			Wait:   &waitFalse,
+		})
+		if err != nil {
+			t.Fatalf("StartBatch %d failed: %v", i, err)
+		}
+		batchIDs = append(batchIDs, res.Batch.ID)
+	}
+
+	// Wait for 2 LLM requests to be inflight simultaneously.
+	for i := 0; i < 2; i++ {
+		select {
+		case <-startedCh:
+		case <-time.After(5 * time.Second):
+			close(releaseGate)
+			t.Fatalf("timed out waiting for LLM slot %d to start", i+1)
+		}
+	}
+
+	// While 2 slots are busy, all 3 waiting batches must report queued_count == 1 && running_count == 0.
+	deadline := time.Now().Add(2 * time.Second)
+	for {
+		runningBatches := 0
+		waitingBatches := 0
+		for _, id := range batchIDs {
+			snap, err := mgr.GetBatch(context.Background(), id)
+			if err != nil {
+				close(releaseGate)
+				t.Fatalf("GetBatch(%d) failed: %v", id, err)
+			}
+			if snap.Batch.RunningCount == 1 && snap.Batch.QueuedCount == 0 {
+				runningBatches++
+			} else if snap.Batch.QueuedCount == 1 && snap.Batch.RunningCount == 0 {
+				waitingBatches++
+			}
+		}
+		if runningBatches == 2 && waitingBatches == 3 {
+			break
+		}
+		if time.Now().After(deadline) {
+			close(releaseGate)
+			t.Fatalf("expected 2 running and 3 queued batches while slots busy, got running=%d waiting=%d", runningBatches, waitingBatches)
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+
+	if got := inflight.Load(); got != 2 {
+		close(releaseGate)
+		t.Fatalf("expected inflight == 2 while gated, got %d", got)
+	}
+
+	close(releaseGate)
+
+	// Wait for all 5 batches to complete cleanly.
+	completeDeadline := time.Now().Add(5 * time.Second)
+	for _, id := range batchIDs {
+		for {
+			snap, err := mgr.GetBatch(context.Background(), id)
+			if err != nil {
+				t.Fatalf("GetBatch(%d) failed: %v", id, err)
+			}
+			if snap.Batch.Status == EnrichmentBatchStatusCompleted {
+				if snap.Batch.CompletedCount != 1 {
+					t.Fatalf("expected completed_count=1 for batch %d, got %+v", id, snap.Batch)
+				}
+				break
+			}
+			if isTerminalBatchStatus(snap.Batch.Status) {
+				t.Fatalf("unexpected terminal status for batch %d: %+v", id, snap.Batch)
+			}
+			if time.Now().After(completeDeadline) {
+				t.Fatalf("timed out waiting for batch %d to complete (status=%s)", id, snap.Batch.Status)
+			}
+			time.Sleep(10 * time.Millisecond)
+		}
+	}
+
+	if got := maxInflight.Load(); got > 2 || got < 1 {
+		t.Fatalf("expected 1 <= maxInflight <= 2, got %d", got)
+	}
+}
+
+func TestEnrichmentManager_CancelWhileBlockedOnLLMSemaphore_WithDB(t *testing.T) {
+	s := setupTestServerWithEnrichment(t)
+	clearServerLLMEnv(t)
+	clearEnrichmentEnv(t)
+	gormDB := s.db.GetGorm()
+	mgr := s.getEnrichmentManager()
+
+	firstStarted := make(chan struct{})
+	releaseFirst := make(chan struct{})
+	var callNum atomic.Int32
+
+	mockLLM := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if callNum.Add(1) == 1 {
+			close(firstStarted)
+			select {
+			case <-releaseFirst:
+			case <-r.Context().Done():
+				return
+			}
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{
+			"model": "gemini-pro-orchestrator-neon",
+			"applied_effort": "medium",
+			"usage": {"inputTokens": 10, "outputTokens": 20, "thoughtTokens": 0, "totalTokens": 30},
+			"message": {"role": "assistant", "content": "{\"proposal\":\"Done\",\"execution_prompt\":\"Go\",\"time_estimate\":\"1h\",\"workload_division\":\"50/50\",\"questions_for_client\":[],\"tips_and_advice\":[],\"tone_analysis\":\"Direct\"}"}
+		}`))
+	}))
+	defer mockLLM.Close()
+
+	t.Setenv("LLM_PROVIDER", "agy")
+	t.Setenv("AGY_ENDPOINT_URL", mockLLM.URL)
+	t.Setenv("ENRICHMENT_MAX_CONCURRENCY", "1")
+
+	var jobs []dbservice.Job
+	for _, uid := range []string{"~01cansem1", "~01cansem2", "~01cansem3"} {
+		u := uid
+		j := dbservice.Job{UpworkJobID: &u, Title: "Cancel Sem " + uid, Description: "Desc", AIEnrichmentStatus: "none"}
+		if err := gormDB.Create(&j).Error; err != nil {
+			t.Fatalf("create job: %v", err)
+		}
+		jobs = append(jobs, j)
+	}
+
+	waitFalse := false
+	b1, err := mgr.StartBatch(context.Background(), BatchEnrichRequest{JobIDs: []any{jobs[0].ID}, Mode: "ai_only", Wait: &waitFalse})
+	if err != nil {
+		t.Fatalf("StartBatch 1 failed: %v", err)
+	}
+	select {
+	case <-firstStarted:
+	case <-time.After(5 * time.Second):
+		close(releaseFirst)
+		t.Fatal("timed out waiting for batch 1 LLM call")
+	}
+
+	b2, err := mgr.StartBatch(context.Background(), BatchEnrichRequest{JobIDs: []any{jobs[1].ID}, Mode: "ai_only", Wait: &waitFalse})
+	if err != nil {
+		close(releaseFirst)
+		t.Fatalf("StartBatch 2 failed: %v", err)
+	}
+	b3, err := mgr.StartBatch(context.Background(), BatchEnrichRequest{JobIDs: []any{jobs[2].ID}, Mode: "ai_only", Wait: &waitFalse})
+	if err != nil {
+		close(releaseFirst)
+		t.Fatalf("StartBatch 3 failed: %v", err)
+	}
+
+	// Ensure b2 and b3 have started runBatch and are blocked on llmSem (still queued, not analyzing).
+	deadline := time.Now().Add(2 * time.Second)
+	for {
+		s2, _ := mgr.GetBatch(context.Background(), b2.Batch.ID)
+		s3, _ := mgr.GetBatch(context.Background(), b3.Batch.ID)
+		if s2 != nil && s3 != nil && s2.Batch.Status == EnrichmentBatchStatusRunning && s3.Batch.Status == EnrichmentBatchStatusRunning {
+			if s2.Batch.QueuedCount != 1 || s2.Batch.RunningCount != 0 {
+				close(releaseFirst)
+				t.Fatalf("expected blocked batch 2 to report queued_count=1 running_count=0, got %+v", s2.Batch)
+			}
+			break
+		}
+		if time.Now().After(deadline) {
+			close(releaseFirst)
+			t.Fatal("timed out waiting for batches 2 and 3 to enter running state")
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+
+	// Cancel batch 2 while it is blocked waiting on llmSem.
+	cancelRes, err := mgr.CancelBatch(context.Background(), b2.Batch.ID)
+	if err != nil {
+		close(releaseFirst)
+		t.Fatalf("CancelBatch 2 failed: %v", err)
+	}
+	if cancelRes.Batch.Status != EnrichmentBatchStatusCanceled || cancelRes.Batch.CanceledCount != 1 {
+		close(releaseFirst)
+		t.Fatalf("expected batch 2 canceled with canceled_count=1, got %+v", cancelRes.Batch)
+	}
+
+	var j2Reloaded dbservice.Job
+	if err := gormDB.First(&j2Reloaded, jobs[1].ID).Error; err != nil {
+		close(releaseFirst)
+		t.Fatalf("reload job 2: %v", err)
+	}
+	if j2Reloaded.AIEnrichmentStatus != "none" {
+		close(releaseFirst)
+		t.Fatalf("expected job 2 ai_enrichment_status restored to 'none', got %q", j2Reloaded.AIEnrichmentStatus)
+	}
+
+	// Unblock batch 1; batch 3 must acquire the released slot and complete without starvation.
+	close(releaseFirst)
+
+	completeDeadline := time.Now().Add(5 * time.Second)
+	for _, id := range []uint{b1.Batch.ID, b3.Batch.ID} {
+		for {
+			snap, err := mgr.GetBatch(context.Background(), id)
+			if err != nil {
+				t.Fatalf("GetBatch(%d) failed: %v", id, err)
+			}
+			if snap.Batch.Status == EnrichmentBatchStatusCompleted {
+				if snap.Batch.CompletedCount != 1 {
+					t.Fatalf("expected completed_count=1 for batch %d, got %+v", id, snap.Batch)
+				}
+				break
+			}
+			if isTerminalBatchStatus(snap.Batch.Status) {
+				t.Fatalf("unexpected terminal status for batch %d: %+v", id, snap.Batch)
+			}
+			if time.Now().After(completeDeadline) {
+				t.Fatalf("timed out waiting for batch %d to complete (status=%s)", id, snap.Batch.Status)
+			}
+			time.Sleep(10 * time.Millisecond)
+		}
+	}
+}
+
+func TestEnrichmentManager_GlobalDetailSemaphoreAndSkipFastPath_WithDB(t *testing.T) {
+	s := setupTestServerWithEnrichment(t)
+	clearServerLLMEnv(t)
+	clearEnrichmentEnv(t)
+	gormDB := s.db.GetGorm()
+	mgr := s.getEnrichmentManager()
+
+	mockLLM := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{
+			"model": "gemini-pro-orchestrator-neon",
+			"applied_effort": "medium",
+			"usage": {"inputTokens": 10, "outputTokens": 20, "thoughtTokens": 0, "totalTokens": 30},
+			"message": {"role": "assistant", "content": "{\"proposal\":\"Done\",\"execution_prompt\":\"Go\",\"time_estimate\":\"1h\",\"workload_division\":\"50/50\",\"questions_for_client\":[],\"tips_and_advice\":[],\"tone_analysis\":\"Direct\"}"}
+		}`))
+	}))
+	defer mockLLM.Close()
+
+	t.Setenv("LLM_PROVIDER", "agy")
+	t.Setenv("AGY_ENDPOINT_URL", mockLLM.URL)
+	t.Setenv("ENRICHMENT_MAX_CONCURRENCY", "4")
+
+	var detailInflight atomic.Int32
+	var maxDetailInflight atomic.Int32
+	var detailCalls atomic.Int32
+	firstDetailStarted := make(chan struct{})
+	releaseFirstDetail := make(chan struct{})
+
+	srv, _ := attachTestBridgeHub(t, s)
+	dialAuthenticatedMockExtension(t, srv, s.apiToken, func(method string, params json.RawMessage) (any, *bridge.WireRPCError) {
+		if method != "jobs.detail" {
+			return nil, &bridge.WireRPCError{Code: json.RawMessage(`-32601`), Message: "method not found"}
+		}
+		cur := detailInflight.Add(1)
+		for {
+			prev := maxDetailInflight.Load()
+			if cur <= prev || maxDetailInflight.CompareAndSwap(prev, cur) {
+				break
+			}
+		}
+		defer detailInflight.Add(-1)
+
+		callIdx := detailCalls.Add(1)
+		if callIdx == 1 {
+			close(firstDetailStarted)
+			<-releaseFirstDetail
+		} else {
+			time.Sleep(30 * time.Millisecond)
+		}
+
+		var p struct {
+			UpworkJobID string `json:"upwork_job_id"`
+			URL         string `json:"url"`
+		}
+		_ = json.Unmarshal(params, &p)
+		return map[string]any{
+			"ok": true,
+			"job": map[string]any{
+				"upwork_job_id":   p.UpworkJobID,
+				"job_title":       "Serialized Detail Job",
+				"job_description": "Scraped full description for " + p.UpworkJobID,
+				"url":             p.URL,
+			},
+		}, nil
+	})
+
+	uid1, uid2, uid3 := "~01detsem1", "~01detsem2", "~01detsem3"
+	now := time.Now().UTC()
+	j1 := dbservice.Job{UpworkJobID: &uid1, Title: "Detail 1", Description: "Short 1", URL: "https://www.upwork.com/jobs/" + uid1 + "/"}
+	j2 := dbservice.Job{UpworkJobID: &uid2, Title: "Detail 2", Description: "Short 2", URL: "https://www.upwork.com/jobs/" + uid2 + "/"}
+	j3 := dbservice.Job{UpworkJobID: &uid3, Title: "Detail Skip 3", Description: "Full 3", URL: "https://www.upwork.com/jobs/" + uid3 + "/", LastEnrichedAt: &now}
+	for _, j := range []*dbservice.Job{&j1, &j2, &j3} {
+		if err := gormDB.Create(j).Error; err != nil {
+			t.Fatalf("create job: %v", err)
+		}
+	}
+
+	waitFalse := false
+	b1, err := mgr.StartBatch(context.Background(), BatchEnrichRequest{JobIDs: []any{j1.ID}, Mode: "detail_only", Wait: &waitFalse})
+	if err != nil {
+		close(releaseFirstDetail)
+		t.Fatalf("StartBatch 1 failed: %v", err)
+	}
+	select {
+	case <-firstDetailStarted:
+	case <-time.After(5 * time.Second):
+		close(releaseFirstDetail)
+		t.Fatal("timed out waiting for first detail RPC")
+	}
+
+	// Start a second detail_only batch while b1 holds detailSem: it must serialize behind b1.
+	b2, err := mgr.StartBatch(context.Background(), BatchEnrichRequest{JobIDs: []any{j2.ID}, Mode: "detail_only", Wait: &waitFalse})
+	if err != nil {
+		close(releaseFirstDetail)
+		t.Fatalf("StartBatch 2 failed: %v", err)
+	}
+
+	// Start a full batch with skip_detail_if_present=true on j3 (LastEnrichedAt set):
+	// it must NOT contend on detailSem and must complete while b1 still holds detailSem.
+	waitTrue := true
+	skipTrue := true
+	b3, err := mgr.StartBatch(context.Background(), BatchEnrichRequest{
+		JobIDs:              []any{j3.ID},
+		Mode:                "full",
+		SkipDetailIfPresent: &skipTrue,
+		Wait:                &waitTrue,
+	})
+	if err != nil {
+		close(releaseFirstDetail)
+		t.Fatalf("StartBatch 3 (skip_detail_if_present) failed: %v", err)
+	}
+	if !b3.Completed || b3.Batch.Status != EnrichmentBatchStatusCompleted || b3.Batch.CompletedCount != 1 {
+		close(releaseFirstDetail)
+		t.Fatalf("expected skipped-detail full batch to complete immediately while detailSem held, got %+v", b3.Batch)
+	}
+	if detailCalls.Load() != 1 {
+		close(releaseFirstDetail)
+		t.Fatalf("expected detailCalls == 1 while b1 holds detailSem, got %d", detailCalls.Load())
+	}
+
+	close(releaseFirstDetail)
+
+	completeDeadline := time.Now().Add(5 * time.Second)
+	for _, id := range []uint{b1.Batch.ID, b2.Batch.ID} {
+		for {
+			snap, err := mgr.GetBatch(context.Background(), id)
+			if err != nil {
+				t.Fatalf("GetBatch(%d) failed: %v", id, err)
+			}
+			if snap.Batch.Status == EnrichmentBatchStatusCompleted {
+				break
+			}
+			if isTerminalBatchStatus(snap.Batch.Status) {
+				t.Fatalf("unexpected terminal status for batch %d: %+v", id, snap.Batch)
+			}
+			if time.Now().After(completeDeadline) {
+				t.Fatalf("timed out waiting for batch %d to complete (status=%s)", id, snap.Batch.Status)
+			}
+			time.Sleep(10 * time.Millisecond)
+		}
+	}
+
+	if got := maxDetailInflight.Load(); got != 1 {
+		t.Fatalf("expected maxDetailInflight == 1, got %d", got)
+	}
+	if got := detailCalls.Load(); got != 2 {
+		t.Fatalf("expected 2 detail calls total (j1 and j2 only), got %d", got)
+	}
+}

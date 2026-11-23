@@ -123,12 +123,13 @@ type activeBatchItemState struct {
 }
 
 type activeBatchRun struct {
-	batchID             uint
-	mode                string
-	skipDetailIfPresent bool
-	requireDetails      bool
-	maxConcurrency      int
-	items               []*activeBatchItemState
+	batchID              uint
+	mode                 string
+	skipDetailIfPresent  bool
+	requireDetails       bool
+	maxConcurrency       int
+	globalMaxConcurrency int
+	items                []*activeBatchItemState
 
 	ctx      context.Context
 	cancel   context.CancelFunc
@@ -136,14 +137,106 @@ type activeBatchRun struct {
 	rollupMu sync.Mutex
 }
 
+type semWaiter struct {
+	ch      chan struct{}
+	limit   int
+	granted bool
+}
+
+// dynamicSemaphore is a FIFO, context-cancellable semaphore whose concurrency
+// limit is evaluated dynamically on each Acquire call.
+type dynamicSemaphore struct {
+	mu      sync.Mutex
+	inUse   int
+	waiters []*semWaiter
+}
+
+func (s *dynamicSemaphore) Acquire(ctx context.Context, limit int) error {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	if limit < 1 {
+		limit = 1
+	}
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+
+	s.mu.Lock()
+	if len(s.waiters) == 0 && s.inUse < limit {
+		s.inUse++
+		s.mu.Unlock()
+		return nil
+	}
+	w := &semWaiter{
+		ch:    make(chan struct{}),
+		limit: limit,
+	}
+	s.waiters = append(s.waiters, w)
+	s.mu.Unlock()
+
+	select {
+	case <-w.ch:
+		if err := ctx.Err(); err != nil {
+			s.Release()
+			return err
+		}
+		return nil
+	case <-ctx.Done():
+		s.mu.Lock()
+		if w.granted {
+			s.mu.Unlock()
+			s.Release()
+			return ctx.Err()
+		}
+		for i, item := range s.waiters {
+			if item == w {
+				s.waiters = append(s.waiters[:i], s.waiters[i+1:]...)
+				break
+			}
+		}
+		s.wakeLocked()
+		s.mu.Unlock()
+		return ctx.Err()
+	}
+}
+
+func (s *dynamicSemaphore) Release() {
+	s.mu.Lock()
+	if s.inUse > 0 {
+		s.inUse--
+	}
+	s.wakeLocked()
+	s.mu.Unlock()
+}
+
+func (s *dynamicSemaphore) wakeLocked() {
+	for len(s.waiters) > 0 {
+		head := s.waiters[0]
+		limit := head.limit
+		if limit < 1 {
+			limit = 1
+		}
+		if s.inUse >= limit {
+			break
+		}
+		s.waiters = s.waiters[1:]
+		s.inUse++
+		head.granted = true
+		close(head.ch)
+	}
+}
+
 // EnrichmentManager orchestrates Postgres-backed async batch detail scraping and AI enrichment.
 type EnrichmentManager struct {
 	server *Server
 
-	mu     sync.Mutex
-	closed bool
-	active map[uint]*activeBatchRun
-	wg     sync.WaitGroup
+	mu        sync.Mutex
+	closed    bool
+	active    map[uint]*activeBatchRun
+	wg        sync.WaitGroup
+	detailSem dynamicSemaphore
+	llmSem    dynamicSemaphore
 }
 
 // NewEnrichmentManager creates an EnrichmentManager bound to s.
@@ -436,12 +529,13 @@ func (m *EnrichmentManager) StartBatch(ctx context.Context, req BatchEnrichReque
 		effort = parsedEffort
 	}
 
-	maxConcurrency := cfg.EffectiveMaxConcurrency()
+	globalMaxConcurrency := cfg.EffectiveMaxConcurrency()
+	maxConcurrency := globalMaxConcurrency
 	if req.MaxConcurrency != nil {
 		if *req.MaxConcurrency <= 0 {
 			return nil, &ServiceError{Code: "INVALID_PARAMS", HTTPStatus: http.StatusBadRequest, Message: "max_concurrency must be > 0"}
 		}
-		maxConcurrency = clampInt(*req.MaxConcurrency, MinEnrichmentMaxConcurrency, cfg.EffectiveMaxConcurrency())
+		maxConcurrency = clampInt(*req.MaxConcurrency, MinEnrichmentMaxConcurrency, globalMaxConcurrency)
 	}
 
 	waitTimeout := cfg.WaitTimeout()
@@ -671,15 +765,16 @@ func (m *EnrichmentManager) StartBatch(ctx context.Context, req BatchEnrichReque
 
 	batchCtx, batchCancel := context.WithCancel(context.Background())
 	run := &activeBatchRun{
-		batchID:             batch.ID,
-		mode:                mode,
-		skipDetailIfPresent: skipDetailIfPresent,
-		requireDetails:      requireDetails,
-		maxConcurrency:      maxConcurrency,
-		items:               runItems,
-		ctx:                 batchCtx,
-		cancel:              batchCancel,
-		done:                make(chan struct{}),
+		batchID:              batch.ID,
+		mode:                 mode,
+		skipDetailIfPresent:  skipDetailIfPresent,
+		requireDetails:       requireDetails,
+		maxConcurrency:       maxConcurrency,
+		globalMaxConcurrency: globalMaxConcurrency,
+		items:                runItems,
+		ctx:                  batchCtx,
+		cancel:               batchCancel,
+		done:                 make(chan struct{}),
 	}
 
 	initialBatch := enrichmentBatchSummaryFromModel(batch)
@@ -819,25 +914,6 @@ func (m *EnrichmentManager) runPhaseA(run *activeBatchRun) {
 			continue
 		}
 
-		now := time.Now().UTC()
-		_ = gormDB.WithContext(run.ctx).Model(&dbservice.EnrichmentBatchItem{}).
-			Where("id = ?", st.item.ID).
-			Updates(map[string]any{
-				"status":     EnrichmentItemStatusScrapingDetails,
-				"started_at": &now,
-			}).Error
-		st.item.Status = EnrichmentItemStatusScrapingDetails
-		st.item.StartedAt = &now
-
-		_ = gormDB.WithContext(run.ctx).Model(&dbservice.Job{}).
-			Where("id = ?", st.item.JobID).
-			Updates(map[string]any{
-				"ai_enrichment_status": "scraping_details",
-				"ai_enrichment_error":  "",
-			}).Error
-
-		m.rollupBatch(run.ctx, run, false)
-
 		targetURL := firstNonEmpty(st.job.CanonicalURL, st.job.URL)
 		upworkID := ""
 		if st.job.UpworkJobID != nil {
@@ -863,10 +939,34 @@ func (m *EnrichmentManager) runPhaseA(run *activeBatchRun) {
 			continue
 		}
 
+		if err := m.detailSem.Acquire(run.ctx, 1); err != nil {
+			return
+		}
+
+		now := time.Now().UTC()
+		_ = gormDB.WithContext(run.ctx).Model(&dbservice.EnrichmentBatchItem{}).
+			Where("id = ?", st.item.ID).
+			Updates(map[string]any{
+				"status":     EnrichmentItemStatusScrapingDetails,
+				"started_at": &now,
+			}).Error
+		st.item.Status = EnrichmentItemStatusScrapingDetails
+		st.item.StartedAt = &now
+
+		_ = gormDB.WithContext(run.ctx).Model(&dbservice.Job{}).
+			Where("id = ?", st.item.JobID).
+			Updates(map[string]any{
+				"ai_enrichment_status": "scraping_details",
+				"ai_enrichment_error":  "",
+			}).Error
+
+		m.rollupBatch(run.ctx, run, false)
+
 		detailRes, detailErr := m.server.ExecuteDetailEnrich(run.ctx, DetailEnrichRequest{
 			URL:         targetURL,
 			UpworkJobID: upworkID,
 		})
+		m.detailSem.Release()
 
 		if detailErr != nil {
 			if run.ctx.Err() != nil || errors.Is(detailErr, context.Canceled) {
@@ -1066,6 +1166,11 @@ func (m *EnrichmentManager) processPhaseBItem(run *activeBatchRun, st *activeBat
 	if run.ctx.Err() != nil {
 		return
 	}
+
+	if err := m.llmSem.Acquire(run.ctx, run.globalMaxConcurrency); err != nil {
+		return
+	}
+	defer m.llmSem.Release()
 
 	gormDB := m.server.db.GetGorm()
 	now := time.Now().UTC()
