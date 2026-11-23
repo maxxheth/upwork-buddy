@@ -99,6 +99,10 @@ func AllModels() []any {
 		&ActiveProject{},
 		&EnrichmentBatch{},
 		&EnrichmentBatchItem{},
+		&WatchRule{},
+		&WatchRun{},
+		&WatchEvent{},
+		&NotificationConfig{},
 	}
 }
 
@@ -474,4 +478,104 @@ type EnrichmentBatchItem struct {
 	CompletedAt   *time.Time       `gorm:"type:timestamp(3)"`
 	CreatedAt     time.Time        `gorm:"type:timestamp(3);default:CURRENT_TIMESTAMP;not null"`
 	UpdatedAt     time.Time        `gorm:"type:timestamp(3);not null"`
+}
+
+// WatchRule configures an autonomous job-watcher rule and its reaction policy.
+type WatchRule struct {
+	ID                           uint           `gorm:"primaryKey;autoIncrement"`
+	Name                         string         `gorm:"type:text;not null;uniqueIndex:idx_watch_rules_name"`
+	Description                  string         `gorm:"type:text;not null;default:''"`
+	Enabled                      bool           `gorm:"type:boolean;not null;default:false;index:idx_watch_rules_enabled"`
+	DiscoveryBackend             string         `gorm:"type:text;not null;default:'chrome'"` // "chrome" | "scraper_fs"
+	SearchProfileID              *uint          `gorm:"index:idx_watch_rules_search_profile_id"`
+	SearchProfile                *SearchProfile `gorm:"foreignKey:SearchProfileID;constraint:OnDelete:SET NULL"`
+	DiscoveryConfigJSON          JSONB          `gorm:"type:jsonb"`
+	IntervalMinutes              int            `gorm:"type:integer;not null;default:5"`
+	JitterRatio                  float64        `gorm:"type:double precision;not null;default:0.35"`
+	ActiveHours                  string         `gorm:"type:text;not null;default:''"`
+	MinScore                     int            `gorm:"type:integer;not null;default:75"`
+	MaxProposals                 *int           `gorm:"type:integer"`
+	MaxPostedAgeMinutes          *int           `gorm:"type:integer"`
+	MaxConnectsPerJob            *int           `gorm:"type:integer"`
+	RequirePaymentVerified       bool           `gorm:"type:boolean;not null;default:true"`
+	RequiredKeywordsJSON         JSONB          `gorm:"type:jsonb"`
+	ExcludeKeywordsJSON          JSONB          `gorm:"type:jsonb"`
+	ActionMode                   string         `gorm:"type:text;not null;default:'draft_and_fill'"` // "alert_only" | "draft_and_fill" | "auto_submit"
+	LLMModel                     string         `gorm:"type:text;not null;default:''"`
+	LLMEffort                    string         `gorm:"type:text;not null;default:''"`
+	BidStrategyJSON              JSONB          `gorm:"type:jsonb"`
+	AutoSubmitMinConfidence      float64        `gorm:"type:double precision;not null;default:0.85"`
+	FallbackOnScreeningQuestions bool           `gorm:"type:boolean;not null;default:true"`
+	MaxReactionsPerTick          int            `gorm:"type:integer;not null;default:2"`
+	SeedBaselineOnFirstRun       bool           `gorm:"type:boolean;not null;default:true"`
+	SeededAt                     *time.Time     `gorm:"type:timestamp(3)"`
+	PausedReason                 string         `gorm:"type:text;not null;default:''"`
+	ConsecutiveErrors            int            `gorm:"type:integer;not null;default:0"`
+	NextRunAt                    *time.Time     `gorm:"type:timestamp(3);index:idx_watch_rules_next_run_at"`
+	LastRunAt                    *time.Time     `gorm:"type:timestamp(3)"`
+	LastSuccessAt                *time.Time     `gorm:"type:timestamp(3)"`
+	LastError                    string         `gorm:"type:text;not null;default:''"`
+	CreatedAt                    time.Time      `gorm:"type:timestamp(3);default:CURRENT_TIMESTAMP;not null"`
+	UpdatedAt                    time.Time      `gorm:"type:timestamp(3);not null"`
+}
+
+// WatchRun records a single execution tick of a WatchRule.
+type WatchRun struct {
+	ID               uint       `gorm:"primaryKey;autoIncrement"`
+	WatchRuleID      uint       `gorm:"not null;index:idx_watch_runs_rule_id"`
+	WatchRule        *WatchRule `gorm:"foreignKey:WatchRuleID;constraint:OnDelete:CASCADE"`
+	DiscoveryBackend string     `gorm:"type:text;not null;default:''"`
+	TriggeredBy      string     `gorm:"type:text;not null;default:''"`
+	SearchRunID      *uint      `gorm:"index:idx_watch_runs_search_run_id"`
+	SearchRun        *SearchRun `gorm:"foreignKey:SearchRunID;constraint:OnDelete:SET NULL"`
+	Status           string     `gorm:"type:text;not null;default:'running';index:idx_watch_runs_status"`
+	ScrapedCount     int        `gorm:"type:integer;not null;default:0"`
+	NewJobsCount     int        `gorm:"type:integer;not null;default:0"`
+	QualifiedCount   int        `gorm:"type:integer;not null;default:0"`
+	DraftedCount     int        `gorm:"type:integer;not null;default:0"`
+	FilledCount      int        `gorm:"type:integer;not null;default:0"`
+	SubmittedCount   int        `gorm:"type:integer;not null;default:0"`
+	AlertedCount     int        `gorm:"type:integer;not null;default:0"`
+	ErrorCode        string     `gorm:"type:text;not null;default:''"`
+	ErrorMessage     string     `gorm:"type:text;not null;default:''"`
+	StartedAt        time.Time  `gorm:"type:timestamp(3);default:CURRENT_TIMESTAMP;not null"`
+	CompletedAt      *time.Time `gorm:"type:timestamp(3)"`
+	CreatedAt        time.Time  `gorm:"type:timestamp(3);default:CURRENT_TIMESTAMP;not null;index:idx_watch_runs_created_at"`
+}
+
+// WatchEvent records per-job progression through a WatchRule's reaction pipeline.
+type WatchEvent struct {
+	ID             uint       `gorm:"primaryKey;autoIncrement"`
+	WatchRuleID    uint       `gorm:"not null;uniqueIndex:idx_watch_events_rule_job,priority:1;index:idx_watch_events_rule_id"`
+	WatchRule      *WatchRule `gorm:"foreignKey:WatchRuleID;constraint:OnDelete:CASCADE"`
+	WatchRunID     *uint      `gorm:"index:idx_watch_events_run_id"`
+	WatchRun       *WatchRun  `gorm:"foreignKey:WatchRunID;constraint:OnDelete:SET NULL"`
+	JobID          uint       `gorm:"not null;uniqueIndex:idx_watch_events_rule_job,priority:2;index:idx_watch_events_job_id"`
+	Job            *Job       `gorm:"foreignKey:JobID;constraint:OnDelete:CASCADE"`
+	UpworkJobID    string     `gorm:"type:text;not null;default:''"`
+	ProposalID     *uint      `gorm:"index:idx_watch_events_proposal_id"`
+	Proposal       *Proposal  `gorm:"foreignKey:ProposalID;constraint:OnDelete:SET NULL"`
+	Stage          string     `gorm:"type:text;not null;default:'discovered';index:idx_watch_events_stage"`
+	DecisionReason string     `gorm:"type:text;not null;default:''"`
+	Confidence     *float64   `gorm:"type:double precision"`
+	ErrorCode      string     `gorm:"type:text;not null;default:''"`
+	ErrorMessage   string     `gorm:"type:text;not null;default:''"`
+	CreatedAt      time.Time  `gorm:"type:timestamp(3);default:CURRENT_TIMESTAMP;not null;index:idx_watch_events_created_at"`
+	UpdatedAt      time.Time  `gorm:"type:timestamp(3);not null"`
+}
+
+// NotificationConfig persists notification channel settings for watcher alerts.
+type NotificationConfig struct {
+	ID                         uint      `gorm:"primaryKey;autoIncrement"`
+	ConfigKey                  string    `gorm:"type:text;not null;default:'default';uniqueIndex:idx_notification_configs_key"`
+	ChromeNotificationsEnabled bool      `gorm:"type:boolean;not null;default:true"`
+	WebhookEnabled             bool      `gorm:"type:boolean;not null;default:false"`
+	WebhookURL                 string    `gorm:"type:text;not null;default:''"`
+	WebhookSecret              string    `gorm:"type:text;not null;default:''"`
+	TelegramEnabled            bool      `gorm:"type:boolean;not null;default:false"`
+	TelegramBotToken           string    `gorm:"type:text;not null;default:''"`
+	TelegramChatID             string    `gorm:"type:text;not null;default:''"`
+	NotifyEventsJSON           JSONB     `gorm:"type:jsonb"`
+	CreatedAt                  time.Time `gorm:"type:timestamp(3);default:CURRENT_TIMESTAMP;not null"`
+	UpdatedAt                  time.Time `gorm:"type:timestamp(3);not null"`
 }

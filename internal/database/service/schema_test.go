@@ -116,6 +116,13 @@ func TestAllModels_DependencyOrder(t *testing.T) {
 	assertBefore(&Job{}, &SearchRunJob{})
 	assertBefore(&EnrichmentBatch{}, &EnrichmentBatchItem{})
 	assertBefore(&Job{}, &EnrichmentBatchItem{})
+	assertBefore(&SearchProfile{}, &WatchRule{})
+	assertBefore(&WatchRule{}, &WatchRun{})
+	assertBefore(&SearchRun{}, &WatchRun{})
+	assertBefore(&WatchRule{}, &WatchEvent{})
+	assertBefore(&WatchRun{}, &WatchEvent{})
+	assertBefore(&Job{}, &WatchEvent{})
+	assertBefore(&Proposal{}, &WatchEvent{})
 }
 
 func TestAllModels_AutoMigrateAndJobDefaults(t *testing.T) {
@@ -363,5 +370,69 @@ WHERE COALESCE("proposal", '') ~ '\S'
 	}
 	if got4.AIEnrichmentStatus != "none" || got4.AIEnrichedAt != nil {
 		t.Fatalf("job4 should stay 'none'/nil, got (%q, %v)", got4.AIEnrichmentStatus, got4.AIEnrichedAt)
+	}
+}
+
+func TestWatchModels_AutoMigrateAndUniqueEventConstraint(t *testing.T) {
+	db := setupIsolatedSchemaDB(t)
+
+	rule := WatchRule{
+		Name: "go-fast-react",
+	}
+	if err := db.Create(&rule).Error; err != nil {
+		t.Fatalf("create watch_rule: %v", err)
+	}
+	if rule.Enabled || rule.DiscoveryBackend != "chrome" || rule.IntervalMinutes != 5 ||
+		rule.MinScore != 75 || rule.ActionMode != "draft_and_fill" || !rule.RequirePaymentVerified ||
+		!rule.FallbackOnScreeningQuestions || rule.MaxReactionsPerTick != 2 || !rule.SeedBaselineOnFirstRun {
+		t.Fatalf("unexpected WatchRule defaults: %+v", rule)
+	}
+
+	run := WatchRun{
+		WatchRuleID:      rule.ID,
+		DiscoveryBackend: "chrome",
+		TriggeredBy:      "scheduler",
+	}
+	if err := db.Create(&run).Error; err != nil {
+		t.Fatalf("create watch_run: %v", err)
+	}
+	if run.Status != "running" {
+		t.Fatalf("WatchRun.Status = %q, want 'running'", run.Status)
+	}
+
+	job := Job{Title: "Go Backend API"}
+	if err := db.Create(&job).Error; err != nil {
+		t.Fatalf("create job: %v", err)
+	}
+
+	ev := WatchEvent{
+		WatchRuleID: rule.ID,
+		WatchRunID:  &run.ID,
+		JobID:       job.ID,
+		UpworkJobID: "~0123456789",
+	}
+	if err := db.Create(&ev).Error; err != nil {
+		t.Fatalf("create watch_event: %v", err)
+	}
+	if ev.Stage != "discovered" {
+		t.Fatalf("WatchEvent.Stage = %q, want 'discovered'", ev.Stage)
+	}
+
+	// Duplicate (watch_rule_id, job_id) must fail unique index idx_watch_events_rule_job.
+	dup := WatchEvent{
+		WatchRuleID: rule.ID,
+		WatchRunID:  &run.ID,
+		JobID:       job.ID,
+	}
+	if err := db.Create(&dup).Error; err == nil {
+		t.Fatal("expected duplicate (watch_rule_id, job_id) WatchEvent insert to fail")
+	}
+
+	cfg := NotificationConfig{}
+	if err := db.Create(&cfg).Error; err != nil {
+		t.Fatalf("create notification_config: %v", err)
+	}
+	if cfg.ConfigKey != "default" || !cfg.ChromeNotificationsEnabled || cfg.WebhookEnabled || cfg.TelegramEnabled {
+		t.Fatalf("unexpected NotificationConfig defaults: %+v", cfg)
 	}
 }
